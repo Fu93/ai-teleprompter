@@ -176,6 +176,7 @@ export const IPC = {
   SaveRecording: 'util:save-recording',
   ShareSimulation: 'system:share-simulation',
   OverlaySnapCorner: 'overlay:snap-corner',
+  RevealPath: 'util:reveal-path',
   ExportFile: 'util:export-file',
   // events (main -> renderer)
   OverlayVisibilityChanged: 'overlay:visibility-changed',

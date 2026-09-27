@@ -1,6 +1,6 @@
 import type { JSX } from "react"
 import { useEffect, useRef, useState } from 'react'
-import { FilePlus2, FolderOpen, Play, Save, Search, Square, Trash2, Video } from 'lucide-react'
+import { FilePlus2, FolderOpen, Pause, Play, Save, Search, Square, Trash2, Video, X } from 'lucide-react'
 import { db } from '../lib/db'
 import type { Script } from '@shared/types'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
@@ -96,19 +96,23 @@ export default function Scripts(): JSX.Element {
 
   // ── 錄影提詞(v3 錄影教練 lite):攝影機+麥克風 MediaRecorder,浮層對錄影隱形 ──
   const [recording, setRecording] = useState(false)
+  const [recPaused, setRecPaused] = useState(false)
   const [recSec, setRecSec] = useState(0)
   const [recMsg, setRecMsg] = useState<string | null>(null)
+  const [countdown, setCountdown] = useState<number | null>(null)
+  const [preview, setPreview] = useState<{ url: string; path?: string } | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recChunksRef = useRef<Blob[]>([])
   const recStreamRef = useRef<MediaStream | null>(null)
   const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const recPausedRef = useRef(false)
 
   const pickMime = (): string => {
     const candidates = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
     return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || ''
   }
 
-  const startRecLaunch = async (): Promise<void> => {
+  const beginRecording = async (): Promise<void> => {
     if (selectedId == null || !draft.content.trim()) return
     if (dirty) await save()
     setRecMsg(null)
@@ -133,20 +137,59 @@ export default function Scripts(): JSX.Element {
           bytes,
           defaultName: `提詞錄影-${formatDateTime(Date.now()).replace(/[\/: ]/g, '-')}.webm`
         })
-        setRecMsg(res.ok ? `錄影已儲存:${res.filePath}` : `錄影未儲存(${res.error ?? 'canceled'})`)
+        if (res.ok && res.filePath) {
+          setPreview({ url: URL.createObjectURL(blob), path: res.filePath })
+          setRecMsg(null)
+        } else {
+          setRecMsg(`錄影未儲存(${res.error ?? 'canceled'})`)
+        }
         setRecording(false)
+        setRecPaused(false)
       }
       recorder.start(500)
       recorderRef.current = recorder
       setRecording(true)
       setRecSec(0)
-      recTimerRef.current = setInterval(() => setRecSec((s) => s + 1), 1000)
+      setRecPaused(false)
+      recPausedRef.current = false
+      recTimerRef.current = setInterval(() => {
+        if (!recPausedRef.current) setRecSec((s) => s + 1)
+      }, 1000)
       await db.scripts.update(selectedId, { lastUsedAt: Date.now() })
       await window.api.overlayShow({ title: draft.title, content: draft.content })
     } catch (err) {
       recStreamRef.current?.getTracks().forEach((t) => t.stop())
       recStreamRef.current = null
       setRecMsg(`無法開啟攝影機:${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  /** 倒數 3-2-1 後開錄;使用者可勾選不再顯示(localStorage) */
+  const startRecLaunch = async (): Promise<void> => {
+    if (selectedId == null || !draft.content.trim()) return
+    if (localStorage.getItem('rec-countdown-off') === '1') {
+      void beginRecording()
+      return
+    }
+    for (const n of [3, 2, 1]) {
+      setCountdown(n)
+      await new Promise((r) => setTimeout(r, 800))
+    }
+    setCountdown(null)
+    void beginRecording()
+  }
+
+  const toggleRecPause = (): void => {
+    const rec = recorderRef.current
+    if (!rec) return
+    if (rec.state === 'recording') {
+      rec.pause()
+      recPausedRef.current = true
+      setRecPaused(true)
+    } else if (rec.state === 'paused') {
+      rec.resume()
+      recPausedRef.current = false
+      setRecPaused(false)
     }
   }
 
@@ -169,7 +212,7 @@ export default function Scripts(): JSX.Element {
       <div className="flex w-72 shrink-0 flex-col border-r border-ink-800 bg-ink-900/60">
         <div className="space-y-2.5 p-4">
           <div className="flex gap-2">
-            <button className="btn-primary flex-1 text-xs" onClick={newScript}>
+            <button className="btn-outline flex-1 text-xs" onClick={newScript}>
               <FilePlus2 size={14} /> 新講稿
             </button>
             <button
@@ -227,7 +270,61 @@ export default function Scripts(): JSX.Element {
       </div>
 
       {/* 編輯器 */}
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="relative flex flex-1 flex-col overflow-hidden">
+        {/* 錄影倒數 */}
+        {countdown !== null && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 bg-ink-950/80 backdrop-blur-sm">
+            <div key={countdown} className="anim-rise text-7xl font-bold text-accent-300">{countdown}</div>
+            <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-400">
+              <input
+                type="checkbox"
+                className="accent-accent-500"
+                onChange={(e) => {
+                  if (e.target.checked) localStorage.setItem('rec-countdown-off', '1')
+                }}
+              />
+              這次之後不再顯示倒數
+            </label>
+          </div>
+        )}
+        {/* 錄影預覽 modal */}
+        {preview && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-ink-950/85 p-6 backdrop-blur-sm">
+            <div className="glass anim-rise w-full max-w-2xl rounded-2xl p-4">
+              <div className="mb-2.5 flex items-center gap-2">
+                <span className="text-sm font-semibold">錄影完成</span>
+                <span className="flex-1 truncate text-[11px] text-ink-400">{preview.path}</span>
+                <button
+                  className="text-ink-400 hover:text-white cursor-pointer"
+                  onClick={() => {
+                    URL.revokeObjectURL(preview.url)
+                    setPreview(null)
+                  }}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+              <video src={preview.url} controls autoPlay className="w-full rounded-xl border border-white/10" />
+              <div className="mt-3 flex gap-2">
+                <button
+                  className="btn-primary text-xs"
+                  onClick={() => preview.path && void window.api.revealPath(preview.path)}
+                >
+                  <FolderOpen size={13} /> 開啟所在資料夾
+                </button>
+                <button
+                  className="btn-outline text-xs"
+                  onClick={() => {
+                    URL.revokeObjectURL(preview.url)
+                    setPreview(null)
+                  }}
+                >
+                  關閉
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {selectedId == null ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-ink-400">
             <span>選擇或建立一份講稿</span>
@@ -260,10 +357,19 @@ export default function Scripts(): JSX.Element {
                 <Play size={14} /> 開始提詞
               </button>
               {recording ? (
-                <button className="btn-outline text-xs text-rose-450" onClick={stopRec}>
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-rose-450" />
-                  停止錄影 {formatDuration(recSec)}
-                </button>
+                <>
+                  <button
+                    className="btn-outline text-xs"
+                    onClick={toggleRecPause}
+                    title={recPaused ? '續錄' : '暫停(計時凍結)'}
+                  >
+                    {recPaused ? <Play size={14} /> : <Pause size={14} />}
+                  </button>
+                  <button className="btn-outline text-xs text-rose-450" onClick={stopRec}>
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-rose-450" />
+                    {recPaused ? '已暫停' : '停止錄影'} {formatDuration(recSec)}
+                  </button>
+                </>
               ) : (
                 <button
                   className="btn-outline text-xs"

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, screen, session } from 'electron'
+import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, screen, session, shell } from 'electron'
 import { join } from 'path'
 import { writeFile } from 'fs/promises'
 import os from 'os'
@@ -420,6 +420,11 @@ function registerIpc(): void {
     const [w] = overlayWindow.getSize()
     const x = corner === 'tl' ? workArea.x + 8 : corner === 'tr' ? workArea.x + workArea.width - w - 8 : workArea.x + Math.round((workArea.width - w) / 2)
     overlayWindow.setPosition(x, workArea.y + 8)
+  })
+
+  // ---- 在檔案總管顯示檔案 ----
+  ipcMain.handle(IPC.RevealPath, (_e, path: string) => {
+    if (path && typeof path === 'string') shell.showItemInFolder(path)
   })
 
   // ---- 匯出檔案 ----

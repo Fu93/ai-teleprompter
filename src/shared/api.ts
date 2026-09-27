@@ -110,4 +110,6 @@ export interface Api {
   shareSimulation(): Promise<{ ok: boolean; dataUrl?: string; error?: string }>
   /** 貼鏡模式吸附:把浮層移到螢幕上緣指定角落 */
   snapOverlayCorner(corner: 'tl' | 'tc' | 'tr'): Promise<void>
+  /** 在檔案總管中顯示檔案 */
+  revealPath(path: string): Promise<void>
 }

@@ -19,10 +19,43 @@
   --color-amber-450: #f5b04d;
   --color-rose-450: #f56a8a;
 
-  --font-sans: 'Segoe UI Variable Display', 'SF Pro Display', 'Segoe UI', 'PingFang TC',
-    'Microsoft JhengHei', 'Noto Sans TC', system-ui, sans-serif;
+  --font-sans: 'Segoe UI Variable Display', 'SF Pro Display', 'Segoe UI', 'Noto Sans TC Variable',
+    'PingFang TC', 'Microsoft JhengHei', 'Noto Sans TC', system-ui, sans-serif;
 
   --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ── Motion token(Primer/Polaris/Fluent 慣例)── */
+  --dur-fast: 100ms;
+  --dur-base: 200ms;
+  --dur-overlay: 300ms;
+  --ease-hover: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-enter: cubic-bezier(0.1, 0.9, 0.2, 1);
+  --ease-exit: cubic-bezier(0.9, 0.1, 1, 0.2);
+  /* Island morph:展開有彈(ζ≈0.8)、收合臨界阻尼(ζ=1.0) */
+  --ease-morph-open: cubic-bezier(0.3, 1.25, 0.35, 1);
+  --ease-morph-close: cubic-bezier(0.3, 0.7, 0.25, 1);
+}
+
+/* 鍵盤導航 focus ring:內縮 2px 亮環(Primer 慣例,緊湊 UI 不被裁切) */
+:focus-visible {
+  outline: 2px solid var(--color-accent-300);
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
+/* 按壓回饋:全部按鈕統一 scale 0.97(Emil Kowalski / Raycast 慣例) */
+button:not(:disabled):active {
+  transform: scale(0.97);
+}
+
+/* reduced-motion:動效全折為 1ms */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
 }
 
 html,
@@ -119,14 +152,11 @@ body {
 .btn-primary:hover {
   filter: brightness(1.08);
 }
-.btn-primary:active {
-  transform: scale(0.98);
-}
 .btn-ghost {
-  @apply text-ink-300 hover:bg-white/8 hover:text-ink-100;
+  @apply text-ink-300 hover:bg-white/[0.08] hover:text-ink-100;
 }
 .btn-outline {
-  @apply border border-white/10 bg-white/4 text-ink-200 hover:border-white/20 hover:bg-white/8;
+  @apply border border-white/[0.12] bg-white/4 text-ink-200 hover:border-white/[0.18] hover:bg-white/[0.08];
 }
 
 .card {
@@ -134,17 +164,20 @@ body {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.022));
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    inset 0 1px 1px rgba(255, 255, 255, 0.2),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.06),
+    0 0 0 1px rgba(255, 255, 255, 0.04),
     0 10px 32px rgba(0, 0, 0, 0.32);
-  -webkit-backdrop-filter: blur(20px) saturate(1.35);
-  backdrop-filter: blur(20px) saturate(1.35);
+  -webkit-backdrop-filter: blur(20px) saturate(1.8);
+  backdrop-filter: blur(20px) saturate(1.8);
 }
 
 .input {
-  @apply w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-ink-100
+  @apply w-full rounded-xl border border-white/[0.12] bg-white/5 px-3 py-2 text-sm text-ink-100
     outline-none placeholder:text-ink-400 transition-colors duration-200;
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.24);
 }
 .input:focus {
   border-color: rgba(143, 140, 250, 0.6);
@@ -205,6 +238,11 @@ input[type='range']::-webkit-slider-thumb:hover {
 }
 input[type='range']:active::-webkit-slider-thumb {
   transform: scale(1.05);
+}
+
+h1,
+h2 {
+  letter-spacing: -0.025em;
 }
 
 /* 浮層內文閱讀性投影(軟陰影配方,比硬描邊自然) */

@@ -56,6 +56,7 @@ const api: Api = {
     ipcRenderer.invoke(IPC.SaveRecording, args),
   shareSimulation: () => ipcRenderer.invoke(IPC.ShareSimulation),
   snapOverlayCorner: (corner: 'tl' | 'tc' | 'tr') => ipcRenderer.invoke(IPC.OverlaySnapCorner, corner),
+  revealPath: (path: string) => ipcRenderer.invoke(IPC.RevealPath, path),
   exportFile: (args) => ipcRenderer.invoke(IPC.ExportFile, args)
 }
 

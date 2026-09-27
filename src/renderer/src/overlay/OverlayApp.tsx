@@ -829,7 +829,7 @@ export default function OverlayApp(): JSX.Element {
 
   return (
     <div
-      className="glass-overlay anim-rise relative flex h-full flex-col overflow-hidden rounded-2xl"
+      className="glass-overlay relative flex h-full flex-col overflow-hidden rounded-2xl"
       style={{ background: `rgba(12, 14, 20, ${Math.max(0.25, Math.min(0.9, o.opacity))})` }}
     >
       {/* 工具列(可拖曳視窗)*/}
