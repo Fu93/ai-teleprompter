@@ -7,8 +7,13 @@ files:
   - '!node_modules/**'
 asar: true
 compression: maximum
+# 場景包:main/packs.ts 掃 process.resourcesPath/packs
+extraResources:
+  - from: assets/packs
+    to: packs
 win:
   target: nsis
+  icon: resources/icon.ico
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

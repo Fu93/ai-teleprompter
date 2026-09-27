@@ -1,8 +1,8 @@
 import type { JSX } from "react"
 import { useEffect, useState } from 'react'
-import { Check, Loader2, RefreshCw } from 'lucide-react'
+import { Check, Loader2, RefreshCw, Ruler } from 'lucide-react'
 import { useSettings } from '../lib/store'
-import { cn } from '../lib/utils'
+import { cn, formatDateTime } from '../lib/utils'
 import type { AppSettings } from '@shared/types'
 import type { SceneSummary } from '@shared/api'
 
@@ -164,6 +164,60 @@ export default function SettingsPage({
     <div className="mx-auto max-w-3xl space-y-5 px-8 py-8">
       <h1 className="text-xl font-bold">設定</h1>
 
+      <Section title="個人化校準" desc="以你的眼距與語速自動產生字級、滾動速度與預估時長">
+        {settings.personal.profile ? (
+          <div className="space-y-3">
+            <div className="grid grid-cols-4 gap-3 text-center">
+              <div className="rounded-lg bg-ink-850 p-3">
+                <div className="text-[10px] text-ink-400">瞳距</div>
+                <div className="mt-0.5 text-lg font-semibold">
+                  {settings.personal.profile.ipdMm}
+                  <span className="text-xs text-ink-400">mm</span>
+                </div>
+              </div>
+              <div className="rounded-lg bg-ink-850 p-3">
+                <div className="text-[10px] text-ink-400">視距</div>
+                <div className="mt-0.5 text-lg font-semibold">
+                  {settings.personal.profile.viewingDistanceCm}
+                  <span className="text-xs text-ink-400">cm</span>
+                </div>
+              </div>
+              <div className="rounded-lg bg-ink-850 p-3">
+                <div className="text-[10px] text-ink-400">語速</div>
+                <div className="mt-0.5 text-lg font-semibold">
+                  {settings.personal.profile.charsPerMin}
+                  <span className="text-xs text-ink-400">字/分</span>
+                </div>
+              </div>
+              <div className="rounded-lg bg-ink-850 p-3">
+                <div className="text-[10px] text-ink-400">字級／速度</div>
+                <div className="mt-0.5 text-lg font-semibold">
+                  {settings.personal.profile.derivedFontSize}
+                  <span className="text-xs text-ink-400">px</span> · {settings.personal.profile.derivedSpeed}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-ink-400">
+              <span>校準於 {formatDateTime(settings.personal.profile.calibratedAt)}</span>
+              <button className="btn-outline text-xs" onClick={() => onNavigate?.('calibration')}>
+                <Ruler size={13} /> 重新校準
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-xs leading-relaxed text-ink-400">
+              尚未校準——目前使用通用預設值。
+              <br />
+              校準後會自動產生適合你的字級與滾動速度。
+            </div>
+            <button className="btn-primary shrink-0 text-xs" onClick={() => onNavigate?.('calibration')}>
+              <Ruler size={13} /> 開始校準
+            </button>
+          </div>
+        )}
+      </Section>
+
       <Section title="提詞浮層" desc="外觀與行為，變更即時生效">
         <div>
           <div className="label">顯示模式</div>
@@ -191,7 +245,9 @@ export default function SettingsPage({
             ))}
           </div>
           <div className="mt-1.5 text-[11px] text-ink-400">
-            逐句/逐詞以 120 WPM 為基準推進;重點要點自動切出 Markdown 大綱或段落,手動(← →)翻頁。
+            {settings.personal.profile
+              ? `逐句/逐詞以你的個人語速 ${settings.personal.profile.charsPerMin} 字/分為基準推進（倍率 1×＝你自己的語速）;重點要點自動切出 Markdown 大綱或段落,手動(← →)翻頁。`
+              : '逐句/逐詞以 120 WPM 為基準推進（完成個人化校準後改以你的語速為基準）;重點要點自動切出 Markdown 大綱或段落,手動(← →)翻頁。'}
           </div>
         </div>
         <Slider label="字體大小" value={o.fontSize} min={16} max={72} step={2} unit="px" onChange={(v) => patchO({ fontSize: v })} />

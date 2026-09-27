@@ -29,6 +29,7 @@ import {
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { PhraseVisuals } from '../lib/teleprompter/constants'
+import { effectiveEngineRate } from '../lib/calibration'
 import type { EngineState } from '../lib/teleprompter/engine'
 import type { ScriptModel } from '../lib/teleprompter/scriptModel'
 import { useTeleprompterEngine } from './useTeleprompterEngine'
@@ -342,10 +343,12 @@ export default function OverlayApp(): JSX.Element {
   // ---- 四模式定時引擎 ----
   const o = settings?.overlay
   const displayMode = o?.displayMode ?? 'scroll'
+  // 個人化語速基準：已校準時 1×＝使用者自己的語速（引擎固定 120 WPM 基準，換算為有效倍率）
+  const personalBaseline = settings?.personal.profile?.charsPerMin ?? PhraseVisuals.DEFAULT_WPM
   const { state, model, remainingMs, progress, controls } = useTeleprompterEngine({
     content,
     displayMode,
-    rate: o?.rate ?? 1,
+    rate: effectiveEngineRate(o?.rate ?? 1, settings?.personal.profile?.charsPerMin, PhraseVisuals.DEFAULT_WPM),
     scrollSpeed: o?.speed ?? 60,
     scrollElRef: scrollRef,
     measureKey: `${o?.fontSize ?? 30}|${o?.lineHeight ?? 1.5}`
@@ -628,7 +631,7 @@ export default function OverlayApp(): JSX.Element {
           {isTimedMode ? (
             <>
               <ToolBtn
-                title="語速 -"
+                title={personalBaseline !== PhraseVisuals.DEFAULT_WPM ? `語速 -（1×＝你的個人語速 ${personalBaseline} 字/分）` : '語速 -'}
                 onClick={() =>
                   void patchOverlay({ rate: Math.max(0.5, Math.round((o.rate - 0.1) * 10) / 10) })
                 }
@@ -639,7 +642,7 @@ export default function OverlayApp(): JSX.Element {
                 {(o.rate ?? 1).toFixed(1)}×
               </span>
               <ToolBtn
-                title="語速 +"
+                title={personalBaseline !== PhraseVisuals.DEFAULT_WPM ? `語速 +（1×＝你的個人語速 ${personalBaseline} 字/分）` : '語速 +'}
                 onClick={() =>
                   void patchOverlay({ rate: Math.min(3, Math.round((o.rate + 0.1) * 10) / 10) })
                 }

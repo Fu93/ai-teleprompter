@@ -114,7 +114,16 @@
 
 **驗收**:面試中被問倒,按熱鍵 1.5 秒內浮層出現可用的回答要點;斷網時退場景模板不出白屏。
 
-### Phase D — Session Intelligence + 面試練習
+### Phase D — Session Intelligence + 面試練習 ✅ 已完成(2026-09-27)
+
+> **實施記錄**:已落地,19 個新測試(總 166 全綠)。git 已導入(Phase C 提交 `d94d5cc`、Phase D 提交在案)。
+> - `lib/session-intelligence.ts`(純函數):直接從帶時間戳的段落計算(優於 v3 的 1s 取樣)— 發言佔比、語速(CJK 字元 + 拉丁詞的語音單位/分,與校準模組 charsPerMin 語意一致)、輪次、>5s 冷場、對方問句數、steadiness(各輪語速 CV 反轉)、規則式建議(0–3 條按嚴重度);練習分析(逐題 CPM、分數趨勢)
+> - Record 頁:停止後自動算報告**與 session 一起存 Dexie**(無需 schema 升版,Dexie schemaless),錄音頁顯示會後報告面板(四格統計 + 建議)
+> - Practice 頁:完成階段量化回饋列(平均語速、總時長、各題語速色標)
+> - Dashboard:成長軌跡卡(會議場數/分鐘、平均發言佔比、語速趨勢折線、練習分數趨勢折線,輕量 SVG 無圖表庫)
+> - **panic 上下文補完**:Record 轉錄(含對方系統音訊)已接 liveContext — Alt+P 現在能根據「面試官剛問了什麼」給答案
+> - 差異說明:v3 的 eyeContact/gaze 訊號以 turn-yield 統計與語速穩定度替代(眼神追蹤維持不移植決策);coachingRules 即時提示引擎留待未來需要時再移植
+
 1. 移植 session-intelligence 三層模型(SessionReport / Timeline / PersonalProfile)→ Dexie tables(取代 electron-store,單一儲存技術)
 2. 轉錄會話期間 1s 取樣:由 transcript 時間戳算 WPM;Phase B 的 turn-yield 統計代替 v3 的 eyeContact(眼神追蹤不搬)——卡頓、話量比、搶話/冷場
 3. 會後報告:PostSessionModal 概念 → `Record.tsx` 會後面板(四格統計 + 0–3 條建議 + profile 回寫)
@@ -123,7 +132,16 @@
 
 **驗收**:完整走一場模擬面試,事後有量化報告且 Dashboard 曲線更新。
 
-### Phase E — 產品化收尾
+### Phase E — 產品化收尾 ✅ 核心完成(2026-09-27)
+
+> **實施記錄**:
+> - **打包**:`electron-builder.yml`(另一 session 建立基礎,補上 `extraResources: assets/packs → resources/packs` 與 win 圖示;icon.ico 取自 v3)— `npx electron-builder --dir` 驗證通過,`dist/win-unpacked/AI 提詞機.exe` 實機啟動煙霧測試正常(啟動即打的 GPU disk cache 錯誤是 OneDrive 目錄的無害噪音);`npm run dist` 產 NSIS 安裝包
+> - **安全加固**:`hardenWebContents()` — 兩視窗 `setWindowOpenHandler` 禁新視窗 + `will-navigate` 僅允許 dev server / file:// 內部導航
+> - **e2e**:Playwright `_electron.launch` 走真進程(v3 的做法)— 4 個煙霧測試全綠:雙視窗啟動、preload 橋接(appInfo)、`scene:list` 端到端(8 內建 + packs)、設定 defaults 完整性。`npm run e2e` = build + playwright test。**坑位記錄**:e2e 崩潰會留殭屍 electron.exe 佔住單實例鎖,後續啟動秒退 — 先殺光 electron.exe 再跑;浮層視窗載入較慢,視窗數斷言需 `expect.poll` 輪詢
+> - **隱身狀態**:既有 clickThrough + captureProtected 兩開關 + `setContentProtection` 已等價 v3 的 stealth/passthrough 能力(v3 的 WDA ffi 方案未啟用),不再做 4 狀態抽象 — 避免為架構而架構
+> - **i18n:評估後建議擱置** — 單人工具、UI 以繁中為母語,v3 的 5 語系 316 keys 若未來要上架發佈再遷(自製 useI18n 零依賴結構已在 v3 倉庫可取)
+> - 測試總量:184 vitest(14 檔)+ 4 Playwright e2e
+
 1. 隱身 4 狀態統一(把現有 clickThrough + captureProtected 合併為 v3 式 `VisState` 宣告式配置)
 2. 快捷鍵全家桶:Alt+Space 播放暫停 / Alt+↑↓ 速度 / Alt+H 隱藏 / Alt+P 控制台(沿用 v3 衝突處理:warn + 略過)
 3. i18n:搬 v3 的 5 語系結構(自製 useI18n,零依賴),zh-TW 為 fallback

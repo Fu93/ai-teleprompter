@@ -95,6 +95,16 @@ let lastOverlayPayload: { title?: string; content?: string } = {}
 
 const isDev = !app.isPackaged
 
+/** 視窗安全:禁新視窗;僅允許 dev server 或本地檔案內部導航 */
+function hardenWebContents(win: BrowserWindow): void {
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  win.webContents.on('will-navigate', (e, url) => {
+    const devBase = process.env['ELECTRON_RENDERER_URL']
+    const allowed = isDev && devBase ? url.startsWith(devBase) : url.startsWith('file://')
+    if (!allowed) e.preventDefault()
+  })
+}
+
 // ---------- 設定 ----------
 let settings: AppSettings = loadSettings()
 
@@ -158,6 +168,7 @@ function createMainWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
+  hardenWebContents(mainWindow)
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -193,6 +204,7 @@ function createOverlayWindow(): void {
   })
   overlayWindow.setAlwaysOnTop(true, 'screen-saver')
   applyOverlayWindowSettings()
+  hardenWebContents(overlayWindow)
 
   overlayWindow.on('hide', () => notifyOverlayVisibility(false))
   overlayWindow.on('show', () => notifyOverlayVisibility(true))

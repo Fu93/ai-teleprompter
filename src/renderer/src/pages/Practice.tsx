@@ -15,6 +15,7 @@ import { db } from '../lib/db'
 import { useSettings } from '../lib/store'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
 import { aiChat, extractJson } from '../lib/ai'
+import { countReadableChars } from '../lib/calibration'
 import { speak, stopSpeaking, warmUpVoices } from '../lib/tts'
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
@@ -193,12 +194,21 @@ export default function Practice(): JSX.Element {
     setBusy('feedback')
     stopSpeaking()
     const answerStart = curStart
+    // 個人語速基準（若有校準）：實際語速 vs 個人基準，供表達面反饋對照
+    const baselineCpm = settings.personal.profile?.charsPerMin
+    const answerSecs = (Date.now() - answerStart) / 1000
+    const actualChars = countReadableChars(transcript)
+    const actualCpm = answerSecs > 0 ? Math.round((actualChars / answerSecs) * 60) : null
+    const rateLine =
+      baselineCpm && actualCpm
+        ? `\n\n使用者個人語速基準：${baselineCpm} 字/分（校準值）。本次回答共 ${actualChars} 字、${answerSecs.toFixed(0)} 秒，實際語速約 ${actualCpm} 字/分（基準的 ${Math.round((actualCpm / baselineCpm) * 100)}%）。請在 delivery 反饋中對照此基準評估語速快慢與停頓。`
+        : '\n\n（使用者未校準語速，delivery 請依逐字稿長度與流暢度推估。）'
     try {
       const raw = await aiChat(settings, [
         { role: 'system', content: '你是資深面試教練。只輸出 JSON，不要任何說明。使用繁體中文。' },
         {
           role: 'user',
-          content: `面試題目：${q}\n應徵職位/情境：${position.trim()}（${type}）\n應徵者的回答逐字稿：\n${transcript}\n\n請評估此回答並輸出 JSON：{"score":0到100整數,"content":"內容面反饋（切題度、觀點、例證，2-3句）","structure":"結構面反饋（邏輯條理，2句）","delivery":"表達面反饋（依逐字稿推測語速與流暢度，2句）","betterAnswer":"80-150字的示範回答"}`
+          content: `面試題目：${q}\n應徵職位/情境：${position.trim()}（${type}）\n應徵者的回答逐字稿：\n${transcript}${rateLine}\n\n請評估此回答並輸出 JSON：{"score":0到100整數,"content":"內容面反饋（切題度、觀點、例證，2-3句）","structure":"結構面反饋（邏輯條理，2句）","delivery":"表達面反饋（語速與流暢度，對照個人語速基準，2句）","betterAnswer":"80-150字的示範回答"}`
         }
       ])
       const fb = extractJson<PracticeFeedback>(raw)

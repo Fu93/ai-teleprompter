@@ -6,10 +6,10 @@ import type { Script } from '@shared/types'
 import { cn, formatDateTime } from '../lib/utils'
 import { useSettings } from '../lib/store'
 
-function estimateMinutes(content: string): string {
+function estimateMinutes(content: string, charsPerMin: number): string {
   const chars = content.replace(/\s/g, '').length
   if (chars === 0) return '0 分鐘'
-  return `約 ${Math.max(1, Math.round(chars / 240))} 分鐘（${chars} 字）`
+  return `約 ${Math.max(1, Math.round(chars / charsPerMin))} 分鐘（${chars} 字）`
 }
 
 export default function Scripts(): JSX.Element {
@@ -179,7 +179,9 @@ export default function Scripts(): JSX.Element {
                   setDirty(true)
                 }}
               />
-              <span className="text-[11px] text-ink-400">{estimateMinutes(draft.content)}</span>
+              <span className="text-[11px] text-ink-400">
+                {estimateMinutes(draft.content, settings?.personal.profile?.charsPerMin ?? 240)}
+              </span>
               <button className="btn-ghost text-rose-450 hover:text-rose-450" onClick={remove}>
                 <Trash2 size={15} />
               </button>

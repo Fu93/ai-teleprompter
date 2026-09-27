@@ -84,3 +84,17 @@ export function countReadableChars(transcript: string): number {
 export function isPlausibleRate(charsPerMin: number): boolean {
   return charsPerMin >= 100 && charsPerMin <= 480
 }
+
+/**
+ * 個人語速 → 定時引擎的有效倍率。
+ * 引擎以 defaultWpm（120）為 1× 基準；校準後 1× 應代表「使用者自己的語速」，
+ * 故有效倍率 = sliderRate × 個人語速 ÷ 基準語速。未校準時原樣返回。
+ */
+export function effectiveEngineRate(
+  sliderRate: number,
+  personalCpm: number | null | undefined,
+  defaultWpm = 120
+): number {
+  const baseline = personalCpm != null && personalCpm > 0 ? personalCpm : defaultWpm
+  return (sliderRate * baseline) / defaultWpm
+}
