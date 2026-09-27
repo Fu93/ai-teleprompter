@@ -15,6 +15,8 @@ export interface OverlaySettings {
   glass: boolean
   /** turn-yield 提示:對方講完問句時浮層顯示「該你說話了」(Phase B) */
   turnYield: boolean
+  /** 即時教練:語速過快/填充詞/損話/冷場/獨白過長時浮層提醒 */
+  coaching: boolean
   fontSize: number
   lineHeight: number
   speed: number // scroll 模式:px per second
@@ -100,6 +102,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     lensMode: false,
     glass: true,
     turnYield: true,
+    coaching: true,
     fontSize: 30,
     lineHeight: 1.5,
     speed: 60,
@@ -191,7 +194,9 @@ export const IPC = {
   PanicRescue: 'panic:rescue',
   PanicError: 'panic:error',
   /** turn-yield:對方講完問句 → 該你說話了(main → overlay) */
-  TurnYieldSignal: 'context:turn-yield'
+  TurnYieldSignal: 'context:turn-yield',
+  /** 即時教練訊號(main → overlay) */
+  CoachingSignal: 'context:coaching'
 } as const
 
 // ===== turn-yield 提示(Phase B)=====
@@ -200,6 +205,17 @@ export interface TurnYieldPayload {
   kind: 'turn' | 'peer_silence'
   /** 觸媒句是否為問句/邀答語尾 */
   question: boolean
+  /** 觸發時間戳(ms epoch),供 renderer 防抖 */
+  at: number
+}
+
+// ===== 即時教練(Phase B+)=====
+export type CoachingKind = 'fast' | 'filler' | 'interrupt' | 'dead_air' | 'monologue'
+
+export interface CoachingPayload {
+  kind: CoachingKind
+  /** 給使用者的提示文案(main 端已含量化數字) */
+  message: string
   /** 觸發時間戳(ms epoch),供 renderer 防抖 */
   at: number
 }

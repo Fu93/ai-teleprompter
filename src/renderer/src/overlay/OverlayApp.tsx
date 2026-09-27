@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FlipHorizontal2,
+  Gauge,
   Hand,
   List,
   Loader2,
@@ -42,6 +43,7 @@ import type { ScriptModel } from '../lib/teleprompter/scriptModel'
 import { useTeleprompterEngine } from './useTeleprompterEngine'
 import { usePanic } from './usePanic'
 import { useTurnYield } from './useTurnYield'
+import { useCoaching } from './useCoaching'
 import { RescueCard } from './RescueCard'
 import { Segmented } from '../components/Segmented'
 
@@ -496,6 +498,9 @@ export default function OverlayApp(): JSX.Element {
         ? '該你說話了 — 對方在等你回答'
         : '對方已停頓 — 該接話了'
 
+  // ---- 即時教練(Phase B+):語速過快/填充詞/損話/冷場/獨白過長 ----
+  const { hint: coachingHint } = useCoaching(o?.coaching ?? true)
+
   // ---- 視窗尺寸同步 ----
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -883,6 +888,14 @@ export default function OverlayApp(): JSX.Element {
             <MessageCircleQuestion size={11} /> 該你了
           </span>
         )}
+        {coachingHint && (
+          <span
+            title={coachingHint.message}
+            className="flex h-6 shrink-0 cursor-default items-center gap-1 rounded-full bg-amber-500/20 px-2 text-[10px] font-medium text-amber-300"
+          >
+            <Gauge size={11} /> 教練
+          </span>
+        )}
         {nextKeyword && (
           <span className="text-[11px] text-accent-300" title={`下一個:${nextKeyword}`}>
             {nextKeyword}
@@ -1059,6 +1072,15 @@ export default function OverlayApp(): JSX.Element {
             onClick={() => void patchOverlay({ turnYield: !o.turnYield })}
           >
             <Hand size={13} />
+          </ToolBtn>
+
+          {/* 即時教練開關 */}
+          <ToolBtn
+            title={o.coaching ? '即時教練開啟中(語速/填充詞/冷場)— 點擊關閉' : '開啟即時教練:語速過快、填充詞、冷場時提醒你'}
+            active={o.coaching}
+            onClick={() => void patchOverlay({ coaching: !o.coaching })}
+          >
+            <Gauge size={13} />
           </ToolBtn>
 
           {/* Panic 救援:被問倒時即時給答案(Alt+P)*/}
@@ -1248,6 +1270,14 @@ export default function OverlayApp(): JSX.Element {
         <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex items-center justify-center gap-2 rounded-full bg-sky-500/25 px-4 py-2 text-xs font-medium text-sky-200 shadow-lg">
           <MessageCircleQuestion size={14} className="shrink-0" />
           {turnYieldText}
+        </div>
+      )}
+
+      {/* 即時教練提示條(琥珀色,與 turn-yield 藍色區分)*/}
+      {coachingHint && (
+        <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex items-center justify-center gap-2 rounded-full bg-amber-500/25 px-4 py-2 text-xs font-medium text-amber-200 shadow-lg">
+          <Gauge size={14} className="shrink-0" />
+          {coachingHint.message}
         </div>
       )}
 

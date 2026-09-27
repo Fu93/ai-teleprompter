@@ -1,4 +1,4 @@
-import type { AppInfo, AppSettings, RescuePayload, TurnYieldPayload } from './types'
+import type { AppInfo, AppSettings, RescuePayload, TurnYieldPayload, CoachingPayload } from './types'
 
 export interface OverlayShowPayload {
   title?: string
@@ -101,6 +101,8 @@ export interface Api {
   panicTrigger(script?: string): Promise<boolean>
   /** turn-yield:對方講完問句/長段(main → overlay) */
   onTurnYield(cb: (payload: TurnYieldPayload) => void): Unsubscribe
+  /** 即時教練訊號(main → overlay) */
+  onCoaching(cb: (payload: CoachingPayload) => void): Unsubscribe
   onPanicThinking(cb: () => void): Unsubscribe
   onPanicRescue(cb: (payload: RescuePayload) => void): Unsubscribe
   onPanicError(cb: (message: string) => void): Unsubscribe

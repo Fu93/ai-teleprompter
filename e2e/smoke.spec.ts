@@ -105,3 +105,28 @@ test('turn-yield:對方問句經 IPC → 浮層顯示「該你說話了」提示
     await app.close()
   }
 })
+
+test('即時教練:搶話訊號經 IPC → 浮層顯示教練提示', async () => {
+  const { app, main } = await launchApp()
+  test.setTimeout(60_000)
+  try {
+    await expect
+      .poll(() => app.windows().length, { timeout: 15_000, intervals: [500, 1_000, 2_000] })
+      .toBeGreaterThanOrEqual(2)
+    const overlay = app.windows().find((w) => w !== main)
+    expect(overlay).toBeTruthy()
+    await overlay!.waitForLoadState('domcontentloaded')
+
+    await main.evaluate(() => window.api.setSettings({ overlay: { coaching: true } }))
+    // 對方剛講完 → 2s 內我方開口 = 搶話
+    await main.evaluate(() =>
+      window.api.pushTranscript({ text: '那我們請你說明一下這個案例的背景', speaker: 'them' })
+    )
+    await main.evaluate(() =>
+      window.api.pushTranscript({ text: '這個專案主要是我負責資料管線的設計', speaker: 'me' })
+    )
+    await overlay!.waitForSelector('text=打斷對方', { timeout: 8_000 })
+  } finally {
+    await app.close()
+  }
+})

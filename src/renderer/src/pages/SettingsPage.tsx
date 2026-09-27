@@ -259,6 +259,12 @@ export default function SettingsPage({
           checked={o.turnYield}
           onChange={(v) => patchO({ turnYield: v })}
         />
+        <Switch
+          label="即時教練"
+          hint="會議/練習轉錄中偵測語速過快、填充詞過多、損話、冷場、獨白過長，浮層即時提醒（語速基準取自個人化校準）"
+          checked={o.coaching}
+          onChange={(v) => patchO({ coaching: v })}
+        />
         <Switch label="螢幕擷取隱形" hint="開啟後，視訊軟體分享畫面與錄影都看不到浮層" checked={o.captureProtected} onChange={(v) => window.api.overlaySetCaptureProtection(v)} />
         <div>
           <button

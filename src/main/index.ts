@@ -19,6 +19,14 @@ import {
   evaluateTurnYield,
   recordTurnYield
 } from './context-engine/turnYield'
+import {
+  checkDeadAir,
+  checkInterrupt,
+  createCoachingState,
+  onMeSegment,
+  onThemSegment,
+  type CoachingSignal as EngineSignal
+} from './context-engine/coachingRules'
 import { listAllScenes } from './packs'
 
 // panic 的 provider 差異化 timeout(v3:Groq 900ms / Ollama 2500ms / 其他 1500ms)
@@ -37,6 +45,52 @@ const conversation = new ConversationTracker(6)
 const turnYieldState = createTurnYieldState()
 let turnYieldTimer: ReturnType<typeof setTimeout> | null = null
 let turnYieldPending: { kind: 'turn' | 'peer_silence'; question: boolean } | null = null
+
+// 即時教練:語速/填充詞/損話/冷場/獨白(Phase B+)
+const coachingState = createCoachingState()
+let coachingTimer: ReturnType<typeof setInterval> | null = null
+
+function coachingOptions(): { baselineCpm: number } {
+  return { baselineCpm: settings.personal.profile?.charsPerMin ?? 0 }
+}
+
+/** 開始/停止冷場週期檢查(2s); coaching 關閉時停掉 */
+function syncCoachingTimer(): void {
+  const want = settings.overlay.coaching
+  if (want && coachingTimer === null) {
+    coachingTimer = setInterval(() => {
+      const signal = checkDeadAir(coachingState, Date.now(), coachingOptions())
+      if (signal) deliverCoaching(signal)
+    }, 2_000)
+  } else if (!want && coachingTimer !== null) {
+    clearInterval(coachingTimer)
+    coachingTimer = null
+  }
+}
+
+function deliverCoaching(signal: EngineSignal): void {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return
+  overlayWindow.webContents.send(IPC.CoachingSignal, {
+    kind: signal.kind,
+    message: signal.message,
+    at: Date.now()
+  })
+}
+
+function onMeSegmentForCoaching(text: string): void {
+  if (!settings.overlay.coaching) return
+  const now = Date.now()
+  // 搶話判定要先於段統計(需要「對方剛講完」的時間戳)
+  const interrupt = checkInterrupt(coachingState, now, coachingOptions())
+  if (interrupt) deliverCoaching(interrupt)
+  const signal = onMeSegment(coachingState, text, now, coachingOptions())
+  if (signal) deliverCoaching(signal)
+}
+
+function onThemSegmentForCoaching(text: string): void {
+  if (!settings.overlay.coaching) return
+  onThemSegment(coachingState, text, Date.now(), coachingOptions())
+}
 
 function deliverRescue(payload: RescuePayload): void {
   if (!overlayWindow || overlayWindow.isDestroyed()) setOverlayVisible(true)
@@ -303,6 +357,7 @@ function registerIpc(): void {
     applyOverlayWindowSettings()
     broadcastSettings()
     registerHotkeys()
+    syncCoachingTimer()
     return settings
   })
 
@@ -526,10 +581,12 @@ function registerIpc(): void {
     if (speaker === 'them') {
       conversation.add('them', args.text)
       evaluateTurnYieldForSegment(args.text)
+      onThemSegmentForCoaching(args.text)
     } else if (speaker === 'me') {
       conversation.add('self', args.text)
       // 我方發言:取消未發出的提示(你已在回話;顯示中的提示由 UI 層收掉)
       cancelTurnYield()
+      onMeSegmentForCoaching(args.text)
     }
     return true
   })
@@ -575,6 +632,7 @@ if (!gotLock) {
     createMainWindow()
     createOverlayWindow()
     registerHotkeys()
+    syncCoachingTimer()
   })
 
   app.on('window-all-closed', () => {
