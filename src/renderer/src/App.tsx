@@ -96,7 +96,8 @@ function MainApp(): JSX.Element {
 }
 
 export default function App(): JSX.Element {
-  const [isOverlay] = useState(() => window.location.hash.startsWith('#/overlay'))
+  // dev 用 '#/overlay'、打包 loadFile hash 產生 '#overlay' — 兩種都要認
+  const [isOverlay] = useState(() => /^#\/?overlay$/.test(window.location.hash))
 
   useEffect(() => {
     if (!isOverlay) {
