@@ -52,6 +52,8 @@ const api: Api = {
   onPanicError: (cb: (message: string) => void) => on<string>(IPC.PanicError, cb),
 
   appInfo: (): Promise<AppInfo> => ipcRenderer.invoke(IPC.AppInfo),
+  saveRecording: (args: { bytes: Uint8Array; defaultName: string }) =>
+    ipcRenderer.invoke(IPC.SaveRecording, args),
   exportFile: (args) => ipcRenderer.invoke(IPC.ExportFile, args)
 }
 

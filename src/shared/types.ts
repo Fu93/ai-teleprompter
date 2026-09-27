@@ -9,6 +9,8 @@ export interface OverlaySettings {
   displayMode: OverlayDisplayMode
   /** 緊緻藥丸模式(Dynamic Island 式;折疊成小條,展開恢復) */
   compact: boolean
+  /** 貼鏡模式:窄條浮層貼近攝影機(<5cm),當前行鎖定鏡頭下方 ~2° 視角,眼神自然 */
+  lensMode: boolean
   /** 玻璃質感:Windows 11 嘗試啟用視窗後 acrylic 毛玻璃 */
   glass: boolean
   fontSize: number
@@ -93,6 +95,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     captureProtected: true,
     displayMode: 'scroll',
     compact: false,
+    lensMode: false,
     glass: true,
     fontSize: 30,
     lineHeight: 1.5,
@@ -170,6 +173,7 @@ export const IPC = {
   ContextPushTranscript: 'context:push-transcript',
   SceneList: 'scene:list',
   CloudTranscribe: 'stt:cloud-transcribe',
+  SaveRecording: 'util:save-recording',
   ExportFile: 'util:export-file',
   // events (main -> renderer)
   OverlayVisibilityChanged: 'overlay:visibility-changed',

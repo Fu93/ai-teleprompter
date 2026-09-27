@@ -95,5 +95,12 @@ await overlay.screenshot({ path: `${OUT}/10-overlay-pill.png` })
 await overlay.locator('[title*="展開完整面板"]').click()
 await overlay.waitForTimeout(1500)
 
+// 11: 貼鏡模式 — 窄條 + camera band
+await overlay.locator('[title*="貼鏡模式"]').click()
+await overlay.waitForTimeout(1500)
+await overlay.screenshot({ path: `${OUT}/11-overlay-lens.png` })
+await overlay.locator('[title*="退出貼鏡模式"]').click()
+await overlay.waitForTimeout(1500)
+
 console.log('captured:', OUT)
 await app.close()

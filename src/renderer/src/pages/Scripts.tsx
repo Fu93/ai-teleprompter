@@ -1,9 +1,9 @@
 import type { JSX } from "react"
 import { useEffect, useRef, useState } from 'react'
-import { FilePlus2, FolderOpen, Play, Save, Search, Trash2 } from 'lucide-react'
+import { FilePlus2, FolderOpen, Play, Save, Search, Square, Trash2, Video } from 'lucide-react'
 import { db } from '../lib/db'
 import type { Script } from '@shared/types'
-import { cn, formatDateTime } from '../lib/utils'
+import { cn, formatDateTime, formatDuration } from '../lib/utils'
 import { useSettings } from '../lib/store'
 
 function estimateMinutes(content: string, charsPerMin: number): string {
@@ -92,6 +92,71 @@ export default function Scripts(): JSX.Element {
     if (dirty) await save()
     await db.scripts.update(selectedId, { lastUsedAt: Date.now() })
     await window.api.overlayShow({ title: draft.title, content: draft.content })
+  }
+
+  // ── 錄影提詞(v3 錄影教練 lite):攝影機+麥克風 MediaRecorder,浮層對錄影隱形 ──
+  const [recording, setRecording] = useState(false)
+  const [recSec, setRecSec] = useState(0)
+  const [recMsg, setRecMsg] = useState<string | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const recChunksRef = useRef<Blob[]>([])
+  const recStreamRef = useRef<MediaStream | null>(null)
+  const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const pickMime = (): string => {
+    const candidates = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+    return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || ''
+  }
+
+  const startRecLaunch = async (): Promise<void> => {
+    if (selectedId == null || !draft.content.trim()) return
+    if (dirty) await save()
+    setRecMsg(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: { echoCancellation: true, noiseSuppression: true }
+      })
+      recStreamRef.current = stream
+      recChunksRef.current = []
+      const mimeType = pickMime()
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recChunksRef.current.push(e.data)
+      }
+      recorder.onstop = async () => {
+        recStreamRef.current?.getTracks().forEach((t) => t.stop())
+        recStreamRef.current = null
+        const blob = new Blob(recChunksRef.current, { type: mimeType || 'video/webm' })
+        const bytes = new Uint8Array(await blob.arrayBuffer())
+        const res = await window.api.saveRecording({
+          bytes,
+          defaultName: `提詞錄影-${formatDateTime(Date.now()).replace(/[\/: ]/g, '-')}.webm`
+        })
+        setRecMsg(res.ok ? `錄影已儲存:${res.filePath}` : `錄影未儲存(${res.error ?? 'canceled'})`)
+        setRecording(false)
+      }
+      recorder.start(500)
+      recorderRef.current = recorder
+      setRecording(true)
+      setRecSec(0)
+      recTimerRef.current = setInterval(() => setRecSec((s) => s + 1), 1000)
+      await db.scripts.update(selectedId, { lastUsedAt: Date.now() })
+      await window.api.overlayShow({ title: draft.title, content: draft.content })
+    } catch (err) {
+      recStreamRef.current?.getTracks().forEach((t) => t.stop())
+      recStreamRef.current = null
+      setRecMsg(`無法開啟攝影機:${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const stopRec = (): void => {
+    if (recTimerRef.current) {
+      clearInterval(recTimerRef.current)
+      recTimerRef.current = null
+    }
+    recorderRef.current?.stop()
+    recorderRef.current = null
   }
 
   const filtered = scripts.filter(
@@ -191,6 +256,21 @@ export default function Scripts(): JSX.Element {
               <button className="btn-primary text-xs" onClick={launch}>
                 <Play size={14} /> 開始提詞
               </button>
+              {recording ? (
+                <button className="btn-outline text-xs text-rose-450" onClick={stopRec}>
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-rose-450" />
+                  停止錄影 {formatDuration(recSec)}
+                </button>
+              ) : (
+                <button
+                  className="btn-outline text-xs"
+                  title="開啟攝影機錄下你的演出;浮層對錄影隱形,建議搭配浮層的貼鏡模式"
+                  onClick={() => void startRecLaunch()}
+                  disabled={!draft.content.trim()}
+                >
+                  <Video size={14} /> 錄影提詞
+                </button>
+              )}
             </div>
             <textarea
               className="flex-1 resize-none bg-transparent px-6 py-5 text-[15px] leading-relaxed text-ink-100 outline-none"
@@ -202,9 +282,12 @@ export default function Scripts(): JSX.Element {
               }}
             />
             {settings && (
-              <div className="border-t border-ink-800 px-6 py-2.5 text-[11px] text-ink-400">
-                浮層將以 {settings.overlay.fontSize}px、速度 {settings.overlay.speed} px/s 滾動 ·
-                於「設定」頁調整
+              <div className="flex items-center gap-3 border-t border-ink-800 px-6 py-2.5 text-[11px] text-ink-400">
+                <span>
+                  浮層將以 {settings.overlay.fontSize}px、速度 {settings.overlay.speed} px/s 滾動 ·
+                  於「設定」頁調整
+                </span>
+                {recMsg && <span className="truncate text-accent-300">{recMsg}</span>}
               </div>
             )}
           </>

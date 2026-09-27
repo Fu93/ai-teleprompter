@@ -14,6 +14,7 @@ import {
   Pause,
   Play,
   ScanEye,
+  ScanFace,
   Siren,
   Type,
   X
@@ -43,6 +44,8 @@ type FollowStatus = 'idle' | 'loading' | 'listening' | 'error'
 
 /** 進入藥丸模式前的視窗尺寸(收合時縮小視窗,展開時還原) */
 let expandedSize: { w: number; h: number } | null = null
+/** 貼鏡模式前的視窗尺寸 */
+let lensPrevSize: { w: number; h: number } | null = null
 
 const MODES: Array<{ id: OverlayDisplayMode; label: string; icon: typeof AlignJustify }> = [
   { id: 'scroll', label: '連續捲動', icon: AlignJustify },
@@ -240,6 +243,109 @@ function BulletSurface({
   )
 }
 
+/**
+ * 貼鏡模式表面(v3 TeleprompterGazeSurface 的幾何錨定 lite 版):
+ * 當前行鎖定在鏡頭下方 ~2° 視角的 camera band,下面依 0.62/0.38 淡出預讀。
+ * 文字距鏡頭 <5cm 時眼球偏轉角極小,錄出來就像直視鏡頭。
+ */
+function LensSurface({
+  model,
+  state,
+  displayMode
+}: {
+  model: ScriptModel
+  state: EngineState
+  displayMode: OverlayDisplayMode
+}): JSX.Element {
+  if (displayMode === 'bullet') {
+    const bullet = model.bullets[state.bulletIndex]
+    const next = model.bullets[state.bulletIndex + 1]
+    return (
+      <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
+        <div className="font-semibold leading-snug text-white reading-shadow" style={{ fontSize: 19 }}>
+          {bullet?.title ?? '—'}
+        </div>
+        {bullet && bullet.subPoints.length > 0 && (
+          <div className="mt-0.5 truncate text-[11px] text-ink-200" style={{ opacity: 0.8 }}>
+            {bullet.subPoints[0]}
+          </div>
+        )}
+        <div className="mt-auto truncate pb-1.5 text-[11px] text-ink-300" style={{ opacity: 0.62 }}>
+          下一點:{next?.title ?? '(結束)'}
+        </div>
+      </div>
+    )
+  }
+
+  if (displayMode === 'karaoke') {
+    const words = model.karaokeWordChunks[state.karaokeChunkIndex] ?? []
+    const nextChunk = model.karaokeChunks[state.karaokeChunkIndex + 1]
+    return (
+      <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
+        <div className="flex flex-wrap gap-x-1.5 font-semibold leading-snug reading-shadow" style={{ fontSize: 19 }}>
+          {words.map((w, i) => (
+            <span
+              key={i}
+              style={{
+                color:
+                  i === state.karaokeWordIndex
+                    ? '#fff'
+                    : i < state.karaokeWordIndex
+                      ? 'var(--color-accent-300)'
+                      : 'var(--color-ink-400)'
+              }}
+            >
+              {w}
+            </span>
+          ))}
+        </div>
+        <div className="mt-auto truncate pb-1.5 text-[11px] text-ink-300" style={{ opacity: 0.62 }}>
+          下一詞組:{nextChunk ?? '(結束)'}
+        </div>
+      </div>
+    )
+  }
+
+  // phrase / scroll:句子 band + 短語高亮
+  const phrases = model.phrases[state.sentenceIndex] ?? []
+  const nextSentence = model.sentences[state.sentenceIndex + 1] ?? null
+  const upcoming = model.sentences[state.sentenceIndex + 2] ?? null
+  return (
+    <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
+      <div className="flex flex-wrap gap-x-2 font-medium leading-snug reading-shadow" style={{ fontSize: 19 }}>
+        {phrases.map((p, i) => (
+          <span
+            key={i}
+            style={{
+              color: i === state.phraseIndex ? '#fff' : undefined,
+              opacity:
+                i === state.phraseIndex
+                  ? 1
+                  : i === state.phraseIndex + 1
+                    ? 0.62
+                    : i < state.phraseIndex
+                      ? 0.22
+                      : 0.38
+            }}
+          >
+            {p.text}
+          </span>
+        ))}
+      </div>
+      <div className="mt-auto space-y-0.5 pb-1.5">
+        <div className="truncate text-[12px] text-ink-200" style={{ opacity: 0.62 }}>
+          下一句:{nextSentence ?? '—'}
+        </div>
+        {upcoming && (
+          <div className="truncate text-[11px] text-ink-300" style={{ opacity: 0.38 }}>
+            再下一句:{upcoming}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function KaraokeSurface({
   model,
   state,
@@ -248,8 +354,7 @@ function KaraokeSurface({
   model: ScriptModel
   state: EngineState
   fontSize: number
-}): JSX.Element {
-  const words = model.karaokeWordChunks[state.karaokeChunkIndex] ?? []
+}): JSX.Element {  const words = model.karaokeWordChunks[state.karaokeChunkIndex] ?? []
   const totalChunks = model.karaokeChunks.length
 
   return (
@@ -513,6 +618,16 @@ export default function OverlayApp(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey)
   }, [controls, displayMode])
 
+  // 貼鏡模式提示(每次開啟顯示 6 秒)
+  const [lensHint, setLensHint] = useState(false)
+  const lensOn = o?.lensMode ?? false
+  useEffect(() => {
+    if (!lensOn) return
+    setLensHint(true)
+    const t = setTimeout(() => setLensHint(false), 6000)
+    return () => clearTimeout(t)
+  }, [lensOn])
+
   if (!o || !state) {
     return <div className="h-full" />
   }
@@ -535,6 +650,19 @@ export default function OverlayApp(): JSX.Element {
     const size = expandedSize ?? { w: 720, h: 260 }
     void window.api.overlaySetSize(size.w, size.h)
     void patchOverlay({ compact: false })
+  }
+
+  // ── 貼鏡模式:窄條視窗貼近攝影機,當前行鎖定鏡頭下方 ~2° 視角 ──
+  const enterLens = (): void => {
+    if (o.compact) exitCompact()
+    lensPrevSize = { w: o.width, h: o.height }
+    void window.api.overlaySetSize(420, 170)
+    void patchOverlay({ lensMode: true })
+  }
+  const exitLens = (): void => {
+    const size = lensPrevSize ?? { w: 720, h: 260 }
+    void window.api.overlaySetSize(size.w, size.h)
+    void patchOverlay({ lensMode: false })
   }
 
   if (o.compact) {
@@ -591,6 +719,52 @@ export default function OverlayApp(): JSX.Element {
         >
           <Maximize2 size={12} />
         </button>
+      </div>
+    )
+  }
+
+  // ── 貼鏡模式渲染:精簡工具列 + camera band ──
+  if (o.lensMode) {
+    return (
+      <div
+        className="glass-overlay relative flex h-full flex-col overflow-hidden rounded-2xl"
+        style={{ background: `rgba(12, 14, 20, ${Math.max(0.25, Math.min(0.9, o.opacity))})` }}
+      >
+        <div
+          className="flex h-9 shrink-0 items-center gap-1 border-b border-white/10 px-2"
+          style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+        >
+          <span
+            className={cn('h-1.5 w-1.5 rounded-full', playing ? 'bg-emerald-500' : 'bg-ink-600')}
+          />
+          <span className="flex-1" />
+          <div
+            className="flex items-center gap-0.5"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          >
+            <ToolBtn title="退出貼鏡模式" active onClick={exitLens}>
+              <ScanFace size={13} />
+            </ToolBtn>
+            <ToolBtn title="Panic 救援(Alt+P)" active={panicPhase !== 'idle'} onClick={triggerPanic}>
+              <Siren size={13} />
+            </ToolBtn>
+            <ToolBtn title={playing ? '暫停' : '播放'} active={playing} onClick={controls.toggle}>
+              {playing ? <Pause size={13} /> : <Play size={13} />}
+            </ToolBtn>
+            <ToolBtn title="隱藏(Ctrl+Alt+T 可再開)" onClick={() => void window.api.overlayHide()}>
+              <X size={13} />
+            </ToolBtn>
+          </div>
+        </div>
+        <LensSurface model={model} state={state} displayMode={displayMode} />
+        {lensHint && (
+          <div className="pointer-events-none absolute inset-x-3 top-11 z-10 rounded-full bg-black/60 px-3 py-1 text-center text-[10px] text-ink-200">
+            把這條貼到攝影機 5cm 內 — 眼神會自然對準鏡頭,錄起來不像看稿
+          </div>
+        )}
+        {panicPhase !== 'idle' && (
+          <RescueCard phase={panicPhase} rescue={rescue} errorMsg={errorMsg} onDismiss={dismissRescue} />
+        )}
       </div>
     )
   }
@@ -655,6 +829,15 @@ export default function OverlayApp(): JSX.Element {
           {/* 收合成藥丸 */}
           <ToolBtn title="收合成藥丸(低存在感)" onClick={enterCompact}>
             <Minimize2 size={13} />
+          </ToolBtn>
+
+          {/* 貼鏡模式 */}
+          <ToolBtn
+            title="貼鏡模式:貼近攝影機 5cm 內,眼神自然對準鏡頭(建議搭配逐句短語)"
+            active={o.lensMode}
+            onClick={enterLens}
+          >
+            <ScanFace size={13} />
           </ToolBtn>
 
           {/* 語音跟讀(scroll 模式限定):唸到哪、捲到哪 */}

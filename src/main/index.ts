@@ -387,6 +387,18 @@ function registerIpc(): void {
     }
   })
 
+  // ---- 錄影存檔 ----
+  ipcMain.handle(IPC.SaveRecording, async (_e, args: { bytes: Uint8Array; defaultName: string }) => {
+    if (!mainWindow) return { ok: false, error: 'no-window' }
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: args.defaultName,
+      filters: [{ name: '影片', extensions: ['webm', 'mp4'] }]
+    })
+    if (canceled || !filePath) return { ok: false, error: 'canceled' }
+    await writeFile(filePath, Buffer.from(args.bytes))
+    return { ok: true, filePath }
+  })
+
   // ---- 匯出檔案 ----
   ipcMain.handle(IPC.ExportFile, async (_e, args: { defaultName: string; content: string }) => {
     if (!mainWindow) return { ok: false, error: 'no-window' }

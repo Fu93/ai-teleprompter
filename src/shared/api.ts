@@ -104,4 +104,6 @@ export interface Api {
   // 工具
   appInfo(): Promise<AppInfo>
   exportFile(args: { defaultName: string; content: string }): Promise<{ ok: boolean; filePath?: string; error?: string }>
+  /** 錄影存檔:彈出儲存對話框寫入位元組 */
+  saveRecording(args: { bytes: Uint8Array; defaultName: string }): Promise<{ ok: boolean; filePath?: string; error?: string }>
 }
