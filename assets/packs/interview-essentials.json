@@ -1,0 +1,39 @@
+{
+  "id": "flowprompt.interview-essentials",
+  "name": "Interview Essentials",
+  "version": "1.0.0",
+  "author": "FlowPrompt Team",
+  "type": "scene",
+  "description": "STAR-method response templates and confidence-building phrases for job interviews.",
+  "tags": ["interview", "star-method"],
+  "locale": "en",
+  "scenes": [
+    {
+      "key": "behavioral",
+      "label": "Behavioral Question",
+      "tone": "professional",
+      "tempo": "medium",
+      "lengthBudget": 90,
+      "riskLevel": "low",
+      "turns": 3,
+      "templates": [
+        "Sure — let me walk you through a specific situation. A few years ago, my team faced a similar challenge, and here's what I did...",
+        "The result was a 30% improvement in delivery time, and the process is still used today.",
+        "I think the lesson here is that clear communication and ownership are more important than the specific tools."
+      ]
+    },
+    {
+      "key": "salary",
+      "label": "Salary Discussion",
+      "tone": "professional",
+      "tempo": "slow",
+      "lengthBudget": 80,
+      "riskLevel": "high",
+      "turns": 2,
+      "templates": [
+        "I'd like to focus on the full compensation picture — base, equity, and growth opportunities — before putting a specific number down.",
+        "Based on my research and experience, I would expect a total compensation in the range of X to Y. Is that aligned with the budget for this role?"
+      ]
+    }
+  ]
+}

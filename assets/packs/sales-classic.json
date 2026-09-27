@@ -1,0 +1,71 @@
+{
+  "id": "flowprompt.sales-classic",
+  "name": "Sales Classic",
+  "version": "1.0.0",
+  "author": "FlowPrompt Team",
+  "type": "scene",
+  "description": "Classic B2B sales call scenarios with objection-handling templates.",
+  "tags": ["sales", "b2b", "objection-handling"],
+  "locale": "en",
+  "scenes": [
+    {
+      "key": "discovery",
+      "label": "Discovery Call",
+      "tone": "empathic",
+      "tempo": "medium",
+      "lengthBudget": 70,
+      "riskLevel": "low",
+      "turns": 4,
+      "templates": [
+        "Could you walk me through how your team currently handles this challenge?",
+        "What's the biggest pain point you are trying to solve in the next 90 days?",
+        "I appreciate you sharing that — let me ask one follow-up: who else on your team would be involved in this decision?",
+        "That's a fair concern. Many of our customers felt the same way before they ran a 14-day pilot."
+      ]
+    },
+    {
+      "key": "objection-price",
+      "label": "Objection: Price",
+      "tone": "empathic",
+      "tempo": "slow",
+      "lengthBudget": 90,
+      "riskLevel": "medium",
+      "turns": 3,
+      "templates": [
+        "I hear you — cost is always a real consideration. Let me reframe it: what would it cost your team to keep doing things the current way for another six months?",
+        "We can structure this in two phases so the upfront commitment is smaller.",
+        "If we can show a 3x ROI in the first quarter, would that change the conversation?"
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "id": "rapport-1",
+      "label": "Acknowledge then redirect",
+      "text": "I appreciate you raising that. Before I answer, can I ask — what would an ideal outcome look like for you?",
+      "scene": "discovery"
+    },
+    {
+      "id": "objection-acknowledge",
+      "label": "Acknowledge without conceding",
+      "text": "That is a completely fair point. Many of our best customers asked the same thing.",
+      "scene": "objection-price"
+    }
+  ],
+  "prompts": [
+    {
+      "id": "cold-call-intro",
+      "title": "Cold Call — 30 second intro",
+      "description": "Quick opener for cold outbound calls",
+      "body": "Hi {name}, this is {rep} from {company}. The reason I'm calling is that we help {industry} teams cut their {pain} by about 40%. Do you have 30 seconds for me to share how?",
+      "tags": ["cold-call", "intro"]
+    },
+    {
+      "id": "followup-no-reply",
+      "title": "Follow-up after no reply",
+      "description": "Re-engagement email template",
+      "body": "Hi {name}, I reached out last week about {topic}. I know inboxes get noisy — would a 10-minute call on Thursday or Friday work better for you?",
+      "tags": ["followup", "email"]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+appId: tw.nn201.ai-teleprompter
+productName: AI 提詞機
+directories:
+  output: dist
+files:
+  - out/**
+  - '!node_modules/**'
+asar: true
+compression: maximum
+win:
+  target: nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  unicode: true
+  shortcutName: AI 提詞機

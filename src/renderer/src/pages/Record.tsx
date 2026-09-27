@@ -1,0 +1,514 @@
+import type { JSX } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  Loader2,
+  Mic,
+  MonitorSpeaker,
+  Play,
+  Save,
+  Sparkles,
+  Square,
+  Trash2
+} from 'lucide-react'
+import type { MeetingSession, MeetingSummary, TranscriptSegment } from '@shared/types'
+import { db } from '../lib/db'
+import { useSettings } from '../lib/store'
+import { cn, formatDateTime, formatDuration } from '../lib/utils'
+import { aiChat, extractJson } from '../lib/ai'
+import { AudioSegmenter } from '../lib/audio/segmenter'
+import { WhisperClient, WHISPER_MODELS, type WhisperModelKey } from '../lib/audio/whisperClient'
+import { encodeWav } from '../lib/audio/wav'
+
+type ModelState = {
+  status: 'none' | 'loading' | 'ready' | 'error'
+  progress: number
+  file: string
+  msg?: string
+}
+
+export default function Record(): JSX.Element {
+  const { settings } = useSettings()
+  const [recording, setRecording] = useState(false)
+  const [wantMic, setWantMic] = useState(true)
+  const [wantSys, setWantSys] = useState(false)
+  const [micLevel, setMicLevel] = useState(0)
+  const [sysLevel, setSysLevel] = useState(0)
+  const [segments, setSegments] = useState<TranscriptSegment[]>([])
+  const [elapsed, setElapsed] = useState(0)
+  const [title, setTitle] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [model, setModel] = useState<ModelState>({ status: 'none', progress: 0, file: '' })
+  const [saving, setSaving] = useState(false)
+  const [sessions, setSessions] = useState<MeetingSession[]>([])
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [aiBusyId, setAiBusyId] = useState<number | null>(null)
+  const [aiError, setAiError] = useState<string | null>(null)
+
+  const whisperRef = useRef<WhisperClient | null>(null)
+  const segsRef = useRef<TranscriptSegment[]>([])
+  const startedAtRef = useRef(0)
+  const streamsRef = useRef<{ mic?: MediaStream; sys?: MediaStream }>({})
+  const segmentersRef = useRef<{ mic?: AudioSegmenter; sys?: AudioSegmenter }>({})
+  const transcriptBoxRef = useRef<HTMLDivElement>(null)
+  const titleRef = useRef('')
+  titleRef.current = title
+
+  const engine = settings?.stt.engine ?? 'local'
+  const modelKey = (settings?.stt.localModel ?? 'base') as WhisperModelKey
+
+  const refreshSessions = useCallback(async (): Promise<void> => {
+    setSessions(await db.sessions.orderBy('startedAt').reverse().limit(15).toArray())
+  }, [])
+
+  useEffect(() => {
+    void refreshSessions()
+  }, [refreshSessions])
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (startedAtRef.current > 0) setElapsed((Date.now() - startedAtRef.current) / 1000)
+    }, 500)
+    return () => clearInterval(t)
+  }, [])
+
+  // 自動捲動
+  useEffect(() => {
+    const el = transcriptBoxRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [segments])
+
+  const ensureWhisper = async (): Promise<void> => {
+    if (!whisperRef.current) {
+      const client = new WhisperClient()
+      client.onProgress = (p) => {
+        if (p.status === 'progress' || p.status === 'initiate') {
+          setModel((m) =>
+            m.status === 'loading'
+              ? { ...m, progress: p.progress ?? m.progress, file: p.file ?? m.file }
+              : m
+          )
+        }
+      }
+      client.onStatus = (message) => setModel((m) => ({ ...m, msg: message }))
+      whisperRef.current = client
+    }
+    const client = whisperRef.current
+    if (!client.isLoaded()) {
+      setModel({ status: 'loading', progress: 0, file: '' })
+      try {
+        const device = await client.load(modelKey)
+        setModel({ status: 'ready', progress: 100, file: '', msg: device === 'webgpu' ? 'WebGPU 加速' : 'CPU 模式' })
+      } catch (err) {
+        setModel({ status: 'error', progress: 0, file: '', msg: err instanceof Error ? err.message : String(err) })
+        throw err
+      }
+    } else {
+      setModel((m) => (m.status === 'ready' ? m : { ...m, status: 'ready', progress: 100 }))
+    }
+  }
+
+  const transcribeSegment = async (audio: Float32Array, sr: number, speaker: 'me' | 'them'): Promise<void> => {
+    if (!settings) return
+    try {
+      let text = ''
+      if (settings.stt.engine === 'local') {
+        await ensureWhisper()
+        text = await whisperRef.current!.transcribe(audio, settings.stt.language)
+      } else {
+        const { baseUrl, apiKey, model: m } = settings.stt.cloud
+        if (!baseUrl || !m) throw new Error('請先在設定頁填入雲端語音 API 的 Base URL 與模型')
+        const res = await window.api.cloudTranscribe({
+          baseUrl,
+          apiKey,
+          model: m,
+          audio: encodeWav(audio, sr),
+          language: settings.stt.language
+        })
+        if (!res.ok) throw new Error(res.error ?? '語音辨識失敗')
+        text = res.text ?? ''
+      }
+      if (!text.trim()) return
+      const end = (Date.now() - startedAtRef.current) / 1000
+      const seg: TranscriptSegment = {
+        speaker,
+        text: text.trim(),
+        start: Math.max(0, end - audio.length / sr),
+        end
+      }
+      segsRef.current = [...segsRef.current, seg]
+      setSegments(segsRef.current)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const start = async (): Promise<void> => {
+    setError(null)
+    if (!wantMic && !wantSys) {
+      setError('請至少選擇一個音訊來源')
+      return
+    }
+    if (settings?.stt.engine === 'local') {
+      try {
+        await ensureWhisper()
+      } catch {
+        return
+      }
+    }
+    segsRef.current = []
+    setSegments([])
+    startedAtRef.current = Date.now()
+    setElapsed(0)
+
+    try {
+      if (wantMic) {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        })
+        streamsRef.current.mic = stream
+        segmentersRef.current.mic = new AudioSegmenter({
+          onSegment: (a, sr) => void transcribeSegment(a, sr, 'me'),
+          onLevel: setMicLevel,
+          threshold: 0.01
+        })
+        await segmentersRef.current.mic.start(stream)
+      }
+      if (wantSys) {
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+        stream.getVideoTracks().forEach((t) => t.stop()) // 只留音訊
+        if (stream.getAudioTracks().length === 0) {
+          stream.getTracks().forEach((t) => t.stop())
+          throw new Error('系統音訊擷取被取消或不可用')
+        }
+        streamsRef.current.sys = stream
+        segmentersRef.current.sys = new AudioSegmenter({
+          onSegment: (a, sr) => void transcribeSegment(a, sr, 'them'),
+          onLevel: setSysLevel,
+          threshold: 0.018
+        })
+        await segmentersRef.current.sys.start(stream)
+      }
+      setRecording(true)
+    } catch (err) {
+      stopAll()
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const stopAll = (): void => {
+    segmentersRef.current.mic?.stop()
+    segmentersRef.current.sys?.stop()
+    streamsRef.current.mic?.getTracks().forEach((t) => t.stop())
+    streamsRef.current.sys?.getTracks().forEach((t) => t.stop())
+    segmentersRef.current = {}
+    streamsRef.current = {}
+    setMicLevel(0)
+    setSysLevel(0)
+  }
+
+  const stop = async (): Promise<void> => {
+    setRecording(false)
+    stopAll()
+    if (segsRef.current.length > 0) {
+      setSaving(true)
+      try {
+        const startedAt = startedAtRef.current
+        await db.sessions.add({
+          title: titleRef.current.trim() || `會議 ${formatDateTime(startedAt)}`,
+          startedAt,
+          endedAt: Date.now(),
+          segments: segsRef.current
+        })
+        await refreshSessions()
+      } finally {
+        setSaving(false)
+      }
+    }
+  }
+
+  const exportSession = async (s: MeetingSession): Promise<void> => {
+    const lines = [`# ${s.title}`, '', `時間：${formatDateTime(s.startedAt)}`, '']
+    if (s.summary) {
+      lines.push('## 摘要', s.summary.abstract, '', '## 重點')
+      s.summary.keyPoints.forEach((k) => lines.push(`- ${k}`))
+      lines.push('', '## 待辦')
+      s.summary.todos.forEach((t) => lines.push(`- [ ] ${t}`))
+      lines.push('')
+    }
+    lines.push('## 逐字稿')
+    s.segments.forEach((seg) => {
+      const who = seg.speaker === 'me' ? '我' : '對方'
+      lines.push(`**[${formatDuration(seg.start)}] ${who}**：${seg.text}`)
+    })
+    await window.api.exportFile({
+      defaultName: `${s.title.replace(/[\\/:*?"<>|]/g, '_')}.md`,
+      content: lines.join('\n')
+    })
+  }
+
+  const removeSession = async (id?: number): Promise<void> => {
+    if (id == null) return
+    await db.sessions.delete(id)
+    await refreshSessions()
+  }
+
+  const generateSummary = async (s: MeetingSession): Promise<void> => {
+    if (!settings || s.id == null) return
+    setAiError(null)
+    setAiBusyId(s.id)
+    try {
+      const transcript = s.segments
+        .map((seg) => `[${seg.speaker === 'me' ? '我' : '對方'}] ${seg.text}`)
+        .join('\n')
+        .slice(-8000)
+      const raw = await aiChat(settings, [
+        {
+          role: 'system',
+          content:
+            '你是專業的會議助理。只輸出 JSON，不要加任何說明或程式碼圍籬。所有內容使用繁體中文。'
+        },
+        {
+          role: 'user',
+          content: `根據以下會議逐字稿，輸出 JSON，格式：{"abstract":"三到五句的會議摘要","keyPoints":["重要討論重點"],"todos":["待辦事項，可含負責人"],"followUps":["建議跟進或追問的事項"]}\n\n逐字稿：\n${transcript}`
+        }
+      ])
+      const summary = extractJson<MeetingSummary>(raw)
+      const clean: MeetingSummary = {
+        abstract: summary.abstract ?? '',
+        keyPoints: summary.keyPoints ?? [],
+        todos: summary.todos ?? [],
+        followUps: summary.followUps ?? [],
+        generatedAt: Date.now(),
+        model: settings.ai.ollama.model
+      }
+      await db.sessions.update(s.id, { summary: clean })
+      await refreshSessions()
+      setExpandedId(s.id)
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAiBusyId(null)
+    }
+  }
+
+  return (
+    <div className="mx-auto flex h-full max-w-4xl flex-col px-8 py-6">
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-xl font-bold">錄音轉錄</h1>
+        <div className="flex items-center gap-2 text-xs text-ink-400">
+          {engine === 'local' ? (
+            <>
+              <span className="font-mono">Whisper {modelKey}</span>
+              {model.status === 'ready' && (
+                <span className="text-emerald-400">已載入{model.msg ? ` · ${model.msg}` : ''}</span>
+              )}
+            </>
+          ) : (
+            <span>雲端 API</span>
+          )}
+        </div>
+      </div>
+
+      {/* 控制列 */}
+      <div className="card mb-4 flex flex-wrap items-center gap-4 p-4">
+        {!recording && (
+          <>
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input type="checkbox" checked={wantMic} onChange={(e) => setWantMic(e.target.checked)} className="accent-accent-500" />
+              <Mic size={15} /> 我的麥克風
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 text-sm" title="擷取系統播放中的聲音（會議對方、影片等），選擇分享畫面即可">
+              <input type="checkbox" checked={wantSys} onChange={(e) => setWantSys(e.target.checked)} className="accent-accent-500" />
+              <MonitorSpeaker size={15} /> 系統音訊（對方）
+            </label>
+            <input
+              className="input w-52 text-xs"
+              placeholder="會議名稱（可留空）"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+            <button className="btn-primary ml-auto" onClick={start}>
+              <Play size={14} /> 開始聆聽
+            </button>
+          </>
+        )}
+        {recording && (
+          <>
+            <span className="flex items-center gap-2 text-sm font-medium text-rose-450">
+              <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-rose-450" />
+              聆聽中 {formatDuration(elapsed)}
+            </span>
+            <div className="flex items-center gap-2" title="麥克風音量">
+              <Mic size={13} className="text-ink-400" />
+              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-ink-800">
+                <div className="h-full bg-emerald-500 transition-[width] duration-100" style={{ width: `${micLevel * 100}%` }} />
+              </div>
+            </div>
+            {wantSys && (
+              <div className="flex items-center gap-2" title="系統音訊音量">
+                <MonitorSpeaker size={13} className="text-ink-400" />
+                <div className="h-1.5 w-24 overflow-hidden rounded-full bg-ink-800">
+                  <div className="h-full bg-sky-500 transition-[width] duration-100" style={{ width: `${sysLevel * 100}%` }} />
+                </div>
+              </div>
+            )}
+            <button className="btn-primary ml-auto" onClick={stop} disabled={saving}>
+              {saving ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}
+              {saving ? '儲存中…' : '停止並儲存'}
+            </button>
+          </>
+        )}
+      </div>
+
+      {model.status === 'loading' && (
+        <div className="card mb-4 p-4">
+          <div className="mb-2 flex items-center gap-2 text-xs text-ink-300">
+            <Download size={13} /> 下載 Whisper {modelKey} 模型（首次需要，之後會快取）
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-ink-800">
+            <div className="h-full bg-accent-500 transition-[width]" style={{ width: `${model.progress}%` }} />
+          </div>
+          <div className="mt-1.5 font-mono text-[10px] text-ink-400">{model.file} {model.progress.toFixed(0)}%</div>
+        </div>
+      )}
+      {model.msg && model.status !== 'ready' && (
+        <div className="mb-4 text-xs text-amber-450">{model.msg}</div>
+      )}
+      {error && (
+        <div className="mb-4 rounded-lg border border-rose-450/30 bg-rose-450/10 px-4 py-2.5 text-xs text-rose-450">
+          {error}
+        </div>
+      )}
+
+      {/* 逐字稿 */}
+      <div ref={transcriptBoxRef} className="card mb-4 min-h-0 flex-1 overflow-y-auto p-4">
+        {segments.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-center text-xs leading-relaxed text-ink-400">
+            {recording ? '等待說話…' : '按下「開始聆聽」後，這裡會即時出現逐字稿'}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {segments.map((seg, i) => (
+              <div key={i} className="flex gap-3">
+                <div className="w-24 shrink-0 pt-0.5 text-right font-mono text-[10px] text-ink-400">
+                  {formatDuration(seg.start)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span
+                    className={cn(
+                      'mr-2 rounded px-1.5 py-0.5 text-[10px]',
+                      seg.speaker === 'me' ? 'bg-accent-500/20 text-accent-300' : 'bg-sky-500/20 text-sky-300'
+                    )}
+                  >
+                    {seg.speaker === 'me' ? '我' : '對方'}
+                  </span>
+                  <span className="text-sm leading-relaxed">{seg.text}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 歷史 */}
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-medium text-ink-200">
+            <Save size={14} /> 最近的會議紀錄
+          </div>
+          {aiError && <div className="text-[11px] text-rose-450">AI 摘要失敗：{aiError}</div>}
+        </div>
+        {sessions.length === 0 ? (
+          <div className="text-xs text-ink-400">還沒有紀錄</div>
+        ) : (
+          <div className="space-y-2">
+            {sessions.map((s) => (
+              <div key={s.id} className="card overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-2.5">
+                  <button
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
+                    onClick={() => setExpandedId(expandedId === s.id ? null : (s.id ?? null))}
+                  >
+                    {expandedId === s.id ? (
+                      <ChevronDown size={13} className="shrink-0 text-ink-400" />
+                    ) : (
+                      <ChevronRight size={13} className="shrink-0 text-ink-400" />
+                    )}
+                    <div className="min-w-0">
+                      <div className="truncate text-sm">{s.title}</div>
+                      <div className="text-[11px] text-ink-400">
+                        {formatDateTime(s.startedAt)} · {s.segments.length} 段 ·{' '}
+                        {s.summary ? '已生成摘要' : '未摘要'}
+                      </div>
+                    </div>
+                  </button>
+                  <div className="flex shrink-0 gap-1">
+                    <button
+                      className="btn-ghost text-xs text-accent-300"
+                      onClick={() => generateSummary(s)}
+                      disabled={aiBusyId !== null}
+                    >
+                      {aiBusyId === s.id ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Sparkles size={12} />
+                      )}
+                      {s.summary ? '重新摘要' : 'AI 摘要'}
+                    </button>
+                    <button className="btn-ghost text-xs" onClick={() => exportSession(s)}>
+                      匯出
+                    </button>
+                    <button className="btn-ghost text-rose-450" onClick={() => removeSession(s.id)}>
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+                {expandedId === s.id && s.summary && (
+                  <div className="space-y-3 border-t border-ink-800 bg-ink-850/50 px-5 py-4 text-xs leading-relaxed">
+                    <div>
+                      <div className="mb-1 font-medium text-accent-300">摘要</div>
+                      {s.summary.abstract}
+                    </div>
+                    {s.summary.keyPoints.length > 0 && (
+                      <div>
+                        <div className="mb-1 font-medium text-accent-300">重點</div>
+                        <ul className="list-inside list-disc space-y-0.5 text-ink-200">
+                          {s.summary.keyPoints.map((k, i) => (
+                            <li key={i}>{k}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {s.summary.todos.length > 0 && (
+                      <div>
+                        <div className="mb-1 font-medium text-accent-300">待辦</div>
+                        <ul className="space-y-0.5 text-ink-200">
+                          {s.summary.todos.map((t, i) => (
+                            <li key={i}>☐ {t}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {s.summary.followUps.length > 0 && (
+                      <div>
+                        <div className="mb-1 font-medium text-accent-300">建議跟進</div>
+                        <ul className="list-inside list-disc space-y-0.5 text-ink-200">
+                          {s.summary.followUps.map((t, i) => (
+                            <li key={i}>{t}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
