@@ -19,6 +19,7 @@ import { speak, stopSpeaking, warmUpVoices } from '../lib/tts'
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { encodeWav } from '../lib/audio/wav'
+import { analyzePracticeRun } from '../lib/session-intelligence'
 
 const PRACTICE_TYPES = ['行為面試', '技術面試', '自我介紹', '案例簡報', '銷售情境'] as const
 
@@ -595,6 +596,50 @@ export default function Practice(): JSX.Element {
           </div>
         </div>
       )}
+      {/* 量化回饋(語速/時長) */}
+      {(() => {
+        const pa = analyzePracticeRun(answers)
+        if (pa.perAnswer.length === 0) return null
+        const totalSec = pa.perAnswer.reduce((a, b) => a + b.durationSec, 0)
+        return (
+          <div className="card mb-4 p-4">
+            <div className="mb-2.5 text-xs font-medium text-ink-300">量化回饋</div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-lg border border-ink-800 bg-ink-850/60 p-3">
+                <div className="text-[10px] text-ink-400">平均語速</div>
+                <div className="mt-0.5 text-lg font-semibold">{pa.avgCpm} <span className="text-[10px] text-ink-400">字/分</span></div>
+                <div className="text-[10px] text-ink-400">理想區間 150–260</div>
+              </div>
+              <div className="rounded-lg border border-ink-800 bg-ink-850/60 p-3">
+                <div className="text-[10px] text-ink-400">回答總時長</div>
+                <div className="mt-0.5 text-lg font-semibold">{formatDuration(totalSec)}</div>
+                <div className="text-[10px] text-ink-400">{pa.perAnswer.length} 題有效回答</div>
+              </div>
+              <div className="rounded-lg border border-ink-800 bg-ink-850/60 p-3">
+                <div className="text-[10px] text-ink-400">各題語速</div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {pa.perAnswer.map((p) => (
+                    <span
+                      key={p.index}
+                      title={`第 ${p.index + 1} 題 · ${formatDuration(p.durationSec)}`}
+                      className={cn(
+                        'rounded px-1.5 py-0.5 font-mono text-[10px]',
+                        p.cpm > 320
+                          ? 'bg-rose-450/15 text-rose-450'
+                          : p.cpm < 120
+                            ? 'bg-amber-450/15 text-amber-450'
+                            : 'bg-emerald-500/15 text-emerald-400'
+                      )}
+                    >
+                      {p.cpm}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
       {run?.overallFeedback && (
         <div className="card mb-4 p-6 text-sm leading-relaxed">
           <div className="mb-2 flex items-center gap-2 font-medium text-accent-300">

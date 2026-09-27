@@ -1,10 +1,11 @@
 import type { JSX } from "react"
 import { useEffect, useState } from 'react'
-import { AudioLines, Eye, GraduationCap, Play, ScrollText } from 'lucide-react'
+import { AudioLines, Eye, GraduationCap, Play, ScrollText, TrendingUp } from 'lucide-react'
 import { db } from '../lib/db'
-import type { Script } from '@shared/types'
+import type { MeetingSession, PracticeRun, Script } from '@shared/types'
 import { formatDateTime } from '../lib/utils'
 import { useSettings } from '../lib/store'
+import { analyzePracticeRun } from '../lib/session-intelligence'
 
 interface Props {
   onNavigate: (page: 'dashboard' | 'scripts' | 'record' | 'practice' | 'settings') => void
@@ -34,12 +35,34 @@ const MODES = [
   }
 ]
 
+/** 輕量 SVG 折線(無圖表庫依賴);value 範圍自動正規化 */
+function Sparkline({ values, stroke }: { values: number[]; stroke: string }): JSX.Element | null {
+  if (values.length < 2) return null
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const span = max - min || 1
+  const w = 120
+  const h = 32
+  const points = values
+    .map((v, i) => `${(i / (values.length - 1)) * w},${h - 3 - ((v - min) / span) * (h - 6)}`)
+    .join(' ')
+  return (
+    <svg width={w} height={h} className="overflow-visible">
+      <polyline points={points} fill="none" stroke={stroke} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 export default function Dashboard({ onNavigate }: Props): JSX.Element {
   const [recent, setRecent] = useState<Script[]>([])
+  const [sessions, setSessions] = useState<MeetingSession[]>([])
+  const [runs, setRuns] = useState<PracticeRun[]>([])
   const { settings, overlayVisible } = useSettings()
 
   useEffect(() => {
     db.scripts.orderBy('updatedAt').reverse().limit(4).toArray().then(setRecent)
+    db.sessions.orderBy('startedAt').reverse().limit(10).toArray().then(setSessions)
+    db.practiceRuns.orderBy('createdAt').reverse().limit(10).toArray().then(setRuns)
   }, [])
 
   const launchLatest = async (): Promise<void> => {
@@ -112,6 +135,67 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
           </div>
         )}
       </div>
+
+      {/* 成長軌跡(session intelligence) */}
+      {(sessions.length > 0 || runs.length > 0) && (
+        <div className="mt-8 card p-5">
+          <div className="mb-4 flex items-center gap-2 text-sm font-medium">
+            <TrendingUp size={15} className="text-emerald-400" />
+            成長軌跡
+          </div>
+          <div className="grid grid-cols-2 gap-6 md:grid-cols-4">
+            <div>
+              <div className="text-[10px] text-ink-400">會議場數</div>
+              <div className="mt-1 text-2xl font-semibold">{sessions.length}</div>
+              <div className="text-[10px] text-ink-400">
+                共 {Math.round(sessions.reduce((a, s) => a + (s.report?.durationSec ?? 0), 0) / 60)} 分鐘
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-ink-400">平均發言佔比</div>
+              {(() => {
+                const withRatio = sessions.filter((s) => s.report)
+                const avg =
+                  withRatio.length > 0
+                    ? Math.round(
+                        (withRatio.reduce((a, s) => a + (s.report?.talkRatio ?? 0), 0) / withRatio.length) * 100
+                      )
+                    : null
+                return <div className="mt-1 text-2xl font-semibold">{avg != null ? `${avg}%` : '—'}</div>
+              })()}
+              <div className="text-[10px] text-ink-400">目標約 4–6 成</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-ink-400">語速趨勢(字/分)</div>
+              <div className="mt-1 flex items-end gap-2">
+                <span className="text-2xl font-semibold">
+                  {sessions.find((s) => s.report?.myCpm)?.report?.myCpm ?? '—'}
+                </span>
+                <Sparkline
+                  values={[...sessions].reverse().map((s) => s.report?.myCpm ?? 0).filter((v) => v > 0)}
+                  stroke="#8f8cfa"
+                />
+              </div>
+              <div className="text-[10px] text-ink-400">最近 {Math.min(sessions.length, 10)} 場</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-ink-400">練習分數趨勢</div>
+              {(() => {
+                const oldestFirst = [...runs].reverse()
+                const scores = oldestFirst.map((r) => analyzePracticeRun(r.answers).scores).filter((s) => s.length > 0).map((s) => Math.round(s.reduce((a, b) => a + b, 0) / s.length))
+                const latest = scores.length > 0 ? scores[scores.length - 1] : null
+                return (
+                  <div className="mt-1 flex items-end gap-2">
+                    <span className="text-2xl font-semibold">{latest ?? '—'}</span>
+                    <Sparkline values={scores} stroke="#2dd4a7" />
+                  </div>
+                )
+              })()}
+              <div className="text-[10px] text-ink-400">共 {runs.length} 次練習</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {recent.length > 1 && (
         <div className="mt-8">

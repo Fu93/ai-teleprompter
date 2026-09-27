@@ -13,11 +13,12 @@ import {
   Square,
   Trash2
 } from 'lucide-react'
-import type { MeetingSession, MeetingSummary, TranscriptSegment } from '@shared/types'
+import type { MeetingSession, MeetingSummary, SessionReport, TranscriptSegment } from '@shared/types'
 import { db } from '../lib/db'
 import { useSettings } from '../lib/store'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
 import { aiChat, extractJson } from '../lib/ai'
+import { buildSessionReport } from '../lib/session-intelligence'
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, WHISPER_MODELS, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { encodeWav } from '../lib/audio/wav'
@@ -46,6 +47,7 @@ export default function Record(): JSX.Element {
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [aiBusyId, setAiBusyId] = useState<number | null>(null)
   const [aiError, setAiError] = useState<string | null>(null)
+  const [lastReport, setLastReport] = useState<SessionReport | null>(null)
 
   const whisperRef = useRef<WhisperClient | null>(null)
   const segsRef = useRef<TranscriptSegment[]>([])
@@ -140,6 +142,8 @@ export default function Record(): JSX.Element {
       }
       segsRef.current = [...segsRef.current, seg]
       setSegments(segsRef.current)
+      // 餵 main 的 liveContext:panic(Alt+P)才有「對方問了什麼」的上下文
+      void window.api.pushTranscript({ text: seg.text, speaker })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -216,11 +220,18 @@ export default function Record(): JSX.Element {
       setSaving(true)
       try {
         const startedAt = startedAtRef.current
+        const segments = segsRef.current
+        // 會話量化報告:與 session 一起存,供 Dashboard 趨勢使用
+        const report = buildSessionReport(segments, {
+          durationSec: (Date.now() - startedAt) / 1000
+        })
+        setLastReport(report)
         await db.sessions.add({
           title: titleRef.current.trim() || `會議 ${formatDateTime(startedAt)}`,
           startedAt,
           endedAt: Date.now(),
-          segments: segsRef.current
+          segments,
+          report
         })
         await refreshSessions()
       } finally {
@@ -412,6 +423,60 @@ export default function Record(): JSX.Element {
           </div>
         )}
       </div>
+
+      {/* 會後量化報告 */}
+      {!recording && lastReport && lastReport.durationSec > 0 && (
+        <div className="card mb-4 p-4">
+          <div className="mb-3 text-sm font-semibold">會後報告</div>
+          <div className="grid grid-cols-4 gap-3">
+            {[
+              { label: '時長', value: formatDuration(lastReport.durationSec) },
+              {
+                label: '發言佔比',
+                value: `${Math.round(lastReport.talkRatio * 100)}%`,
+                hint: `我 ${formatDuration(lastReport.mySec)} / 對方 ${formatDuration(lastReport.theirSec)}`
+              },
+              {
+                label: '我的語速',
+                value: lastReport.myCpm > 0 ? `${lastReport.myCpm}` : '—',
+                hint: lastReport.myCpm > 0 ? '字/分' : undefined
+              },
+              {
+                label: '語速穩定度',
+                value: `${lastReport.steadiness}`,
+                hint: `冷場 ${lastReport.gapCount} 次`
+              }
+            ].map((s) => (
+              <div key={s.label} className="rounded-lg border border-ink-800 bg-ink-850/60 p-3">
+                <div className="text-[10px] text-ink-400">{s.label}</div>
+                <div className="mt-0.5 text-lg font-semibold text-ink-100">{s.value}</div>
+                {s.hint && <div className="text-[10px] text-ink-400">{s.hint}</div>}
+              </div>
+            ))}
+          </div>
+          {lastReport.suggestions.length > 0 && (
+            <ul className="mt-3 space-y-1">
+              {lastReport.suggestions.map((sg, i) => (
+                <li key={i} className="flex items-start gap-2 text-xs leading-relaxed">
+                  <span
+                    className={cn(
+                      'mt-0.5 rounded px-1.5 py-0.5 text-[9px] shrink-0',
+                      sg.severity === 'high'
+                        ? 'bg-rose-450/15 text-rose-450'
+                        : sg.severity === 'medium'
+                          ? 'bg-amber-450/15 text-amber-450'
+                          : 'bg-ink-700 text-ink-300'
+                    )}
+                  >
+                    {sg.severity === 'high' ? '重要' : sg.severity === 'medium' ? '建議' : '參考'}
+                  </span>
+                  <span className="text-ink-200">{sg.message}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* 歷史 */}
       <div>

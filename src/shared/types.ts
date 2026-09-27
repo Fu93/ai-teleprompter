@@ -184,6 +184,36 @@ export interface RescuePayload {
   scene?: string
 }
 
+// ===== 會話量化報告(session intelligence)=====
+export interface SessionSuggestion {
+  severity: 'high' | 'medium' | 'low'
+  message: string
+}
+
+/** 由逐字稿段落計算的會後量化報告 */
+export interface SessionReport {
+  durationSec: number
+  mySec: number
+  theirSec: number
+  /** 我方發言佔比 0–1 */
+  talkRatio: number
+  /** 語音單位:CJK 字元各 1 + 拉丁詞各 1 */
+  myUnits: number
+  /** 我方語速:單位 / 我方實際發言分鐘 */
+  myCpm: number
+  turnCount: number
+  avgMyTurnSec: number
+  longestMyTurnSec: number
+  /** 超過 5 秒的冷場次數與總秒數 */
+  gapCount: number
+  gapTotalSec: number
+  theirQuestionCount: number
+  /** 0–100,語速穩定度 */
+  steadiness: number
+  suggestions: SessionSuggestion[]
+  generatedAt: number
+}
+
 // ===== 資料模型 =====
 export interface Script {
   id?: number
@@ -209,6 +239,7 @@ export interface MeetingSession {
   endedAt?: number
   segments: TranscriptSegment[]
   summary?: MeetingSummary
+  report?: SessionReport
 }
 
 export interface MeetingSummary {
