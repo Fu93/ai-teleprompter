@@ -83,7 +83,14 @@
 
 **驗收**:同一份講稿四種模式可切換,播放/暫停/速度/剩餘時間全模式可用。
 
-### Phase B — 音訊管線:會議即時轉錄(新專案 loopback × v3 管線架構)
+### Phase B — 音訊管線:會議即時轉錄(新專案 loopback × v3 管線架構)✅ 已完成(2026-09-27)
+
+> **實施記錄**:管線主體先行落地(雙來源轉錄、雲端/本地 STT、會後摘要、session report、panic 上下文接線);本輪補上最後一塊 turn-yield。
+> - **turn-yield「該你說話了」**:`src/main/context-engine/turnYield.ts` 純函數偵測器——問句/邀答語尾偵測(問號、繁中語尾助詞、英文啟動詞、繁中疑問詞+句號規則避免句中嵌入誤報、邀答句式)、非問句 ≥30 字長段給 peer_silence 資訊性提示、我方發言 90s 抑制、同句 25s/全域 15s 冷卻;17 個單元測試
+> - 接線:`context:push-transcript`(speaker==='them')→ main 評估 → 1.2s 防抖(等接續後半句)→ `context:turn-yield` 廣播 → 浮層 `useTurnYield`(6s 淡出、3s 防抖);我方語音跟讀開口即時收掉提示
+> - UI:展開浮層底部提示條/藥丸與貼鏡模式的「該你了」膠囊;工具列 Hand 按鈕即時開關(`overlay.turnYield`,預設開);SettingsPage 浮層區 Switch
+> - e2e:`turn-yield:對方問句經 IPC → 浮層顯示「該你說話了」提示`——真 IPC 全鏈路(pushTranscript → 偵測 → 廣播 → UI)
+
 這是兩個專案合體價值最大的一步:
 1. `AudioSegmenter`(已有)接 mic;新增第二條 loopback stream 接系統音(利用現有 `setDisplayMediaRequestHandler`)
 2. 移植 v3 `createStereoMixer` + `SpeakerMap` 思路:兩條 stream 分別轉錄後標 `speaker: 'me' | 'them'`(新專案 `TranscriptSegment` 型別已就位)——不必真合成雙聲道,分開送更簡單
@@ -93,7 +100,7 @@
 4. 移植 v3 turn-yield 邏輯:segmenter 的 `minSilenceMs` 靜音事件 + `QUESTION_PATTERNS`(對方問句結尾)→ 發 `TURN_CANDIDATE` → 浮層顯示「該你說話了」提示(對應 v3 的 useVAD/usePanicButton UI)
 5. `Record.tsx` 落地:即時雙欄逐字稿(me/them)+ 停止後用現有 `OllamaChat` 生成摘要(abstract/keyPoints/todos/followUps,`MeetingSummary` 型別已定義)+ Markdown 匯出(現有 `ExportFile` IPC)
 
-**驗收**:開一場 Google Meet,對方與自己的話分欄即時出現,停止後產出會議摘要。
+**驗收**:開一場 Google Meet,對方與自己的話分欄即時出現,停止後產出會議摘要;對方問句講完 → 浮層即時提示「該你說話了」(turn-yield ✅)。
 
 ### Phase C — Panic 救援 + 場景引擎(核心差異化)✅ 已完成(2026-09-27)
 

@@ -14,6 +14,11 @@ import { chatCompletion, testConnection, getUserKeys, setUserKeys, resolveProvid
 import { getScene, ConversationTracker, buildPanicSystemPrompt, pickFallbackTemplate } from './context-engine/scenes'
 import { buildPanicPrompt, parseRescueResponse, computeConfidence, structuredFallback } from './context-engine/panicAi'
 import { pushTranscript, getRecentContext } from './liveContext'
+import {
+  createTurnYieldState,
+  evaluateTurnYield,
+  recordTurnYield
+} from './context-engine/turnYield'
 import { listAllScenes } from './packs'
 
 // panic 的 provider 差異化 timeout(v3:Groq 900ms / Ollama 2500ms / 其他 1500ms)
@@ -28,9 +33,48 @@ function panicTimeoutMs(): number {
 let panicInFlight = false
 const conversation = new ConversationTracker(6)
 
+// turn-yield(Phase B):對方講完問句 → 提示「該你說話了」
+const turnYieldState = createTurnYieldState()
+let turnYieldTimer: ReturnType<typeof setTimeout> | null = null
+let turnYieldPending: { kind: 'turn' | 'peer_silence'; question: boolean } | null = null
+
 function deliverRescue(payload: RescuePayload): void {
   if (!overlayWindow || overlayWindow.isDestroyed()) setOverlayVisible(true)
   overlayWindow?.webContents.send(IPC.PanicRescue, payload)
+}
+
+function sendTurnYield(kind: 'turn' | 'peer_silence', question: boolean): void {
+  if (!settings.overlay.turnYield) return
+  if (!overlayWindow || overlayWindow.isDestroyed()) return
+  overlayWindow.webContents.send(IPC.TurnYieldSignal, { kind, question, at: Date.now() })
+}
+
+function cancelTurnYield(): void {
+  turnYieldPending = null
+  if (turnYieldTimer) {
+    clearTimeout(turnYieldTimer)
+    turnYieldTimer = null
+  }
+}
+
+/** 對方新段落 → 問句/長段評估;1.2s 防抖後提示浮層(等可能接續的後半句)。
+ *  turn 問句優先於 peer_silence(長段)——被問倒比「對方停頓」更值得提示 */
+function evaluateTurnYieldForSegment(text: string): void {
+  if (!settings.overlay.turnYield) return // 關閉時不評估也不記冷卻
+  const now = Date.now()
+  const result = evaluateTurnYield(turnYieldState, text, now)
+  if (!result) return
+  recordTurnYield(turnYieldState, result, now)
+  // turn 優先:已有 pending 時只升級不降級(peer_silence 不覆蓋 turn)
+  if (turnYieldPending?.kind === 'turn' && result.kind === 'peer_silence') return
+  turnYieldPending = { kind: result.kind, question: result.question }
+  if (turnYieldTimer) clearTimeout(turnYieldTimer)
+  turnYieldTimer = setTimeout(() => {
+    turnYieldTimer = null
+    if (!turnYieldPending) return
+    sendTurnYield(turnYieldPending.kind, turnYieldPending.question)
+    turnYieldPending = null
+  }, 1200)
 }
 
 async function handlePanic(): Promise<void> {
@@ -479,8 +523,14 @@ function registerIpc(): void {
   ipcMain.handle(IPC.ContextPushTranscript, (_e, args: { text: string; speaker?: 'me' | 'them' | 'unknown' }) => {
     const speaker = args.speaker ?? 'unknown'
     pushTranscript(args.text, speaker)
-    if (speaker === 'them') conversation.add('them', args.text)
-    else if (speaker === 'me') conversation.add('self', args.text)
+    if (speaker === 'them') {
+      conversation.add('them', args.text)
+      evaluateTurnYieldForSegment(args.text)
+    } else if (speaker === 'me') {
+      conversation.add('self', args.text)
+      // 我方發言:取消未發出的提示(你已在回話;顯示中的提示由 UI 層收掉)
+      cancelTurnYield()
+    }
     return true
   })
 

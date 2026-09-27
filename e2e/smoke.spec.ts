@@ -80,3 +80,28 @@ test('設定讀寫經 IPC 生效且含 scenario 區塊', async () => {
     await app.close()
   }
 })
+
+test('turn-yield:對方問句經 IPC → 浮層顯示「該你說話了」提示', async () => {
+  const { app, main } = await launchApp()
+  test.setTimeout(60_000)
+  try {
+    // 浮層視窗載入有先後 → 輸詢等待
+    await expect
+      .poll(() => app.windows().length, { timeout: 15_000, intervals: [500, 1_000, 2_000] })
+      .toBeGreaterThanOrEqual(2)
+    const overlay = app.windows().find((w) => w !== main)
+    expect(overlay).toBeTruthy()
+    await overlay!.waitForLoadState('domcontentloaded')
+
+    // 強制開啟(使用者可能關過;開關持久化在 settings.json)
+    await main.evaluate(() => window.api.setSettings({ overlay: { turnYield: true } }))
+    // 經真 IPC 推對方問句(與 Record 頁系統音訊轉錄相同的 context:push-transcript 路徑)
+    // main 偵測問句語尾 → 1.2s 防抖 → 廣播 context:turn-yield → 浮層提示
+    await main.evaluate(() =>
+      window.api.pushTranscript({ text: '可以請你介紹一下你自己嗎', speaker: 'them' })
+    )
+    await overlay!.waitForSelector('text=該你說話了', { timeout: 8_000 })
+  } finally {
+    await app.close()
+  }
+})

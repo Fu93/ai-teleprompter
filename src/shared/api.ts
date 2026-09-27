@@ -1,4 +1,4 @@
-import type { AppInfo, AppSettings, RescuePayload } from './types'
+import type { AppInfo, AppSettings, RescuePayload, TurnYieldPayload } from './types'
 
 export interface OverlayShowPayload {
   title?: string
@@ -99,6 +99,8 @@ export interface Api {
   sceneList(): Promise<SceneSummary[]>
   pushTranscript(args: { text: string; speaker?: 'me' | 'them' | 'unknown' }): Promise<boolean>
   panicTrigger(script?: string): Promise<boolean>
+  /** turn-yield:對方講完問句/長段(main → overlay) */
+  onTurnYield(cb: (payload: TurnYieldPayload) => void): Unsubscribe
   onPanicThinking(cb: () => void): Unsubscribe
   onPanicRescue(cb: (payload: RescuePayload) => void): Unsubscribe
   onPanicError(cb: (message: string) => void): Unsubscribe

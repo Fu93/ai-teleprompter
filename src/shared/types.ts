@@ -13,6 +13,8 @@ export interface OverlaySettings {
   lensMode: boolean
   /** 玻璃質感:Windows 11 嘗試啟用視窗後 acrylic 毛玻璃 */
   glass: boolean
+  /** turn-yield 提示:對方講完問句時浮層顯示「該你說話了」(Phase B) */
+  turnYield: boolean
   fontSize: number
   lineHeight: number
   speed: number // scroll 模式:px per second
@@ -97,6 +99,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     compact: false,
     lensMode: false,
     glass: true,
+    turnYield: true,
     fontSize: 30,
     lineHeight: 1.5,
     speed: 60,
@@ -186,8 +189,20 @@ export const IPC = {
   OllamaChatChunk: 'ai:ollama-chat-chunk',
   PanicThinking: 'panic:thinking',
   PanicRescue: 'panic:rescue',
-  PanicError: 'panic:error'
+  PanicError: 'panic:error',
+  /** turn-yield:對方講完問句 → 該你說話了(main → overlay) */
+  TurnYieldSignal: 'context:turn-yield'
 } as const
+
+// ===== turn-yield 提示(Phase B)=====
+export interface TurnYieldPayload {
+  /** 'turn' = 該你說話了;'peer_silence' = 對方已停頓 */
+  kind: 'turn' | 'peer_silence'
+  /** 觸媒句是否為問句/邀答語尾 */
+  question: boolean
+  /** 觸發時間戳(ms epoch),供 renderer 防抖 */
+  at: number
+}
 
 // ===== Panic 救援 =====
 export interface RescuePayload {

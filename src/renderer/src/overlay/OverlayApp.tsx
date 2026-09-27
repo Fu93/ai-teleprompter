@@ -6,9 +6,11 @@ import {
   ChevronLeft,
   ChevronRight,
   FlipHorizontal2,
+  Hand,
   List,
   Loader2,
   Maximize2,
+  MessageCircleQuestion,
   Minimize2,
   MousePointerClick,
   Pause,
@@ -39,6 +41,7 @@ import type { EngineState } from '../lib/teleprompter/engine'
 import type { ScriptModel } from '../lib/teleprompter/scriptModel'
 import { useTeleprompterEngine } from './useTeleprompterEngine'
 import { usePanic } from './usePanic'
+import { useTurnYield } from './useTurnYield'
 import { RescueCard } from './RescueCard'
 import { Segmented } from '../components/Segmented'
 
@@ -481,6 +484,18 @@ export default function OverlayApp(): JSX.Element {
     pauseForRescue
   )
 
+  // ---- turn-yield 提示(Phase B):對方講完問句/長段 → 該你說話了 ----
+  // Record 頁的系統音訊轉錄經 context:push-transcript 進 main,main 偵測後廣播。
+  const { hint: turnYieldHint, notifyMeSpeaking: notifyTurnYield } = useTurnYield(
+    o?.turnYield ?? true
+  )
+  const turnYieldText =
+    turnYieldHint === null
+      ? ''
+      : turnYieldHint.kind === 'turn'
+        ? '該你說話了 — 對方在等你回答'
+        : '對方已停頓 — 該接話了'
+
   // ---- 視窗尺寸同步 ----
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -527,6 +542,8 @@ export default function OverlayApp(): JSX.Element {
     (text: string): void => {
       // 餵給 main 的 liveContext:panic 觸發時才有語音上下文可用
       void window.api.pushTranscript({ text, speaker: 'me' })
+      // 我方開口 → 即時收掉「該你說話了」提示(你已在回話)
+      notifyTurnYield()
       const f = followRef.current
       const spoken = normalizeForMatch(text)
       if (spoken.length < 4) return
@@ -543,7 +560,7 @@ export default function OverlayApp(): JSX.Element {
         setLastHeard(text.slice(0, 60))
       }
     },
-    [scrollToChunk]
+    [scrollToChunk, notifyTurnYield]
   )
 
   // 跟隨中滾輪微調:調整偏移而非直接捲動,下次自動對位仍尊重使用者的視線位置
@@ -858,6 +875,14 @@ export default function OverlayApp(): JSX.Element {
             style={{ width: `${shownProgress * 100}%` }}
           />
         </div>
+        {turnYieldHint && (
+          <span
+            title={turnYieldText}
+            className="flex h-6 shrink-0 cursor-default items-center gap-1 rounded-full bg-sky-500/20 px-2 text-[10px] font-medium text-sky-300"
+          >
+            <MessageCircleQuestion size={11} /> 該你了
+          </span>
+        )}
         {nextKeyword && (
           <span className="text-[11px] text-accent-300" title={`下一個:${nextKeyword}`}>
             {nextKeyword}
@@ -895,6 +920,14 @@ export default function OverlayApp(): JSX.Element {
         >
           <Maximize2 size={12} />
         </button>
+        {turnYieldHint && (
+          <span
+            title={turnYieldText}
+            className="flex h-6 shrink-0 cursor-default items-center gap-1 rounded-full bg-sky-500/20 px-2 text-[10px] font-medium text-sky-300"
+          >
+            <MessageCircleQuestion size={11} /> 該你了
+          </span>
+        )}
       </div>
     )
   }
@@ -959,6 +992,11 @@ export default function OverlayApp(): JSX.Element {
             把這條貼到攝影機 5cm 內 — 眼神會自然對準鏡頭,錄起來不像看稿
           </div>
         )}
+        {turnYieldHint && (
+          <div className="pointer-events-none absolute inset-x-3 bottom-8 z-10 flex items-center justify-center gap-1.5 rounded-full bg-sky-500/20 px-3 py-1 text-[10px] font-medium text-sky-300">
+            <MessageCircleQuestion size={11} /> {turnYieldText}
+          </div>
+        )}
         {panicPhase !== 'idle' && (
           <RescueCard phase={panicPhase} rescue={rescue} errorMsg={errorMsg} onDismiss={dismissRescue} />
         )}
@@ -1013,6 +1051,15 @@ export default function OverlayApp(): JSX.Element {
             {formatDuration(elapsedSec)}
             {remainingMs !== null && ` / -${formatDuration(remainingMs / 1000)}`}
           </span>
+
+          {/* turn-yield 開關(即時回饋用)*/}
+          <ToolBtn
+            title={o.turnYield ? '關閉「該你說話了」提示' : '開啟「該你說話了」提示:對方講完問句時提醒你接話'}
+            active={o.turnYield}
+            onClick={() => void patchOverlay({ turnYield: !o.turnYield })}
+          >
+            <Hand size={13} />
+          </ToolBtn>
 
           {/* Panic 救援:被問倒時即時給答案(Alt+P)*/}
           <ToolBtn
@@ -1193,6 +1240,14 @@ export default function OverlayApp(): JSX.Element {
           尚未載入講稿
           <br />
           到主視窗「提詞講稿」頁按「開始提詞」
+        </div>
+      )}
+
+      {/* turn-yield 提示條(該你說話了)*/}
+      {turnYieldHint && (
+        <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex items-center justify-center gap-2 rounded-full bg-sky-500/25 px-4 py-2 text-xs font-medium text-sky-200 shadow-lg">
+          <MessageCircleQuestion size={14} className="shrink-0" />
+          {turnYieldText}
         </div>
       )}
 

@@ -253,6 +253,12 @@ export default function SettingsPage({
           checked={o.glass}
           onChange={(v) => patchO({ glass: v })}
         />
+        <Switch
+          label="該你說話了提示"
+          hint="會議轉錄中偵測到對方講完問句或長段時，浮層即時提醒你接話（turn-yield，需搭配錄音轉錄頁的系統音訊）"
+          checked={o.turnYield}
+          onChange={(v) => patchO({ turnYield: v })}
+        />
         <Switch label="螢幕擷取隱形" hint="開啟後，視訊軟體分享畫面與錄影都看不到浮層" checked={o.captureProtected} onChange={(v) => window.api.overlaySetCaptureProtection(v)} />
         <div>
           <button
