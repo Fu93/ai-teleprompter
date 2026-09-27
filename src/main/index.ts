@@ -1,6 +1,7 @@
 import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, session } from 'electron'
 import { join } from 'path'
 import { writeFile } from 'fs/promises'
+import os from 'os'
 import {
   AppInfo,
   AppSettings,
@@ -120,6 +121,17 @@ function applyOverlayWindowSettings(): void {
   overlayWindow.setContentProtection(o.captureProtected)
   overlayWindow.setIgnoreMouseEvents(o.clickThrough, { forward: true })
   overlayWindow.setAlwaysOnTop(o.alwaysOnTop, 'screen-saver')
+  // 玻璃質感:Win11 22H2+ 嘗試視窗後 acrylic 毛玻璃;不支援或失敗則靜默降級(CSS 玻璃仍生效)
+  try {
+    const win11 = process.platform === 'win32' && Number(os.release().split('.')[0]) >= 10 && Number(os.release().split('.')[2]) >= 22621
+    if (o.glass && win11) {
+      overlayWindow.setBackgroundMaterial('acrylic')
+    } else {
+      overlayWindow.setBackgroundMaterial('auto')
+    }
+  } catch {
+    // 忽略:舊版 Electron/OS 不支援
+  }
   if (!overlayWindow.isDestroyed()) {
     const [w, h] = overlayWindow.getSize()
     if (w !== o.width || h !== o.height) overlayWindow.setSize(o.width, o.height)
@@ -276,8 +288,8 @@ function registerIpc(): void {
   })
 
   ipcMain.handle(IPC.OverlaySetSize, (_e, w: number, h: number) => {
-    settings.overlay.width = Math.max(280, Math.round(w))
-    settings.overlay.height = Math.max(140, Math.round(h))
+    settings.overlay.width = Math.max(240, Math.round(w))
+    settings.overlay.height = Math.max(40, Math.round(h))
     saveSettings(settings)
     applyOverlayWindowSettings()
   })

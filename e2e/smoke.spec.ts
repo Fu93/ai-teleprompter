@@ -59,10 +59,23 @@ test('設定讀寫經 IPC 生效且含 scenario 區塊', async () => {
   const { app, main } = await launchApp()
   try {
     const settings = await main.evaluate(() => window.api.getSettings())
-    expect(settings.scenario.activeScene).toBe('interview')
-    expect(settings.scenario.aiModeEnabled).toBe(true)
-    expect(settings.overlay.displayMode).toBe('scroll')
-    expect(settings.hotkeys.panicRescue).toBe('Alt+P')
+    // 持久化設定可能被使用者改過 → 驗證結構與合法值域,不假設具體值
+    expect(['scroll', 'phrase', 'bullet', 'karaoke']).toContain(settings.overlay.displayMode)
+    expect(typeof settings.scenario.activeScene).toBe('string')
+    expect(settings.scenario.activeScene.length).toBeGreaterThan(0)
+    expect(typeof settings.scenario.aiModeEnabled).toBe('boolean')
+    expect(settings.overlay.glass).toBeDefined()
+    expect(typeof settings.hotkeys.panicRescue).toBe('string')
+    expect(settings.hotkeys.panicRescue.length).toBeGreaterThan(0)
+    // 寫入→讀回往返
+    const roundTrip = await main.evaluate(async () => {
+      const prev = (await window.api.getSettings()).overlay.rate
+      await window.api.setSettings({ overlay: { rate: 1.5 } })
+      const after = (await window.api.getSettings()).overlay.rate
+      await window.api.setSettings({ overlay: { rate: prev } })
+      return after
+    })
+    expect(roundTrip).toBe(1.5)
   } finally {
     await app.close()
   }

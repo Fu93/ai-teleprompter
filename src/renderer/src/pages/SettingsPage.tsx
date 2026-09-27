@@ -5,6 +5,7 @@ import { useSettings } from '../lib/store'
 import { cn, formatDateTime } from '../lib/utils'
 import type { AppSettings } from '@shared/types'
 import type { SceneSummary } from '@shared/api'
+import { Segmented } from '../components/Segmented'
 
 const SCENE_LABELS_ZH: Record<string, string> = {
   interview: '面試',
@@ -221,29 +222,16 @@ export default function SettingsPage({
       <Section title="提詞浮層" desc="外觀與行為，變更即時生效">
         <div>
           <div className="label">顯示模式</div>
-          <div className="flex gap-2">
-            {(
-              [
-                { id: 'scroll', label: '連續捲動' },
-                { id: 'phrase', label: '逐句短語' },
-                { id: 'bullet', label: '重點要點' },
-                { id: 'karaoke', label: '逐詞高亮' }
-              ] as const
-            ).map((m) => (
-              <button
-                key={m.id}
-                onClick={() => patchO({ displayMode: m.id })}
-                className={cn(
-                  'rounded-lg px-3 py-1.5 text-xs transition-colors cursor-pointer',
-                  o.displayMode === m.id
-                    ? 'bg-accent-600 text-white'
-                    : 'border border-ink-700 text-ink-300 hover:border-ink-600 hover:bg-ink-850'
-                )}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            options={[
+              { id: 'scroll', label: '連續捲動' },
+              { id: 'phrase', label: '逐句短語' },
+              { id: 'bullet', label: '重點要點' },
+              { id: 'karaoke', label: '逐詞高亮' }
+            ]}
+            value={o.displayMode}
+            onChange={(id) => patchO({ displayMode: id })}
+          />
           <div className="mt-1.5 text-[11px] text-ink-400">
             {settings.personal.profile
               ? `逐句/逐詞以你的個人語速 ${settings.personal.profile.charsPerMin} 字/分為基準推進（倍率 1×＝你自己的語速）;重點要點自動切出 Markdown 大綱或段落,手動(← →)翻頁。`
@@ -256,6 +244,12 @@ export default function SettingsPage({
         <Slider label="行距" value={o.lineHeight} min={1.1} max={2.4} step={0.1} onChange={(v) => patchO({ lineHeight: v })} />
         <Slider label="不透明度" value={o.opacity} min={0.15} max={1} step={0.01} onChange={(v) => patchO({ opacity: v })} />
         <Switch label="鏡像模式" hint="透過反射罩拍攝時使用（左右翻轉）" checked={o.mirror} onChange={(v) => patchO({ mirror: v })} />
+        <Switch
+          label="毛玻璃質感"
+          hint="Windows 11 啟用視窗後 acrylic 模糊（Dynamic Island 式通透）;舊系統自動退回半透明"
+          checked={o.glass}
+          onChange={(v) => patchO({ glass: v })}
+        />
         <Switch label="螢幕擷取隱形" hint="開啟後，視訊軟體分享畫面與錄影都看不到浮層" checked={o.captureProtected} onChange={(v) => window.api.overlaySetCaptureProtection(v)} />
         <Switch label="滑鼠穿透" hint="滑鼠點擊直接穿過浮層操作底下的視窗" checked={o.clickThrough} onChange={(v) => window.api.overlaySetClickThrough(v)} />
         <Switch label="永遠置頂" checked={o.alwaysOnTop} onChange={(v) => patchO({ alwaysOnTop: v })} />

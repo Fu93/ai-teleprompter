@@ -24,7 +24,7 @@ export function RescueCard({
   return (
     <div className="absolute inset-x-4 top-4 z-20 flex justify-center">
       <div
-        className="w-full max-w-md rounded-xl border border-rose-500/30 bg-ink-950/95 p-4 shadow-2xl backdrop-blur-md"
+        className="glass-pill w-full max-w-md rounded-2xl p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2">

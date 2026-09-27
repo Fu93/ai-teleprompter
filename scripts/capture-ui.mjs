@@ -18,9 +18,27 @@ const DEMO_SCRIPT = `各位好,今天要向大家介紹我們的新產品 Flow�
 謝謝大家,接下來是實機示範。`
 
 const app = await electron.launch({ args: ['.'], timeout: 60_000 })
-const main = await app.firstWindow()
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// 視窗載入順序隨機,以 DOM 特徵辨識:主視窗有 <aside>,浮層有 .glass-overlay/.glass-pill
+const isMainPage = (p) => p.evaluate(() => !!document.querySelector('aside')).catch(() => false)
+const isOverlayPage = (p) =>
+  p.evaluate(() => !!document.querySelector('.glass-overlay, .glass-pill')).catch(() => false)
+
+let main = await app.firstWindow()
 await main.waitForLoadState('domcontentloaded')
-await main.waitForTimeout(1000)
+for (let i = 0; i < 15 && !(await isMainPage(main)); i++) {
+  await sleep(700)
+  const cand = app.windows().find((w) => w !== main)
+  if (cand && (await isMainPage(cand))) main = cand
+}
+let overlay = app.windows().find((w) => w !== main && true)
+for (let i = 0; i < 15 && !overlay; i++) {
+  await sleep(700)
+  overlay = app.windows().find((w) => w !== main)
+}
+console.log('windows resolved:', app.windows().length, 'main ok:', await isMainPage(main))
+await main.waitForTimeout(600)
 
 // 1-5: 主視窗各頁
 await main.screenshot({ path: `${OUT}/01-dashboard.png` })
@@ -36,12 +54,11 @@ for (const [label, name] of nav) {
   await main.screenshot({ path: `${OUT}/${name}.png` })
 }
 
-// 6: 載入講稿 → 浮層(scroll 模式);浮層視窗 = 主視窗以外那個
+// 6: 載入講稿 → 浮層
 await main.evaluate((content) => window.api.overlayShow({ title: '產品發表 · 開場', content }), DEMO_SCRIPT)
 await main.waitForTimeout(1500)
-let overlay = app.windows().find((w) => w !== main)
-for (let i = 0; i < 10 && !overlay; i++) {
-  await main.waitForTimeout(1000)
+for (let i = 0; i < 15 && !overlay; i++) {
+  await sleep(700)
   overlay = app.windows().find((w) => w !== main)
 }
 if (!overlay) {
@@ -70,6 +87,13 @@ for (const [mode, name] of modes) {
   await main.waitForTimeout(900)
   await overlay.screenshot({ path: `${OUT}/${name}.png` })
 }
+
+// 10: 藥丸模式 — 走真實點擊流程(收合會縮放視窗,展開會還原)
+await overlay.locator('[title*="收合成藥丸"]').click()
+await overlay.waitForTimeout(1500)
+await overlay.screenshot({ path: `${OUT}/10-overlay-pill.png` })
+await overlay.locator('[title*="展開完整面板"]').click()
+await overlay.waitForTimeout(1500)
 
 console.log('captured:', OUT)
 await app.close()

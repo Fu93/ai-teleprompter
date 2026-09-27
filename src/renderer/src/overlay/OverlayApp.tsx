@@ -8,6 +8,8 @@ import {
   FlipHorizontal2,
   List,
   Loader2,
+  Maximize2,
+  Minimize2,
   MousePointerClick,
   Pause,
   Play,
@@ -35,6 +37,12 @@ import type { ScriptModel } from '../lib/teleprompter/scriptModel'
 import { useTeleprompterEngine } from './useTeleprompterEngine'
 import { usePanic } from './usePanic'
 import { RescueCard } from './RescueCard'
+import { Segmented } from '../components/Segmented'
+
+type FollowStatus = 'idle' | 'loading' | 'listening' | 'error'
+
+/** 進入藥丸模式前的視窗尺寸(收合時縮小視窗,展開時還原) */
+let expandedSize: { w: number; h: number } | null = null
 
 const MODES: Array<{ id: OverlayDisplayMode; label: string; icon: typeof AlignJustify }> = [
   { id: 'scroll', label: '連續捲動', icon: AlignJustify },
@@ -67,8 +75,6 @@ function ToolBtn({
     </button>
   )
 }
-
-type FollowStatus = 'idle' | 'loading' | 'listening' | 'error'
 
 // ── 模式畫面 ──
 
@@ -519,13 +525,80 @@ export default function OverlayApp(): JSX.Element {
   const followChunks = followStatus === 'listening' ? followRef.current.chunks : null
   const shownProgress = followChunks ? followProgress : progress
 
+  // ── 藥丸模式:縮小視窗成一行玻璃藥丸,展開還原原尺寸 ──
+  const enterCompact = (): void => {
+    expandedSize = { w: o.width, h: o.height }
+    void window.api.overlaySetSize(460, 56)
+    void patchOverlay({ compact: true })
+  }
+  const exitCompact = (): void => {
+    const size = expandedSize ?? { w: 720, h: 260 }
+    void window.api.overlaySetSize(size.w, size.h)
+    void patchOverlay({ compact: false })
+  }
+
+  if (o.compact) {
+    return (
+      <div
+        className="glass-pill flex h-full cursor-default select-none items-center gap-3 rounded-full px-4"
+        title="雙擊展開"
+        onDoubleClick={exitCompact}
+      >
+        <span
+          className={cn(
+            'h-2 w-2 shrink-0 rounded-full',
+            o.clickThrough ? 'bg-amber-450' : playing ? 'bg-emerald-500' : 'bg-ink-600'
+          )}
+        />
+        <span className="max-w-[120px] truncate text-xs font-medium text-ink-100">
+          {payload.title || '提詞浮層'}
+        </span>
+        <div className="h-1 min-w-8 flex-1 overflow-hidden rounded-full bg-white/10">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-accent-400 to-accent-600 transition-[width] duration-300"
+            style={{ width: `${shownProgress * 100}%` }}
+          />
+        </div>
+        <span className="shrink-0 font-mono text-[10px] text-ink-300">{formatDuration(elapsedSec)}</span>
+        {panicPhase !== 'idle' ? (
+          <button
+            onClick={dismissRescue}
+            title="救援顯示中 — 點擊關閉"
+            className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-rose-500/25 text-rose-400"
+          >
+            <Siren size={13} />
+          </button>
+        ) : (
+          <button
+            onClick={triggerPanic}
+            title="Panic 救援(Alt+P)"
+            className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-ink-300 hover:bg-white/10 hover:text-white"
+          >
+            <Siren size={13} />
+          </button>
+        )}
+        <button
+          onClick={playing ? controls.pause : controls.play}
+          title={playing ? '暫停' : '播放'}
+          className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-ink-200 hover:bg-white/10 hover:text-white"
+        >
+          {playing ? <Pause size={13} /> : <Play size={13} />}
+        </button>
+        <button
+          onClick={exitCompact}
+          title="展開完整面板(或雙擊藥丸)"
+          className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-ink-300 hover:bg-white/10 hover:text-white"
+        >
+          <Maximize2 size={12} />
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div
-      className="relative flex h-full flex-col overflow-hidden rounded-xl border shadow-2xl backdrop-blur-md"
-      style={{
-        background: `rgba(9, 11, 18, ${o.opacity})`,
-        borderColor: 'rgba(255,255,255,0.09)'
-      }}
+      className="glass-overlay relative flex h-full flex-col overflow-hidden rounded-2xl"
+      style={{ background: `rgba(12, 14, 20, ${Math.max(0.25, Math.min(0.9, o.opacity))})` }}
     >
       {/* 工具列(可拖曳視窗)*/}
       <div
@@ -550,21 +623,13 @@ export default function OverlayApp(): JSX.Element {
           </span>
         </div>
 
-        {/* 顯示模式切換 */}
-        <div
-          className="ml-0.5 flex items-center gap-0.5 rounded-lg bg-white/5 p-0.5"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-        >
-          {MODES.map((m) => (
-            <ToolBtn
-              key={m.id}
-              title={`模式:${m.label}`}
-              active={displayMode === m.id}
-              onClick={() => setMode(m.id)}
-            >
-              <m.icon size={12} />
-            </ToolBtn>
-          ))}
+        {/* 顯示模式切換(iOS 分段控件)*/}
+        <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          <Segmented
+            options={MODES.map((m) => ({ id: m.id, label: '', icon: <m.icon size={13} />, title: `模式:${m.label}` }))}
+            value={displayMode}
+            onChange={setMode}
+          />
         </div>
 
         <div className="flex-1" />
@@ -585,6 +650,11 @@ export default function OverlayApp(): JSX.Element {
             onClick={triggerPanic}
           >
             <Siren size={13} className={panicPhase === 'thinking' ? 'animate-pulse' : undefined} />
+          </ToolBtn>
+
+          {/* 收合成藥丸 */}
+          <ToolBtn title="收合成藥丸(低存在感)" onClick={enterCompact}>
+            <Minimize2 size={13} />
           </ToolBtn>
 
           {/* 語音跟讀(scroll 模式限定):唸到哪、捲到哪 */}

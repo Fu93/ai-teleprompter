@@ -7,6 +7,10 @@ export interface OverlaySettings {
   clickThrough: boolean
   captureProtected: boolean
   displayMode: OverlayDisplayMode
+  /** 緊緻藥丸模式(Dynamic Island 式;折疊成小條,展開恢復) */
+  compact: boolean
+  /** 玻璃質感:Windows 11 嘗試啟用視窗後 acrylic 毛玻璃 */
+  glass: boolean
   fontSize: number
   lineHeight: number
   speed: number // scroll 模式:px per second
@@ -88,6 +92,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     clickThrough: false,
     captureProtected: true,
     displayMode: 'scroll',
+    compact: false,
+    glass: true,
     fontSize: 30,
     lineHeight: 1.5,
     speed: 60,
