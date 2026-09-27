@@ -88,7 +88,8 @@ function ScrollSurface({
   scrollRef,
   followChunks,
   activeChunk,
-  chunkElRef
+  chunkElRef,
+  onWheelAdjust
 }: {
   model: ScriptModel
   settings: AppSettings['overlay']
@@ -97,6 +98,7 @@ function ScrollSurface({
   followChunks: FollowChunk[] | null
   activeChunk: number
   chunkElRef: (i: number, el: HTMLSpanElement | null) => void
+  onWheelAdjust: (deltaY: number) => void
 }): JSX.Element {
   return (
     <div
@@ -104,6 +106,7 @@ function ScrollSurface({
       className="h-full cursor-pointer overflow-y-auto px-7 py-5"
       style={{ scrollbarWidth: 'none' }}
       onClick={followChunks ? undefined : onTogglePlay}
+      onWheel={(e) => onWheelAdjust(e.deltaY)}
     >
       <div
         className="font-medium text-white select-none"
@@ -158,8 +161,9 @@ function PhraseSurface({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col justify-center px-7 py-4">
+      {/* 行寬鎖 30-35 字(W3C 中文排版甜蜜點),一眼掃完不動頭 */}
       <div
-        className="flex flex-wrap gap-x-3 gap-y-1 font-medium select-none"
+        className="flex max-w-[32em] flex-wrap gap-x-3 gap-y-1 font-semibold select-none"
         style={{ fontSize, lineHeight: PhraseVisuals.LINE_HEIGHT }}
       >
         {phrases.map((p, i) => {
@@ -179,7 +183,7 @@ function PhraseSurface({
               style={{
                 opacity,
                 color: isActive ? '#fff' : isNext ? 'var(--color-accent-300)' : undefined,
-                textShadow: '0 1px 6px rgba(0,0,0,0.85)'
+                textShadow: '0 1px 3px rgba(0,0,0,0.85), 0 0 8px rgba(0,0,0,0.5)'
               }}
             >
               {p.text}
@@ -411,6 +415,8 @@ export default function OverlayApp(): JSX.Element {
     pos: 0
   })
   const chunkElsRef = useRef<Map<number, HTMLSpanElement>>(new Map())
+  // 跟隨模式的手動滾輪偏移:使用者滾動後,自動對位仍以此偏移為基準(不回彈)
+  const followOffsetRef = useRef(0)
 
   // ---- 初始化 ----
   useEffect(() => {
@@ -510,10 +516,10 @@ export default function OverlayApp(): JSX.Element {
     const el = scrollRef.current
     const target = chunkElsRef.current.get(idx)
     if (!el || !target) return
-    const top = target.offsetTop - el.clientHeight * 0.33
-    el.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
+    const top = target.offsetTop - el.clientHeight * 0.33 + followOffsetRef.current
+    el.scrollTo({ top: Math.max(0, Math.min(top, el.scrollHeight - el.clientHeight)), behavior: 'smooth' })
     const maxScroll = el.scrollHeight - el.clientHeight
-    if (maxScroll > 0) setFollowProgress(Math.min(1, top / maxScroll))
+    if (maxScroll > 0) setFollowProgress(Math.min(1, el.scrollTop / maxScroll))
   }, [])
 
   const handleFollowTranscript = useCallback(
@@ -523,7 +529,11 @@ export default function OverlayApp(): JSX.Element {
       const f = followRef.current
       const spoken = normalizeForMatch(text)
       if (spoken.length < 4) return
-      const end = bestMatchPosition(f.norm, spoken, f.pos)
+      // 兩段式:先在當前位置附近找;失敗時放寬向後視窗 — 偵測「重複唸上一段」自動跳回關鍵詞
+      let end = bestMatchPosition(f.norm, spoken, f.pos)
+      if (end < 0) {
+        end = bestMatchPosition(f.norm, spoken, f.pos, { backward: 160 })
+      }
       if (end >= 0) {
         f.pos = end
         const idx = chunkAtPosition(f.chunks, Math.max(0, end - 1))
@@ -535,10 +545,20 @@ export default function OverlayApp(): JSX.Element {
     [scrollToChunk]
   )
 
+  // 跟隨中滾輪微調:調整偏移而非直接捲動,下次自動對位仍尊重使用者的視線位置
+  const adjustFollowOffset = useCallback(
+    (deltaY: number): void => {
+      if (followStatus !== 'listening') return
+      followOffsetRef.current = Math.max(-3000, Math.min(3000, followOffsetRef.current + deltaY))
+    },
+    [followStatus]
+  )
+
   const startFollow = useCallback(async (): Promise<void> => {
     if (!settings) return
     // 跟讀時暫停自動捲動,讓位給語音對齊
     controls.pause()
+    followOffsetRef.current = 0
     setFollowMsg('')
     setFollowStatus('loading')
     try {
@@ -582,6 +602,7 @@ export default function OverlayApp(): JSX.Element {
     segmenterRef.current = null
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
+    followOffsetRef.current = 0
     setFollowStatus('idle')
     setFollowMsg('')
     setActiveChunk(-1)
@@ -666,9 +687,20 @@ export default function OverlayApp(): JSX.Element {
   }
 
   if (o.compact) {
+    // 漸進揭露:pill 顯示「下一個關鍵詞」(各模式游標的下一單元開頭)
+    let nextKeyword = ''
+    if (displayMode === 'phrase' || displayMode === 'scroll') {
+      const phrases = model.phrases[state.sentenceIndex] ?? []
+      const next = phrases[state.phraseIndex + 1] ?? (model.sentences[state.sentenceIndex + 1] ?? '')
+      nextKeyword = (typeof next === 'string' ? next : next.text).slice(0, 10)
+    } else if (displayMode === 'karaoke') {
+      nextKeyword = (model.karaokeChunks[state.karaokeChunkIndex + 1] ?? '').slice(0, 10)
+    } else if (displayMode === 'bullet') {
+      nextKeyword = (model.bullets[state.bulletIndex + 1]?.title ?? '').slice(0, 10)
+    }
     return (
       <div
-        className="glass-pill flex h-full cursor-default select-none items-center gap-3 rounded-full px-4"
+        className="glass-pill anim-rise flex h-full cursor-default select-none items-center gap-3 rounded-full px-4"
         title="雙擊展開"
         onDoubleClick={exitCompact}
       >
@@ -678,15 +710,20 @@ export default function OverlayApp(): JSX.Element {
             o.clickThrough ? 'bg-amber-450' : playing ? 'bg-emerald-500' : 'bg-ink-600'
           )}
         />
-        <span className="max-w-[120px] truncate text-xs font-medium text-ink-100">
+        <span className="max-w-[110px] truncate text-xs font-medium text-ink-100">
           {payload.title || '提詞浮層'}
         </span>
-        <div className="h-1 min-w-8 flex-1 overflow-hidden rounded-full bg-white/10">
+        <div className="h-1 min-w-6 flex-1 overflow-hidden rounded-full bg-white/10">
           <div
             className="h-full rounded-full bg-gradient-to-r from-accent-400 to-accent-600 transition-[width] duration-300"
             style={{ width: `${shownProgress * 100}%` }}
           />
         </div>
+        {nextKeyword && (
+          <span className="max-w-[96px] truncate text-[11px] text-accent-300" title={`下一個:${nextKeyword}`}>
+            {nextKeyword}
+          </span>
+        )}
         <span className="shrink-0 font-mono text-[10px] text-ink-300">{formatDuration(elapsedSec)}</span>
         {panicPhase !== 'idle' ? (
           <button
@@ -757,8 +794,29 @@ export default function OverlayApp(): JSX.Element {
           </div>
         </div>
         <LensSurface model={model} state={state} displayMode={displayMode} />
+        {/* 角落吸附:貼到螢幕上緣,離鏡頭軸線最近 */}
+        <div
+          className="absolute inset-x-0 top-9 z-10 flex justify-center gap-1"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          {(
+            [
+              { id: 'tl', label: '↖ 左上' },
+              { id: 'tc', label: '↑ 上中' },
+              { id: 'tr', label: '↗ 右上' }
+            ] as const
+          ).map((c) => (
+            <button
+              key={c.id}
+              onClick={() => void window.api.snapOverlayCorner(c.id)}
+              className="rounded-full bg-white/8 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:bg-white/15 hover:text-white cursor-pointer"
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
         {lensHint && (
-          <div className="pointer-events-none absolute inset-x-3 top-11 z-10 rounded-full bg-black/60 px-3 py-1 text-center text-[10px] text-ink-200">
+          <div className="pointer-events-none absolute inset-x-3 bottom-1.5 z-10 rounded-full bg-black/60 px-3 py-1 text-center text-[10px] text-ink-200">
             把這條貼到攝影機 5cm 內 — 眼神會自然對準鏡頭,錄起來不像看稿
           </div>
         )}
@@ -771,7 +829,7 @@ export default function OverlayApp(): JSX.Element {
 
   return (
     <div
-      className="glass-overlay relative flex h-full flex-col overflow-hidden rounded-2xl"
+      className="glass-overlay anim-rise relative flex h-full flex-col overflow-hidden rounded-2xl"
       style={{ background: `rgba(12, 14, 20, ${Math.max(0.25, Math.min(0.9, o.opacity))})` }}
     >
       {/* 工具列(可拖曳視窗)*/}
@@ -968,6 +1026,7 @@ export default function OverlayApp(): JSX.Element {
                 if (el) chunkElsRef.current.set(i, el)
                 else chunkElsRef.current.delete(i)
               }}
+              onWheelAdjust={adjustFollowOffset}
             />
           )}
           {displayMode === 'phrase' && <PhraseSurface model={model} state={state} fontSize={o.fontSize} />}

@@ -174,6 +174,8 @@ export const IPC = {
   SceneList: 'scene:list',
   CloudTranscribe: 'stt:cloud-transcribe',
   SaveRecording: 'util:save-recording',
+  ShareSimulation: 'system:share-simulation',
+  OverlaySnapCorner: 'overlay:snap-corner',
   ExportFile: 'util:export-file',
   // events (main -> renderer)
   OverlayVisibilityChanged: 'overlay:visibility-changed',

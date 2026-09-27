@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, session } from 'electron'
+import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, screen, session } from 'electron'
 import { join } from 'path'
 import { writeFile } from 'fs/promises'
 import os from 'os'
@@ -397,6 +397,29 @@ function registerIpc(): void {
     if (canceled || !filePath) return { ok: false, error: 'canceled' }
     await writeFile(filePath, Buffer.from(args.bytes))
     return { ok: true, filePath }
+  })
+
+  // ---- 分享前模擬測試:回傳主螢幕擷取縮圖(擷取保護生效時浮層不會出現)----
+  ipcMain.handle(IPC.ShareSimulation, async () => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 960, height: 540 }
+      })
+      if (sources.length === 0) return { ok: false, error: 'no-screen' }
+      return { ok: true, dataUrl: sources[0].thumbnail.toDataURL() }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // ---- 貼鏡模式吸附:浮層移到螢幕上緣角落 ----
+  ipcMain.handle(IPC.OverlaySnapCorner, (_e, corner: 'tl' | 'tc' | 'tr') => {
+    if (!overlayWindow || overlayWindow.isDestroyed()) return
+    const { workArea } = screen.getPrimaryDisplay()
+    const [w] = overlayWindow.getSize()
+    const x = corner === 'tl' ? workArea.x + 8 : corner === 'tr' ? workArea.x + workArea.width - w - 8 : workArea.x + Math.round((workArea.width - w) / 2)
+    overlayWindow.setPosition(x, workArea.y + 8)
   })
 
   // ---- 匯出檔案 ----

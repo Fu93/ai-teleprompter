@@ -54,6 +54,8 @@ const api: Api = {
   appInfo: (): Promise<AppInfo> => ipcRenderer.invoke(IPC.AppInfo),
   saveRecording: (args: { bytes: Uint8Array; defaultName: string }) =>
     ipcRenderer.invoke(IPC.SaveRecording, args),
+  shareSimulation: () => ipcRenderer.invoke(IPC.ShareSimulation),
+  snapOverlayCorner: (corner: 'tl' | 'tc' | 'tr') => ipcRenderer.invoke(IPC.OverlaySnapCorner, corner),
   exportFile: (args) => ipcRenderer.invoke(IPC.ExportFile, args)
 }
 

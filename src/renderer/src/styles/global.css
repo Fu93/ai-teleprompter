@@ -65,35 +65,39 @@ body {
 }
 
 /* ── 玻璃層(Apple vibrancy 質感)──
-   境內玻璃:半透明 + backdrop blur + 頂緣高光 + 柔和投影 */
+   境內玻璃:半透明 + backdrop blur + 頂緣 specular 高光 + 柔和投影
+   blur 會抽飽和,saturate(1.8) 補回(Liquid Glass 配方) */
 .glass {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.03));
-  -webkit-backdrop-filter: blur(28px) saturate(1.5);
-  backdrop-filter: blur(28px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.8);
+  backdrop-filter: blur(20px) saturate(1.8);
   border: 1px solid rgba(255, 255, 255, 0.09);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 1px 1px rgba(255, 255, 255, 0.25),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.08),
     0 12px 40px rgba(0, 0, 0, 0.42);
 }
 
 /* 浮層表面:窗後 acrylic 開啟時降低自身底色讓材質透出 */
 .glass-overlay {
   background: rgba(12, 14, 20, 0.62);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.8);
+  backdrop-filter: blur(20px) saturate(1.8);
   border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 1px 1px rgba(255, 255, 255, 0.28),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.08),
     0 16px 48px rgba(0, 0, 0, 0.5);
 }
 
 .glass-pill {
   background: rgba(12, 14, 20, 0.66);
-  -webkit-backdrop-filter: blur(32px) saturate(1.6);
-  backdrop-filter: blur(32px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.8);
+  backdrop-filter: blur(20px) saturate(1.8);
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 1px 1px rgba(255, 255, 255, 0.3),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.1),
     0 18px 50px rgba(0, 0, 0, 0.55);
 }
 
@@ -203,9 +207,45 @@ input[type='range']:active::-webkit-slider-thumb {
   transform: scale(1.05);
 }
 
-/* 浮層內文閱讀性投影 */
+/* 浮層內文閱讀性投影(軟陰影配方,比硬描邊自然) */
 .reading-shadow {
   text-shadow:
-    0 1px 8px rgba(0, 0, 0, 0.75),
-    0 0 2px rgba(0, 0, 0, 0.85);
+    0 1px 3px rgba(0, 0, 0, 0.85),
+    0 0 8px rgba(0, 0, 0, 0.5);
+}
+
+/* ── 動效:可中斷 spring(CSS transition 天然支援重定目標)── */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.anim-rise {
+  animation: rise-in 0.35s var(--ease-spring) both;
+}
+
+@keyframes shimmer-slide {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+/* 骨架 shimmer:只給「首 token 前」的等待,內容到達即移除 */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.06) 25%,
+    rgba(255, 255, 255, 0.16) 50%,
+    rgba(255, 255, 255, 0.06) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-slide 1.4s ease-in-out infinite;
+  border-radius: 6px;
 }

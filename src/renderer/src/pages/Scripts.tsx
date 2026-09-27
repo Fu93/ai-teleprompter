@@ -229,8 +229,11 @@ export default function Scripts(): JSX.Element {
       {/* 編輯器 */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {selectedId == null ? (
-          <div className="flex h-full items-center justify-center text-sm text-ink-400">
-            選擇或建立一份講稿
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-ink-400">
+            <span>選擇或建立一份講稿</span>
+            <button className="btn-primary text-xs" onClick={() => void newScript()}>
+              <FilePlus2 size={14} /> 建立第一份講稿
+            </button>
           </div>
         ) : (
           <>

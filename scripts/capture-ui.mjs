@@ -40,6 +40,14 @@ for (let i = 0; i < 15 && !overlay; i++) {
 console.log('windows resolved:', app.windows().length, 'main ok:', await isMainPage(main))
 await main.waitForTimeout(600)
 
+// 防呆:重置浮層狀態(前次執行可能留下 compact/lensMode/奇尺寸)
+await main.evaluate(() =>
+  window.api.setSettings({
+    overlay: { compact: false, lensMode: false, width: 720, height: 260, displayMode: 'scroll' }
+  })
+)
+await main.waitForTimeout(600)
+
 // 1-5: 主視窗各頁
 await main.screenshot({ path: `${OUT}/01-dashboard.png` })
 const nav = [
@@ -100,7 +108,14 @@ await overlay.locator('[title*="貼鏡模式"]').click()
 await overlay.waitForTimeout(1500)
 await overlay.screenshot({ path: `${OUT}/11-overlay-lens.png` })
 await overlay.locator('[title*="退出貼鏡模式"]').click()
-await overlay.waitForTimeout(1500)
+await main.waitForTimeout(800)
+// 收尾:確保狀態沖刷(demo 留下 scroll 模式、正常尺寸)
+await main.evaluate(() =>
+  window.api.setSettings({
+    overlay: { compact: false, lensMode: false, width: 720, height: 260, displayMode: 'scroll' }
+  })
+)
+await main.waitForTimeout(1200)
 
 console.log('captured:', OUT)
 await app.close()

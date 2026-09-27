@@ -1,6 +1,6 @@
 import type { JSX } from "react"
 import { useEffect, useState } from 'react'
-import { Check, Loader2, RefreshCw, Ruler } from 'lucide-react'
+import { Check, Loader2, RefreshCw, Ruler, ScanEye } from 'lucide-react'
 import { useSettings } from '../lib/store'
 import { cn, formatDateTime } from '../lib/utils'
 import type { AppSettings } from '@shared/types'
@@ -129,6 +129,9 @@ export default function SettingsPage({
   const [models, setModels] = useState<string[] | null>(null)
   const [ollamaVersion, setOllamaVersion] = useState<string | null>(null)
   const [scenes, setScenes] = useState<SceneSummary[] | null>(null)
+  const [simBusy, setSimBusy] = useState(false)
+  const [simDataUrl, setSimDataUrl] = useState<string | null>(null)
+  const [simError, setSimError] = useState<string | null>(null)
 
   useEffect(() => {
     void window.api.sceneList().then(setScenes).catch(() => setScenes([]))
@@ -251,6 +254,38 @@ export default function SettingsPage({
           onChange={(v) => patchO({ glass: v })}
         />
         <Switch label="螢幕擷取隱形" hint="開啟後，視訊軟體分享畫面與錄影都看不到浮層" checked={o.captureProtected} onChange={(v) => window.api.overlaySetCaptureProtection(v)} />
+        <div>
+          <button
+            className="btn-outline text-xs"
+            onClick={async () => {
+              setSimBusy(true)
+              setSimDataUrl(null)
+              try {
+                const res = await window.api.shareSimulation()
+                if (res.ok && res.dataUrl) setSimDataUrl(res.dataUrl)
+                else setSimError(res.error ?? '擷取失敗')
+              } finally {
+                setSimBusy(false)
+              }
+            }}
+            disabled={simBusy}
+          >
+            {simBusy ? <Loader2 size={13} className="animate-spin" /> : <ScanEye size={13} />}
+            分享前模擬測試
+          </button>
+          <div className="mt-1.5 text-[11px] text-ink-400">
+            擷取主螢幕縮圖給你看「視訊軟體實際分享到的畫面」— 浮層不應出現;有出現代表擷取保護未生效。
+          </div>
+          {simError && <div className="mt-1 text-[11px] text-rose-450">{simError}</div>}
+          {simDataUrl && (
+            <div className="anim-rise mt-2 overflow-hidden rounded-xl border border-white/10">
+              <img src={simDataUrl} alt="螢幕擷取模擬" className="w-full" />
+              <div className="bg-emerald-500/10 px-3 py-1.5 text-[11px] text-emerald-400">
+                若浮層沒有出現在上方截圖,隱形即生效 ✓
+              </div>
+            </div>
+          )}
+        </div>
         <Switch label="滑鼠穿透" hint="滑鼠點擊直接穿過浮層操作底下的視窗" checked={o.clickThrough} onChange={(v) => window.api.overlaySetClickThrough(v)} />
         <Switch label="永遠置頂" checked={o.alwaysOnTop} onChange={(v) => patchO({ alwaysOnTop: v })} />
       </Section>

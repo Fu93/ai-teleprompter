@@ -106,4 +106,8 @@ export interface Api {
   exportFile(args: { defaultName: string; content: string }): Promise<{ ok: boolean; filePath?: string; error?: string }>
   /** 錄影存檔:彈出儲存對話框寫入位元組 */
   saveRecording(args: { bytes: Uint8Array; defaultName: string }): Promise<{ ok: boolean; filePath?: string; error?: string }>
+  /** 分享前模擬測試:回傳主螢幕擷取縮圖(浮層應為隱形) */
+  shareSimulation(): Promise<{ ok: boolean; dataUrl?: string; error?: string }>
+  /** 貼鏡模式吸附:把浮層移到螢幕上緣指定角落 */
+  snapOverlayCorner(corner: 'tl' | 'tc' | 'tr'): Promise<void>
 }

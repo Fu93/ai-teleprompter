@@ -1,6 +1,6 @@
 import type { JSX } from "react"
 import { useEffect, useState } from 'react'
-import { AudioLines, Eye, GraduationCap, Play, ScrollText, TrendingUp } from 'lucide-react'
+import { AudioLines, Check, Circle, Eye, GraduationCap, Play, Ruler, ScrollText, TrendingUp } from 'lucide-react'
 import { db } from '../lib/db'
 import type { MeetingSession, PracticeRun, Script } from '@shared/types'
 import { formatDateTime } from '../lib/utils'
@@ -8,7 +8,7 @@ import { useSettings } from '../lib/store'
 import { analyzePracticeRun } from '../lib/session-intelligence'
 
 interface Props {
-  onNavigate: (page: 'dashboard' | 'scripts' | 'record' | 'practice' | 'settings') => void
+  onNavigate: (page: 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings') => void
 }
 
 const MODES = [
@@ -135,6 +135,48 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
           </div>
         )}
       </div>
+
+      {/* 首用三部曲:任一步未完成時顯示 */}
+      {(() => {
+        const hasScript = recent.length > 0
+        const hasProfile = !!settings?.personal?.profile
+        const hasRun = sessions.length > 0 || runs.length > 0
+        if (hasScript && hasProfile && hasRun) return null
+        const steps = [
+          { done: hasScript, icon: ScrollText, label: '建立第一份講稿', target: 'scripts' as const },
+          { done: hasProfile, icon: Ruler, label: '個人化校準(語速+視距)', target: 'calibration' as const },
+          { done: hasRun, icon: AudioLines, label: '跑一場錄音轉錄或面試練習', target: 'record' as const }
+        ]
+        return (
+          <div className="mt-8 card p-5">
+            <div className="mb-4 flex items-center gap-2 text-sm font-medium">
+              <TrendingUp size={15} className="text-accent-400" />
+              開始三部曲
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              {steps.map((s) => (
+                <button
+                  key={s.label}
+                  onClick={() => onNavigate(s.target)}
+                  className={
+                    s.done
+                      ? 'flex items-center gap-2.5 rounded-xl border border-emerald-500/25 bg-emerald-500/8 px-3 py-3 text-left text-xs text-ink-300 cursor-default'
+                      : 'flex items-center gap-2.5 rounded-xl border border-white/10 bg-white/4 px-3 py-3 text-left text-xs text-ink-100 transition-colors hover:border-accent-500/50 hover:bg-accent-500/8 cursor-pointer'
+                  }
+                >
+                  {s.done ? (
+                    <Check size={15} className="shrink-0 text-emerald-400" />
+                  ) : (
+                    <Circle size={15} className="shrink-0 text-ink-400" />
+                  )}
+                  <s.icon size={14} className="shrink-0 text-ink-300" />
+                  <span className="leading-snug">{s.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* 成長軌跡(session intelligence) */}
       {(sessions.length > 0 || runs.length > 0) && (

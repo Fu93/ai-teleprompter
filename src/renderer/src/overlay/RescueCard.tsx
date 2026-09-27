@@ -24,7 +24,7 @@ export function RescueCard({
   return (
     <div className="absolute inset-x-4 top-4 z-20 flex justify-center">
       <div
-        className="glass-pill w-full max-w-md rounded-2xl p-4"
+        className="glass-pill anim-rise w-full max-w-md rounded-2xl p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2">
@@ -43,6 +43,13 @@ export function RescueCard({
             <X size={11} />
           </button>
         </div>
+
+        {phase === 'thinking' && (
+          <div className="mt-3 space-y-2">
+            <div className="shimmer h-4 w-4/5" />
+            <div className="shimmer h-3 w-3/5" />
+          </div>
+        )}
 
         {phase === 'rescue' && rescue && rescue.sentence && (
           <>

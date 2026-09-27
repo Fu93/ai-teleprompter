@@ -59,14 +59,15 @@ export function buildChunks(content: string): FollowChunk[] {
 }
 
 /**
- * 在 scriptNorm[from..] 中尋找 spokenNorm 最相似的視窗位置。
- * 回傳匹配視窗的結束位置（正規化座標）；品質太低回傳 -1。
+ * 在 scriptNorm 中尋找 spokenNorm 最相似的視窗位置。
+ * 回傳匹配視窗的結束位置(正規化座標);品質太低回傳 -1。
+ * @param backward 容許自 from 向回搜尋的字元數(預設 10;偵測「重複唸上一段」時放大)
  */
 export function bestMatchPosition(
   scriptNorm: string,
   spokenNorm: string,
   from: number,
-  opts?: { window?: number; minScore?: number }
+  opts?: { window?: number; minScore?: number; backward?: number }
 ): number {
   const win = Math.min(opts?.window ?? 24, spokenNorm.length)
   if (win < 4) return -1
@@ -75,7 +76,7 @@ export function bestMatchPosition(
 
   let bestScore = 0
   let bestEnd = -1
-  const searchFrom = Math.max(0, from - 10) // 容許一點回溯
+  const searchFrom = Math.max(0, from - (opts?.backward ?? 10))
   const limit = scriptNorm.length - win
   for (let p = searchFrom; p <= limit; p++) {
     let score = 0
@@ -86,7 +87,7 @@ export function bestMatchPosition(
       bestScore = score
       bestEnd = p + win
     }
-    // 早停：接近滿分
+    // 早停:接近滿分
     if (bestScore >= win * 0.95) break
   }
   if (bestScore / win < minScore) return -1
