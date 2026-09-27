@@ -198,7 +198,7 @@ function createOverlayWindow(): void {
     width: settings.overlay.width,
     height: settings.overlay.height,
     minWidth: 280,
-    minHeight: 140,
+    minHeight: 40,
     frame: false,
     transparent: true,
     hasShadow: false,
@@ -207,6 +207,7 @@ function createOverlayWindow(): void {
     fullscreenable: false,
     skipTaskbar: true,
     show: false,
+    paintWhenInitiallyHidden: true,
     alwaysOnTop: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -291,6 +292,13 @@ function registerIpc(): void {
     settings.overlay.width = Math.max(240, Math.round(w))
     settings.overlay.height = Math.max(40, Math.round(h))
     saveSettings(settings)
+    applyOverlayWindowSettings()
+  })
+
+  /** 動畫用即時尺寸:每幀呼叫,只改視窗與記憶體設定,不落盤(結束時由 OverlaySetSize 定案) */
+  ipcMain.handle(IPC.OverlaySetSizeLive, (_e, w: number, h: number) => {
+    settings.overlay.width = Math.max(240, Math.round(w))
+    settings.overlay.height = Math.max(40, Math.round(h))
     applyOverlayWindowSettings()
   })
 

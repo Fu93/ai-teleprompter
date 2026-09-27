@@ -21,3 +21,13 @@ export function uid(): string {
   uidCounter += 1
   return `${Date.now().toString(36)}-${uidCounter}`
 }
+
+/**
+ * 精度降級取代截斷(Island 慣例):寬度不足時直接降到前 N 字,永不出現「…」。
+ * 比起 CSS truncate,保留完整資訊語意(關鍵詞可見即可用),也避免 CJK 斷字位置怪異。
+ */
+export function degrade(text: string, maxChars: number): string {
+  const t = text.trim()
+  if (t.length <= maxChars) return t
+  return t.slice(0, Math.max(1, maxChars))
+}

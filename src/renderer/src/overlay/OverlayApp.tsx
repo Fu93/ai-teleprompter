@@ -21,7 +21,7 @@ import {
 } from 'lucide-react'
 import type { AppSettings, OverlayDisplayMode } from '@shared/types'
 import type { OverlayShowPayload } from '@shared/api'
-import { cn, formatDuration } from '../lib/utils'
+import { cn, degrade, formatDuration } from '../lib/utils'
 import {
   bestMatchPosition,
   buildChunks,
@@ -30,6 +30,8 @@ import {
   type FollowChunk
 } from '../lib/follow'
 import { AudioSegmenter } from '../lib/audio/segmenter'
+import { SpringAnimator, SPRING_PRESETS } from '../lib/spring'
+import { buildDisplacementMap, ensureGlassFilter } from '../lib/glassRefraction'
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { PhraseVisuals } from '../lib/teleprompter/constants'
 import { effectiveEngineRate } from '../lib/calibration'
@@ -42,10 +44,9 @@ import { Segmented } from '../components/Segmented'
 
 type FollowStatus = 'idle' | 'loading' | 'listening' | 'error'
 
-/** 進入藥丸模式前的視窗尺寸(收合時縮小視窗,展開時還原) */
-let expandedSize: { w: number; h: number } | null = null
-/** 貼鏡模式前的視窗尺寸 */
-let lensPrevSize: { w: number; h: number } | null = null
+/** 進入藥丸/貼鏡模式前的視窗尺寸(morph 動畫的還原基準;module-level 供切頁保留) */
+const expandedSize = { current: null as { w: number; h: number } | null }
+const lensPrevSize = { current: null as { w: number | null; h: number | null } | null }
 
 const MODES: Array<{ id: OverlayDisplayMode; label: string; icon: typeof AlignJustify }> = [
   { id: 'scroll', label: '連續捲動', icon: AlignJustify },
@@ -71,7 +72,7 @@ function ToolBtn({
       onClick={onClick}
       className={cn(
         'flex h-7 w-7 items-center justify-center rounded-md transition-colors cursor-pointer no-drag',
-        active ? 'bg-accent-500/25 text-accent-300' : 'text-ink-300 hover:bg-white/10 hover:text-white'
+        active ? 'bg-accent-500/25 text-accent-300' : 'text-white/72 hover:bg-white/10 hover:text-white'
       )}
     >
       {children}
@@ -109,7 +110,7 @@ function ScrollSurface({
       onWheel={(e) => onWheelAdjust(e.deltaY)}
     >
       <div
-        className="font-medium text-white select-none"
+        className="font-medium text-white/100 select-none"
         style={{
           fontSize: settings.fontSize,
           lineHeight: settings.lineHeight,
@@ -193,7 +194,7 @@ function PhraseSurface({
       </div>
       {nextSentence && (
         <div
-          className="mt-3 truncate border-t border-white/5 pt-2 text-ink-400 select-none"
+          className="mt-3 truncate border-t border-white/5 pt-2 text-white/52 select-none"
           style={{ fontSize: Math.max(14, fontSize * 0.55) }}
         >
           下一句:{nextSentence}
@@ -216,7 +217,7 @@ function BulletSurface({
 
   if (!bullet) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-ink-400 select-none">
+      <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-white/52 select-none">
         此講稿無法切出重點
       </div>
     )
@@ -231,7 +232,7 @@ function BulletSurface({
         {bullet.title}
       </div>
       {bullet.subPoints.length > 0 && (
-        <ul className="mt-2 space-y-1 text-ink-200" style={{ fontSize: Math.max(14, fontSize * 0.58) }}>
+        <ul className="mt-2 space-y-1 text-white/72" style={{ fontSize: Math.max(14, fontSize * 0.58) }}>
           {bullet.subPoints.map((sp, i) => (
             <li key={i} className="flex gap-1.5">
               <span className="text-accent-400">•</span>
@@ -240,7 +241,7 @@ function BulletSurface({
           ))}
         </ul>
       )}
-      <div className="mt-3 font-mono text-[10px] text-ink-400">
+      <div className="mt-3 font-mono text-[10px] text-white/52">
         {state.bulletIndex + 1} / {model.bullets.length} ・ ← → 切換
       </div>
     </div>
@@ -266,15 +267,15 @@ function LensSurface({
     const next = model.bullets[state.bulletIndex + 1]
     return (
       <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
-        <div className="font-semibold leading-snug text-white reading-shadow" style={{ fontSize: 19 }}>
+        <div className="font-semibold leading-snug text-white/72 reading-shadow" style={{ fontSize: 19 }}>
           {bullet?.title ?? '—'}
         </div>
         {bullet && bullet.subPoints.length > 0 && (
-          <div className="mt-0.5 truncate text-[11px] text-ink-200" style={{ opacity: 0.8 }}>
+          <div className="mt-0.5 truncate text-[11px] text-white/72" style={{ opacity: 0.8 }}>
             {bullet.subPoints[0]}
           </div>
         )}
-        <div className="mt-auto truncate pb-1.5 text-[11px] text-ink-300" style={{ opacity: 0.62 }}>
+        <div className="mt-auto truncate pb-1.5 text-[11px] text-white/72" style={{ opacity: 0.62 }}>
           下一點:{next?.title ?? '(結束)'}
         </div>
       </div>
@@ -303,7 +304,7 @@ function LensSurface({
             </span>
           ))}
         </div>
-        <div className="mt-auto truncate pb-1.5 text-[11px] text-ink-300" style={{ opacity: 0.62 }}>
+        <div className="mt-auto truncate pb-1.5 text-[11px] text-white/72" style={{ opacity: 0.62 }}>
           下一詞組:{nextChunk ?? '(結束)'}
         </div>
       </div>
@@ -337,11 +338,11 @@ function LensSurface({
         ))}
       </div>
       <div className="mt-auto space-y-0.5 pb-1.5">
-        <div className="truncate text-[12px] text-ink-200" style={{ opacity: 0.62 }}>
+        <div className="truncate text-[12px] text-white/72" style={{ opacity: 0.62 }}>
           下一句:{nextSentence ?? '—'}
         </div>
         {upcoming && (
-          <div className="truncate text-[11px] text-ink-300" style={{ opacity: 0.38 }}>
+          <div className="truncate text-[11px] text-white/72" style={{ opacity: 0.38 }}>
             再下一句:{upcoming}
           </div>
         )}
@@ -386,7 +387,7 @@ function KaraokeSurface({
           )
         })}
       </div>
-      <div className="mt-2 font-mono text-[10px] text-ink-400">
+      <div className="mt-2 font-mono text-[10px] text-white/52">
         {Math.min(state.karaokeChunkIndex + 1, totalChunks)} / {totalChunks}
       </div>
     </div>
@@ -649,6 +650,124 @@ export default function OverlayApp(): JSX.Element {
     return () => clearTimeout(t)
   }, [lensOn])
 
+  // ── Liquid Glass 真折射(P2-13):位移圖隨視窗尺寸重建,filter 注入 DOM ──
+  // CSS 端 @supports 讓不支援 SVG backdrop-filter 的引擎自動退回一般 blur。
+  const [refractOk, setRefractOk] = useState(false)
+  const [winSize, setWinSize] = useState({ w: 0, h: 0 })
+  useEffect(() => {
+    // 偵測:Chromium 才允許 url() 於 backdrop-filter;以 CSS.supports 探測
+    setRefractOk(
+      typeof CSS !== 'undefined' &&
+        (CSS.supports('backdrop-filter', 'url(#x)') || CSS.supports('-webkit-backdrop-filter', 'url(#x)'))
+    )
+  }, [])
+  useEffect(() => {
+    if (!refractOk || !o?.glass) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const rebuild = (): void => {
+      const w = Math.max(1, window.innerWidth)
+      const h = Math.max(1, window.innerHeight)
+      const map = buildDisplacementMap(w, h, 18, 14, 12)
+      ensureGlassFilter('liquid-glass', map, 2)
+      setWinSize({ w, h })
+    }
+    rebuild()
+    // morph 動畫期間每幀都 resize,debounce 300ms 後重建
+    const onResize = (): void => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(rebuild, 300)
+    }
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      if (timer) clearTimeout(timer)
+    }
+  }, [refractOk, o?.glass, winSize.w === 0])
+
+  // pill 隨游標 specular(P2-13):滑鼠移動更新 --spec-x/--spec-y(ref 套在 pill 外殼)
+  const specRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const el = specRef.current
+    if (!el) return
+    const onMove = (e: MouseEvent): void => {
+      const rect = el.getBoundingClientRect()
+      el.style.setProperty('--spec-x', `${((e.clientX - rect.left) / rect.width) * 100}%`)
+      el.style.setProperty('--spec-y', `${((e.clientY - rect.top) / rect.height) * 100}%`)
+      el.style.setProperty('--spec-o', '1')
+    }
+    const onLeave = (): void => el.style.setProperty('--spec-o', '0')
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseout', onLeave)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseout', onLeave)
+    }
+  }, [])
+
+  // ── 藥丸/貼鏡 morph:彈簧驅動視窗尺寸(開合分離阻尼)──
+  // rAF 彈簧積分器:展開用 open(ζ≈0.8 帶彈)、收合用 close(臨界阻尼零彈跳);
+  // 每幀 overlaySetSizeLive(不落盤),收斂時 onSettle 才以 overlaySetSize 定案(寫入設定)。
+  // 注意:hooks 必須在下方 early return 之前,否則 settings 載入前後 hook 數不一致(React #310)。
+  const sizeSpringRef = useRef<SpringAnimator | null>(null)
+  /** morph 定案後的「原始展開尺寸」;進入貼鏡/藥丸前的還原基準 */
+  const settledSizeRef = useRef<{ w: number; h: number } | null>(null)
+
+  const stopSizeSpring = useCallback((): void => {
+    sizeSpringRef.current?.stop()
+    sizeSpringRef.current = null
+  }, [])
+
+  useEffect(
+    () => () => stopSizeSpring(),
+    [stopSizeSpring]
+  )
+
+  /** 以彈簧把視窗從目前尺寸 morph 到 (toW,toH);isOpening 決定阻尼(open 有彈/close 無彈)。
+   *  settleSize = 收斂時寫入設定的最終尺寸(通常等於 toW/toH) */
+  const morphSize = useCallback(
+    (toW: number, toH: number, isOpening: boolean, settleSize: { w: number; h: number }): void => {
+      const startW = window.innerWidth
+      const startH = window.innerHeight
+      // 目標就是目前尺寸:直接定案,不播動畫
+      if (startW === toW && startH === toH) {
+        settledSizeRef.current = settleSize
+        void window.api.overlaySetSize(toW, toH)
+        return
+      }
+      settledSizeRef.current = null
+      stopSizeSpring()
+      const animator = new SpringAnimator(
+        0,
+        1,
+        isOpening ? SPRING_PRESETS.open : SPRING_PRESETS.close,
+        () => {},
+        () => {
+          settledSizeRef.current = settleSize
+          void window.api.overlaySetSize(settleSize.w, settleSize.h)
+        }
+      )
+      sizeSpringRef.current = animator
+      const wSpan = toW - startW
+      const hSpan = toH - startH
+      let lastAt: number | null = null
+      const tick = (now: number): void => {
+        if (sizeSpringRef.current !== animator) return // 已被新的 morph 取代
+        const dt = lastAt === null ? 16.7 : Math.min(64, now - lastAt)
+        lastAt = now
+        animator.advance(dt)
+        const p = animator.value
+        void window.api.overlaySetSizeLive(Math.round(startW + wSpan * p), Math.round(startH + hSpan * p))
+        if (animator.settled) {
+          sizeSpringRef.current = null // onSettle 已在 advance() 內定案
+        } else {
+          requestAnimationFrame(tick)
+        }
+      }
+      requestAnimationFrame(tick)
+    },
+    [stopSizeSpring]
+  )
+
   if (!o || !state) {
     return <div className="h-full" />
   }
@@ -663,44 +782,64 @@ export default function OverlayApp(): JSX.Element {
 
   // ── 藥丸模式:縮小視窗成一行玻璃藥丸,展開還原原尺寸 ──
   const enterCompact = (): void => {
-    expandedSize = { w: o.width, h: o.height }
-    void window.api.overlaySetSize(460, 56)
+    // 原始展開尺寸:從「最後定案的展開尺寸」取;直接從貼鏡進來時用 lensPrevSize,
+    // 都沒有才用設定值(morph 途中 o.width/height 尚未定案,不可用)
+    const prevLens = lensPrevSize.current
+    const fromLens = prevLens && prevLens.w !== null && prevLens.h !== null ? { w: prevLens.w, h: prevLens.h } : null
+    const expanded = settledSizeRef.current ?? fromLens ?? { w: o.width, h: o.height }
+    expandedSize.current = expanded
     void patchOverlay({ compact: true })
+    morphSize(460, 56, false, expanded)
   }
   const exitCompact = (): void => {
-    const size = expandedSize ?? { w: 720, h: 260 }
-    void window.api.overlaySetSize(size.w, size.h)
+    const size = expandedSize.current ?? settledSizeRef.current ?? { w: 720, h: 260 }
     void patchOverlay({ compact: false })
+    morphSize(size.w, size.h, true, size)
   }
 
   // ── 貼鏡模式:窄條視窗貼近攝影機,當前行鎖定鏡頭下方 ~2° 視角 ──
   const enterLens = (): void => {
-    if (o.compact) exitCompact()
-    lensPrevSize = { w: o.width, h: o.height }
-    void window.api.overlaySetSize(420, 170)
-    void patchOverlay({ lensMode: true })
+    const expanded =
+      settledSizeRef.current ??
+      (o.compact ? expandedSize.current : null) ??
+      { w: o.width, h: o.height }
+    lensPrevSize.current = expanded
+    void patchOverlay({ lensMode: true, compact: false })
+    morphSize(420, 170, false, expanded)
   }
   const exitLens = (): void => {
-    const size = lensPrevSize ?? { w: 720, h: 260 }
-    void window.api.overlaySetSize(size.w, size.h)
+    const prev = lensPrevSize.current
+    // prev.w === null 表示進貼鏡前本來就是藥丸:還原回藥丸而非強制展開
+    const size = prev && prev.w !== null && prev.h !== null ? { w: prev.w, h: prev.h } : null
+    if (!size) {
+      void patchOverlay({ lensMode: false, compact: true })
+      morphSize(460, 56, true, { w: 720, h: 260 })
+      return
+    }
     void patchOverlay({ lensMode: false })
+    morphSize(size.w, size.h, true, size)
   }
 
   if (o.compact) {
-    // 漸進揭露:pill 顯示「下一個關鍵詞」(各模式游標的下一單元開頭)
+    // 漸進揭露:pill 顯示「下一個關鍵詞」(各模式游標的下一單元開頭);
+    // 精度降級取代截斷:寬度不足時降為前 4 字,永不出現「…」
     let nextKeyword = ''
     if (displayMode === 'phrase' || displayMode === 'scroll') {
       const phrases = model.phrases[state.sentenceIndex] ?? []
       const next = phrases[state.phraseIndex + 1] ?? (model.sentences[state.sentenceIndex + 1] ?? '')
-      nextKeyword = (typeof next === 'string' ? next : next.text).slice(0, 10)
+      nextKeyword = degrade(typeof next === 'string' ? next : next.text, 6)
     } else if (displayMode === 'karaoke') {
-      nextKeyword = (model.karaokeChunks[state.karaokeChunkIndex + 1] ?? '').slice(0, 10)
+      nextKeyword = degrade(model.karaokeChunks[state.karaokeChunkIndex + 1] ?? '', 6)
     } else if (displayMode === 'bullet') {
-      nextKeyword = (model.bullets[state.bulletIndex + 1]?.title ?? '').slice(0, 10)
+      nextKeyword = degrade(model.bullets[state.bulletIndex + 1]?.title ?? '', 6)
     }
     return (
       <div
-        className="glass-pill anim-rise flex h-full cursor-default select-none items-center gap-3 rounded-full px-4"
+        ref={specRef}
+        className={cn(
+          'glass-pill content-morph-in glass-specular flex h-full cursor-default select-none items-center gap-3 rounded-full px-4',
+          refractOk && o.glass && 'glass-refract'
+        )}
         title="雙擊展開"
         onDoubleClick={exitCompact}
       >
@@ -710,8 +849,8 @@ export default function OverlayApp(): JSX.Element {
             o.clickThrough ? 'bg-amber-450' : playing ? 'bg-emerald-500' : 'bg-ink-600'
           )}
         />
-        <span className="max-w-[110px] truncate text-xs font-medium text-ink-100">
-          {payload.title || '提詞浮層'}
+        <span className="max-w-[110px] truncate text-xs font-medium text-white/100">
+          {degrade(payload.title || '提詞浮層', 8)}
         </span>
         <div className="h-1 min-w-6 flex-1 overflow-hidden rounded-full bg-white/10">
           <div
@@ -720,11 +859,11 @@ export default function OverlayApp(): JSX.Element {
           />
         </div>
         {nextKeyword && (
-          <span className="max-w-[96px] truncate text-[11px] text-accent-300" title={`下一個:${nextKeyword}`}>
+          <span className="text-[11px] text-accent-300" title={`下一個:${nextKeyword}`}>
             {nextKeyword}
           </span>
         )}
-        <span className="shrink-0 font-mono text-[10px] text-ink-300">{formatDuration(elapsedSec)}</span>
+        <span className="shrink-0 font-mono text-[10px] text-white/72">{formatDuration(elapsedSec)}</span>
         {panicPhase !== 'idle' ? (
           <button
             onClick={dismissRescue}
@@ -737,7 +876,7 @@ export default function OverlayApp(): JSX.Element {
           <button
             onClick={triggerPanic}
             title="Panic 救援(Alt+P)"
-            className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-ink-300 hover:bg-white/10 hover:text-white"
+            className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-white/72 hover:bg-white/10 hover:text-white/100"
           >
             <Siren size={13} />
           </button>
@@ -745,14 +884,14 @@ export default function OverlayApp(): JSX.Element {
         <button
           onClick={playing ? controls.pause : controls.play}
           title={playing ? '暫停' : '播放'}
-          className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-ink-200 hover:bg-white/10 hover:text-white"
+          className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-white/72 hover:bg-white/10 hover:text-white/100"
         >
           {playing ? <Pause size={13} /> : <Play size={13} />}
         </button>
         <button
           onClick={exitCompact}
           title="展開完整面板(或雙擊藥丸)"
-          className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-ink-300 hover:bg-white/10 hover:text-white"
+          className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-white/72 hover:bg-white/10 hover:text-white/100"
         >
           <Maximize2 size={12} />
         </button>
@@ -809,14 +948,14 @@ export default function OverlayApp(): JSX.Element {
             <button
               key={c.id}
               onClick={() => void window.api.snapOverlayCorner(c.id)}
-              className="rounded-full bg-white/8 px-2 py-0.5 text-[10px] text-ink-200 transition-colors hover:bg-white/15 hover:text-white cursor-pointer"
+              className="rounded-full bg-white/8 px-2 py-0.5 text-[10px] text-white/72 transition-colors hover:bg-white/15 hover:text-white/72 cursor-pointer"
             >
               {c.label}
             </button>
           ))}
         </div>
         {lensHint && (
-          <div className="pointer-events-none absolute inset-x-3 bottom-1.5 z-10 rounded-full bg-black/60 px-3 py-1 text-center text-[10px] text-ink-200">
+          <div className="pointer-events-none absolute inset-x-3 bottom-1.5 z-10 rounded-full bg-black/60 px-3 py-1 text-center text-[10px] text-white/72">
             把這條貼到攝影機 5cm 內 — 眼神會自然對準鏡頭,錄起來不像看稿
           </div>
         )}
@@ -850,7 +989,7 @@ export default function OverlayApp(): JSX.Element {
                     : 'bg-ink-600'
             )}
           />
-          <span className="max-w-[130px] truncate text-xs font-medium text-ink-200">
+          <span className="max-w-[130px] truncate text-xs font-medium text-white/72">
             {payload.title || '提詞浮層'}
           </span>
         </div>
@@ -870,7 +1009,7 @@ export default function OverlayApp(): JSX.Element {
           className="flex items-center gap-0.5"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          <span className="mr-1.5 select-none font-mono text-[10px] text-ink-400">
+          <span className="mr-1.5 select-none font-mono text-[10px] text-white/52">
             {formatDuration(elapsedSec)}
             {remainingMs !== null && ` / -${formatDuration(remainingMs / 1000)}`}
           </span>
@@ -949,7 +1088,7 @@ export default function OverlayApp(): JSX.Element {
               >
                 <ChevronLeft size={13} />
               </ToolBtn>
-              <span className="w-9 select-none text-center font-mono text-[10px] text-ink-400">
+              <span className="w-9 select-none text-center font-mono text-[10px] text-white/52">
                 {(o.rate ?? 1).toFixed(1)}×
               </span>
               <ToolBtn
@@ -966,7 +1105,7 @@ export default function OverlayApp(): JSX.Element {
               <ToolBtn title="速度 -" onClick={() => void patchOverlay({ speed: Math.max(10, o.speed - 10) })}>
                 <ChevronLeft size={13} />
               </ToolBtn>
-              <span className="w-9 select-none text-center font-mono text-[10px] text-ink-400">{o.speed}</span>
+              <span className="w-9 select-none text-center font-mono text-[10px] text-white/52">{o.speed}</span>
               <ToolBtn title="速度 +" onClick={() => void patchOverlay({ speed: Math.min(600, o.speed + 10) })}>
                 <ChevronRight size={13} />
               </ToolBtn>
@@ -1035,7 +1174,7 @@ export default function OverlayApp(): JSX.Element {
 
           {/* 跟讀狀態條 */}
           {followStatus !== 'idle' && (
-            <div className="pointer-events-none absolute bottom-1.5 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-3 py-1 text-[10px] text-ink-200">
+            <div className="pointer-events-none absolute bottom-1.5 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-3 py-1 text-[10px] text-white/72">
               {followStatus === 'loading' && <Loader2 size={10} className="animate-spin" />}
               {followStatus === 'listening' && <AudioLines size={10} className="text-emerald-400" />}
               <span className="max-w-[280px] truncate">
@@ -1050,7 +1189,7 @@ export default function OverlayApp(): JSX.Element {
           )}
         </div>
       ) : (
-        <div className="flex h-full items-center justify-center px-6 text-center text-xs leading-relaxed text-ink-400">
+        <div className="flex h-full items-center justify-center px-6 text-center text-xs leading-relaxed text-white/52">
           尚未載入講稿
           <br />
           到主視窗「提詞講稿」頁按「開始提詞」

@@ -46,10 +46,17 @@
 11. **錄後**:Blob URL 即時預覽 + 重新命名 + 「開啟所在資料夾」(`shell.showItemInFolder`)+ Whisper 轉錄進度;長期:分段 clip bar + 重錄上段(Tella)
 12. **不抄清單**:終段上傳黑箱(Riverside)、AI 眼神矯正/美顏(違背本機隱私)、把提詞器埋進深選單(Descript 教訓)
 
-### P2 — 進階質感
-13. Liquid Glass 真折射:SVG `feImage+feDisplacementMap`(squircle 位移圖 scale 12–18)+ `backdrop-filter: url(#f)`,Chromium-only 需 engine 偵測 fallback;pill 加隨游標 specular
-14. 玻璃 vibrancy 文字三級 alpha(100/72/52%)取代全域灰階 token
-15. Toast 系統(400ms ease、4s 自動消失、hover 暫停、堆疊 scale 0.05 遞減)— 目前訊息散在各頁角落
+### P2 — 進階質感 ✅ 已完成(2026-09-27)
+
+> **實施記錄**:203 vitest 全綠。
+> - **Toast(P2-15)**:`lib/toast.ts` Zustand store + `ToastHost`(400ms ease 入場、4s 自動消失、hover 暫停、堆疊 scale 0.05 遞減、上限 3 則、重複訊息重設計時);Record/Practice/Calibration/Scripts/Settings 五頁的 error state 樣板全數收斂,持續性狀態(模型下載進度等)刻意保留原位
+> - **Liquid Glass 真折射(P2-13)**:`lib/glassRefraction.ts` — squircle 表面函數 + 斯涅爾簡化折射模擬生成 R/G 位移圖(128 中性),`ensureGlassFilter` 注入 feImage+feDisplacementMap(內含 feGaussianBlur),pill 套 `backdrop-filter: url(#…)`;視窗尺寸變更 debounce 重建位移圖;**降級用 `@supports (backdrop-filter: url(#x))` 純 CSS 判定,零 JS 嗅探**;pill 加隨游標 specular 高光(`--spec-x/y` + radial-gradient ::after)
+> - **玻璃文字三級 alpha(P2-14)**:浮層(OverlayApp + RescueCard)文字統一改三級白 — 100%(當前/主動)、72%(次要)、52%(輔助) — 取代灰階 ink token;主視窗頁面維持 ink 階(非玻璃表面)
+> - 數學層 4 個單元測試(squircle 單調性、位移峰值、NaN 防護 — 後者抓到 Math.max 不擋 NaN 的真漏洞)
+
+13. ~~Liquid Glass 真折射~~ ✅
+14. ~~玻璃 vibrancy 文字三級 alpha~~ ✅
+15. ~~Toast 系統~~ ✅
 
 ## 來源精選
 - ①Apple:boring.notch spring 原始碼 / WWDC23 Live Activities / WWDC25 Meet Liquid Glass / kube.io SVG 折射 / HIG Typography gist 實測 tracking

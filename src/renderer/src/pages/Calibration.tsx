@@ -29,6 +29,7 @@ import {
 import { Ema, detectIris, getFaceLandmarker } from '../lib/faceLandmarker'
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
+import { toast } from '../lib/toast'
 import { encodeWav } from '../lib/audio/wav'
 
 const CALIBRATION_PASSAGE =
@@ -39,7 +40,6 @@ type Step = 0 | 1 | 2
 export default function Calibration({ onDone }: { onDone: () => void }): JSX.Element {
   const { settings, update } = useSettings()
   const [step, setStep] = useState<Step>(0)
-  const [error, setError] = useState<string | null>(null)
 
   // Step 1: IPD + 視距
   const [ipdMm, setIpdMm] = useState(63)
@@ -210,7 +210,6 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
   }
 
   const startReading = async (): Promise<void> => {
-    setError(null)
     try {
       if (!whisperRef.current) whisperRef.current = new WhisperClient()
       const client = whisperRef.current
@@ -231,7 +230,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       setRecording(true)
       setTranscribing(false)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      toast.error(err instanceof Error ? err.message : String(err))
       setTranscribing(false)
     }
   }
@@ -246,7 +245,6 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
     stopAudioPipeline()
     setRecording(false)
     setTranscribing(true)
-    setError(null)
     try {
       const secs = (Date.now() - recStartRef.current) / 1000
       const total = chunksRef.current.reduce((a, b) => a + b.length, 0)
@@ -280,7 +278,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       if (chars < 20) throw new Error(`只聽到 ${chars} 個字，請確認麥克風與音量後再試一次`)
       setRateResult({ charsPerMin: cpm, chars, secs: Math.round(secs) })
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      toast.error(err instanceof Error ? err.message : String(err))
     } finally {
       setTranscribing(false)
       setModelProgress(null)
@@ -343,12 +341,6 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
           </div>
         ))}
       </div>
-
-      {error && (
-        <div className="mb-4 rounded-lg border border-rose-450/30 bg-rose-450/10 px-4 py-2.5 text-xs text-rose-450">
-          {error}
-        </div>
-      )}
 
       {/* ============ Step 0: 眼距 ============ */}
       {step === 0 && (

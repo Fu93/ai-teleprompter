@@ -71,6 +71,8 @@ export interface Api {
   overlaySetClickThrough(v: boolean): Promise<void>
   overlaySetCaptureProtection(v: boolean): Promise<void>
   overlaySetSize(w: number, h: number): Promise<void>
+  /** 動畫用即時尺寸:每幀呼叫,只改視窗不落盤(結束時用 overlaySetSize 定案) */
+  overlaySetSizeLive(w: number, h: number): Promise<void>
   onOverlayVisibility(cb: (visible: boolean) => void): Unsubscribe
   onOverlayLoadScript(cb: (payload: OverlayShowPayload) => void): Unsubscribe
 

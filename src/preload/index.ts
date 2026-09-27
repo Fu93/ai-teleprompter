@@ -29,6 +29,7 @@ const api: Api = {
   overlaySetClickThrough: (v) => ipcRenderer.invoke(IPC.OverlaySetClickThrough, v),
   overlaySetCaptureProtection: (v) => ipcRenderer.invoke(IPC.OverlaySetCaptureProtection, v),
   overlaySetSize: (w, h) => ipcRenderer.invoke(IPC.OverlaySetSize, w, h),
+  overlaySetSizeLive: (w, h) => ipcRenderer.invoke(IPC.OverlaySetSizeLive, w, h),
   onOverlayVisibility: (cb) => on<boolean>(IPC.OverlayVisibilityChanged, cb),
   onOverlayLoadScript: (cb) => on<OverlayShowPayload>('overlay:load-script', cb),
 

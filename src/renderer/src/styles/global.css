@@ -134,6 +134,36 @@ body {
     0 18px 50px rgba(0, 0, 0, 0.55);
 }
 
+/* ── Liquid Glass 真折射(P2-13)──
+   Chromium 支援 SVG filter 作為 backdrop-filter(非規格行為);
+   不支援的引擎自動退回上一行的一般 blur 玻璃 — @supports 即降級,零 JS 偵測。
+   filter url 由 glassRefraction.ensureGlassFilter() 注入(位移圖隨視窗尺寸重建)。 */
+@supports (backdrop-filter: url(#x)) {
+  .glass-refract {
+    /* blur 已折進 filter(feGaussianBlur),這裡只掛折射 */
+    -webkit-backdrop-filter: url(#liquid-glass-f);
+    backdrop-filter: url(#liquid-glass-f);
+  }
+}
+/* 隨游標 specular 高光:JS 更新 --spec-x/--spec-y(百分比);搭配 .glass-specular */
+.glass-specular {
+  position: relative;
+}
+.glass-specular::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    220px circle at var(--spec-x, 50%) var(--spec-y, 0%),
+    rgba(255, 255, 255, 0.14),
+    transparent 60%
+  );
+  opacity: var(--spec-o, 0);
+  transition: opacity var(--dur-base) var(--ease-hover);
+}
+
 /* ── 共用元件 ── */
 .btn,
 .btn-primary,
@@ -265,6 +295,56 @@ h2 {
 }
 .anim-rise {
   animation: rise-in 0.35s var(--ease-spring) both;
+}
+
+/* Island 內容 morph:新內容延遲 120ms、從 1.04 縮回(Island 解剖:舊內容即刻淡出、
+   新內容延遲入場,避免新舊同時可見的閃爍;reduced-motion 時全域已折為 1ms) */
+@keyframes content-morph-in {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.content-morph-in {
+  animation: content-morph-in var(--dur-overlay) var(--ease-morph-open) both;
+  animation-delay: 120ms;
+}
+
+/* eyebrow label(11px/600/uppercase/+0.5px)—— 區塊小標題 */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--color-ink-400);
+}
+
+/* tracking 分級:11-12px 小字微正字距(HIG:小字提高辨識度) */
+.tracking-small {
+  letter-spacing: 0.4px;
+}
+
+/* ── Toast(P2-15):400ms ease 入場、退場下滑淡出 ── */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(var(--toast-scale, 1));
+  }
+}
+.toast-item {
+  animation: toast-in 0.4s cubic-bezier(0.25, 0.1, 0.25, 1) both;
+  transition: transform var(--dur-base) var(--ease-hover), opacity var(--dur-base) var(--ease-hover);
+}
+.toast-item:hover {
+  transform: scale(calc(var(--toast-scale, 1) * 1.02)) !important;
 }
 
 @keyframes shimmer-slide {

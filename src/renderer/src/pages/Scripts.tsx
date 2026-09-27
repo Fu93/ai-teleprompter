@@ -4,6 +4,7 @@ import { FilePlus2, FolderOpen, Pause, Play, Save, Search, Square, Trash2, Video
 import { db } from '../lib/db'
 import type { Script } from '@shared/types'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
+import { toast } from '../lib/toast'
 import { useSettings } from '../lib/store'
 
 function estimateMinutes(content: string, charsPerMin: number): string {
@@ -98,7 +99,6 @@ export default function Scripts(): JSX.Element {
   const [recording, setRecording] = useState(false)
   const [recPaused, setRecPaused] = useState(false)
   const [recSec, setRecSec] = useState(0)
-  const [recMsg, setRecMsg] = useState<string | null>(null)
   const [countdown, setCountdown] = useState<number | null>(null)
   const [preview, setPreview] = useState<{ url: string; path?: string } | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -115,7 +115,6 @@ export default function Scripts(): JSX.Element {
   const beginRecording = async (): Promise<void> => {
     if (selectedId == null || !draft.content.trim()) return
     if (dirty) await save()
-    setRecMsg(null)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -139,9 +138,9 @@ export default function Scripts(): JSX.Element {
         })
         if (res.ok && res.filePath) {
           setPreview({ url: URL.createObjectURL(blob), path: res.filePath })
-          setRecMsg(null)
+          toast.success('錄影已儲存')
         } else {
-          setRecMsg(`錄影未儲存(${res.error ?? 'canceled'})`)
+          toast.error(`錄影未儲存(${res.error ?? 'canceled'})`)
         }
         setRecording(false)
         setRecPaused(false)
@@ -160,7 +159,7 @@ export default function Scripts(): JSX.Element {
     } catch (err) {
       recStreamRef.current?.getTracks().forEach((t) => t.stop())
       recStreamRef.current = null
-      setRecMsg(`無法開啟攝影機:${err instanceof Error ? err.message : String(err)}`)
+      toast.error(`無法開啟攝影機:${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -396,7 +395,6 @@ export default function Scripts(): JSX.Element {
                   浮層將以 {settings.overlay.fontSize}px、速度 {settings.overlay.speed} px/s 滾動 ·
                   於「設定」頁調整
                 </span>
-                {recMsg && <span className="truncate text-accent-300">{recMsg}</span>}
               </div>
             )}
           </>

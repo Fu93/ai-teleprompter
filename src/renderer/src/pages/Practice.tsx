@@ -20,6 +20,7 @@ import { speak, stopSpeaking, warmUpVoices } from '../lib/tts'
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { encodeWav } from '../lib/audio/wav'
+import { toast } from '../lib/toast'
 import { analyzePracticeRun } from '../lib/session-intelligence'
 
 const PRACTICE_TYPES = ['行為面試', '技術面試', '自我介紹', '案例簡報', '銷售情境'] as const
@@ -40,7 +41,6 @@ export default function Practice(): JSX.Element {
   const [recording, setRecording] = useState(false)
   const [level, setLevel] = useState(0)
   const [busy, setBusy] = useState<string | null>(null) // 'questions' | 'feedback' | 'overall'
-  const [error, setError] = useState<string | null>(null)
   const [run, setRun] = useState<PracticeRun | null>(null)
   const [history, setHistory] = useState<PracticeRun[]>([])
 
@@ -102,12 +102,11 @@ export default function Practice(): JSX.Element {
         setCurTranscript(segsRef.current.join(''))
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      toast.error(err instanceof Error ? err.message : String(err))
     }
   }
 
   const startListening = async (): Promise<void> => {
-    setError(null)
     try {
       if (settings?.stt.engine === 'local') await ensureWhisper()
       segsRef.current = []
@@ -130,7 +129,7 @@ export default function Practice(): JSX.Element {
       await segmenterRef.current.start(stream)
       setRecording(true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      toast.error(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -146,10 +145,9 @@ export default function Practice(): JSX.Element {
   const startPractice = async (): Promise<void> => {
     if (!settings) return
     if (!position.trim()) {
-      setError('請填寫職位或情境，例如「產品經理」')
+      toast.error('請填寫職位或情境，例如「產品經理」')
       return
     }
-    setError(null)
     setBusy('questions')
     try {
       if (settings.ai.provider === 'ollama') {
@@ -175,7 +173,7 @@ export default function Practice(): JSX.Element {
       setAnswers([])
       setPhase('run')
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      toast.error(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(null)
     }
@@ -186,11 +184,10 @@ export default function Practice(): JSX.Element {
     const q = questions[qIndex]
     const transcript = segsRef.current.join('')
     if (!transcript.trim()) {
-      setError('沒有聽到回答內容')
+      toast.error('沒有聽到回答內容')
       return
     }
     if (!settings) return
-    setError(null)
     setBusy('feedback')
     stopSpeaking()
     const answerStart = curStart
@@ -220,7 +217,7 @@ export default function Practice(): JSX.Element {
       }
       setAnswers((a) => [...a, answer])
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      toast.error(err instanceof Error ? err.message : String(err))
       // 反饋失敗仍保留回答文字
       setAnswers((a) => [
         ...a,
@@ -368,11 +365,6 @@ export default function Practice(): JSX.Element {
               ))}
             </div>
           </div>
-          {error && (
-            <div className="rounded-lg border border-rose-450/30 bg-rose-450/10 px-4 py-2.5 text-xs text-rose-450">
-              {error}
-            </div>
-          )}
           <button className="btn-primary w-full" onClick={startPractice} disabled={busy !== null}>
             {busy === 'questions' ? (
               <>
@@ -521,11 +513,6 @@ export default function Practice(): JSX.Element {
                       style={{ width: `${level * 100}%` }}
                     />
                   </div>
-                </div>
-              )}
-              {error && (
-                <div className="rounded-lg border border-rose-450/30 bg-rose-450/10 px-4 py-2.5 text-xs text-rose-450">
-                  {error}
                 </div>
               )}
               {recording ? (

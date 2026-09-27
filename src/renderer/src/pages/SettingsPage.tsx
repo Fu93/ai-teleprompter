@@ -2,6 +2,7 @@ import type { JSX } from "react"
 import { useEffect, useState } from 'react'
 import { Check, Loader2, RefreshCw, Ruler, ScanEye } from 'lucide-react'
 import { useSettings } from '../lib/store'
+import { toast } from '../lib/toast'
 import { cn, formatDateTime } from '../lib/utils'
 import type { AppSettings } from '@shared/types'
 import type { SceneSummary } from '@shared/api'
@@ -35,7 +36,7 @@ function Section({
   return (
     <div className="card p-6">
       <div className="mb-5">
-        <div className="text-sm font-semibold">{title}</div>
+        <div className="eyebrow">{title}</div>
         {desc && <div className="mt-0.5 text-xs text-ink-400">{desc}</div>}
       </div>
       <div className="space-y-5">{children}</div>
@@ -131,7 +132,6 @@ export default function SettingsPage({
   const [scenes, setScenes] = useState<SceneSummary[] | null>(null)
   const [simBusy, setSimBusy] = useState(false)
   const [simDataUrl, setSimDataUrl] = useState<string | null>(null)
-  const [simError, setSimError] = useState<string | null>(null)
 
   useEffect(() => {
     void window.api.sceneList().then(setScenes).catch(() => setScenes([]))
@@ -263,7 +263,7 @@ export default function SettingsPage({
               try {
                 const res = await window.api.shareSimulation()
                 if (res.ok && res.dataUrl) setSimDataUrl(res.dataUrl)
-                else setSimError(res.error ?? '擷取失敗')
+                else toast.error(res.error ?? '擷取失敗')
               } finally {
                 setSimBusy(false)
               }
@@ -276,7 +276,6 @@ export default function SettingsPage({
           <div className="mt-1.5 text-[11px] text-ink-400">
             擷取主螢幕縮圖給你看「視訊軟體實際分享到的畫面」— 浮層不應出現;有出現代表擷取保護未生效。
           </div>
-          {simError && <div className="mt-1 text-[11px] text-rose-450">{simError}</div>}
           {simDataUrl && (
             <div className="anim-rise mt-2 overflow-hidden rounded-xl border border-white/10">
               <img src={simDataUrl} alt="螢幕擷取模擬" className="w-full" />

@@ -31,13 +31,13 @@ export function RescueCard({
           <span className="flex h-6 w-6 items-center justify-center rounded-md bg-rose-500/20 text-rose-400">
             {phase === 'thinking' ? <Loader2 size={13} className="animate-spin" /> : <Siren size={13} />}
           </span>
-          <span className="text-xs font-semibold text-ink-100">
+          <span className="text-xs font-semibold text-white/100">
             {phase === 'thinking' ? '救援思考中…' : 'Panic 救援'}
           </span>
           <span className="flex-1" />
           <button
             onClick={onDismiss}
-            className="flex h-5 w-5 cursor-pointer items-center justify-center rounded text-ink-400 hover:bg-white/10 hover:text-white"
+            className="flex h-5 w-5 cursor-pointer items-center justify-center rounded text-white/52 hover:bg-white/10 hover:text-white"
             title="關閉"
           >
             <X size={11} />
@@ -54,13 +54,13 @@ export function RescueCard({
         {phase === 'rescue' && rescue && rescue.sentence && (
           <>
             <div
-              className="mt-2.5 font-medium leading-snug text-white select-none"
+              className="mt-2.5 font-medium leading-snug text-white/100 select-none"
               style={{ fontSize: 18, textShadow: '0 1px 4px rgba(0,0,0,0.6)' }}
             >
               {rescue.sentence}
             </div>
             {rescue.points && (
-              <ul className="mt-2 space-y-0.5 text-xs text-ink-200 select-none">
+              <ul className="mt-2 space-y-0.5 text-xs text-white/72 select-none">
                 {rescue.points
                   .split(' / ')
                   .filter(Boolean)
@@ -95,13 +95,13 @@ export function RescueCard({
         )}
 
         {phase === 'rescue' && errorMsg && (
-          <div className="mt-2 truncate text-[10px] text-ink-400" title={errorMsg}>
+          <div className="mt-2 truncate text-[10px] text-white/52" title={errorMsg}>
             {errorMsg}
           </div>
         )}
 
         {phase === 'rescue' && rescue && !rescue.sentence && !errorMsg && (
-          <div className="mt-2 text-xs text-ink-400">準備中…</div>
+          <div className="mt-2 text-xs text-white/52">準備中…</div>
         )}
       </div>
     </div>

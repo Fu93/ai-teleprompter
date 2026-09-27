@@ -1,0 +1,143 @@
+/**
+ * 視覺驗證 — 啟動真實 app,逐一觸發本輪 Polish 的功能並截圖存檔。
+ * 執行:npx playwright test e2e/visual.spec.ts(需先 npm run build)
+ *
+ * 觸發路徑皆為真實使用者操作(可重現):
+ * - toast:Record 兩來源全不勾 → 「請至少選擇一個音訊來源」;Practice 空職位 → 「請填寫職位或情境」
+ * - 折射:開浮層 → 收合成藥丸;Chromium 不支援時驗證「降級路徑」(無折射 class = 正確 fallback)
+ *
+ * 產出(docs/screenshots/):
+ * - 12-toast-stack.png        toast 堆疊(scale 遞減)
+ * - 13-toast-hover-pause.png  hover 暫停中的 toast
+ * - 14-pill-refraction.png    藥丸折射 + specular(CSS 變數注入後)
+ * - 15-overlay-refraction.png 展開浮層狀態
+ */
+import { test, expect, _electron as electron } from '@playwright/test'
+import type { ElectronApplication, Page } from '@playwright/test'
+
+async function launchApp(): Promise<{ app: ElectronApplication; main: Page }> {
+  const app = await electron.launch({ args: ['.'], timeout: 60_000 })
+  const main = await app.firstWindow()
+  await main.waitForLoadState('domcontentloaded')
+  return { app, main }
+}
+
+function navTo(main: Page, label: string): void {
+  void main.evaluate((l) => {
+    const nav = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes(l))
+    nav?.click()
+  }, label)
+}
+
+test('toast 堆疊與 hover 暫停截圖', async () => {
+  const { app, main } = await launchApp()
+  test.setTimeout(60_000)
+  try {
+    // toast 1:Record 頁,兩來源全不勾 → 按開始聆聽
+    navTo(main, '錄音轉錄')
+    await main.waitForTimeout(500)
+    await main.evaluate(() => {
+      const mic = document.querySelector('input[type="checkbox"]') as HTMLInputElement | null
+      if (mic?.checked) mic.click() // 取消麥克風(系統音訊預設關)
+    })
+    await main.evaluate(() => {
+      const start = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('開始聆聽'))
+      start?.click()
+    })
+    await main.waitForSelector('.toast-item', { timeout: 5_000 })
+
+    // toast 2:切到 Practice 頁,空職位按開始練習(跨頁堆疊 = 全域 store 的展示)
+    navTo(main, '面試練習')
+    await main.waitForTimeout(500)
+    await main.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('開始練習'))
+      btn?.click()
+    })
+    await main.waitForTimeout(600)
+    expect(await main.locator('.toast-item').count()).toBe(2)
+    await main.screenshot({ path: 'docs/screenshots/12-toast-stack.png' })
+
+    // hover 暫停:滑入第一則,超過 toast2 剩餘壽命後兩則都還在
+    const first = main.locator('.toast-item').first()
+    await first.hover()
+    await main.waitForTimeout(2500)
+    expect(await main.locator('.toast-item').count()).toBe(2)
+    await main.screenshot({ path: 'docs/screenshots/13-toast-hover-pause.png' })
+
+    // 移開滑鼠 → 都在 4s 內到期
+    await main.mouse.move(10, 10)
+    await main.waitForTimeout(5200)
+    expect(await main.locator('.toast-item').count()).toBe(0)
+  } finally {
+    await app.close()
+  }
+})
+
+test('藥丸折射 + specular 截圖', async () => {
+  const { app, main } = await launchApp()
+  test.setTimeout(60_000)
+  try {
+    navTo(main, '提詞講稿')
+    await main.waitForTimeout(500)
+    await main.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('新講稿'))
+      btn?.click()
+    })
+    await main.waitForTimeout(300)
+    await main.locator('textarea').fill('大家好,今天想跟大家分享三個重點。第一是我們的進度,第二是遇到的挑戰,第三是接下來的計畫。')
+    await main.waitForTimeout(200)
+    await main.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('開始提詞'))
+      btn?.click()
+    })
+    await main.waitForTimeout(2000)
+
+    const overlay = app.windows().find((w) => w !== main)
+    expect(overlay).toBeTruthy()
+    if (!overlay) return
+    await overlay.waitForLoadState('domcontentloaded')
+    await overlay.waitForTimeout(800)
+
+    // 引擎能力偵測(與 app 內 CSS.supports 同判準)
+    const chromiumRefract = await overlay.evaluate(() =>
+      CSS.supports('backdrop-filter', 'url(#x)') || CSS.supports('-webkit-backdrop-filter', 'url(#x)')
+    )
+
+    // 15:展開浮層整體狀態
+    await overlay.screenshot({ path: 'docs/screenshots/15-overlay-refraction.png' })
+
+    // 收合成藥丸
+    await overlay.locator('[title*="收合成藥丸"]').click()
+    await overlay.waitForTimeout(1200) // 等 morph 彈簧收斂
+
+    const info = await overlay.evaluate(() => ({
+      hasFilter: !!document.getElementById('liquid-glass'),
+      filterId: document.getElementById('liquid-glass')?.querySelector('filter')?.id ?? null,
+      hasRefractClass: !!document.querySelector('.glass-refract'),
+      hasSpecular: !!document.querySelector('.glass-specular')
+    }))
+
+    if (chromiumRefract) {
+      // 支援引擎:filter 注入 + pill 套用折射
+      expect(info.hasFilter).toBe(true)
+      expect(info.filterId).toBe('liquid-glass-f')
+      expect(info.hasRefractClass).toBe(true)
+    } else {
+      // 降級路徑:不套折射 class(@supports 擋住)= 正確 fallback
+      expect(info.hasRefractClass).toBe(false)
+    }
+    expect(info.hasSpecular).toBe(true)
+
+    // 注入 specular CSS 變數(模擬游標在左上 30%,40%)後截圖
+    await overlay.evaluate(() => {
+      const el = document.querySelector('.glass-specular') as HTMLElement | null
+      el?.style.setProperty('--spec-x', '30%')
+      el?.style.setProperty('--spec-y', '40%')
+      el?.style.setProperty('--spec-o', '1')
+    })
+    await overlay.waitForTimeout(400)
+    await overlay.screenshot({ path: 'docs/screenshots/14-pill-refraction.png' })
+  } finally {
+    await app.close()
+  }
+})

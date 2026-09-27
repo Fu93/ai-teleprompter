@@ -156,6 +156,8 @@ export const IPC = {
   OverlaySetClickThrough: 'overlay:set-click-through',
   OverlaySetCaptureProtection: 'overlay:set-capture-protection',
   OverlaySetSize: 'overlay:set-size',
+  /** 動畫用即時尺寸(每幀呼叫):只改視窗與記憶體設定,不落盤 */
+  OverlaySetSizeLive: 'overlay:set-size-live',
   OverlayApplySettings: 'overlay:apply-settings',
   AppInfo: 'app:info',
   // Phase 5+

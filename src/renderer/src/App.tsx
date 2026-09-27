@@ -17,6 +17,7 @@ import Practice from './pages/Practice'
 import SettingsPage from './pages/SettingsPage'
 import Calibration from './pages/Calibration'
 import OverlayApp from './overlay/OverlayApp'
+import { ToastHost } from './components/ToastHost'
 
 type PageId = 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings'
 
@@ -91,6 +92,7 @@ function MainApp(): JSX.Element {
         </div>
       </aside>
       <main className="flex-1 overflow-y-auto">{render()}</main>
+      <ToastHost />
     </div>
   )
 }

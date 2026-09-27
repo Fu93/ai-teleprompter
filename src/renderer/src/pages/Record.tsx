@@ -18,6 +18,7 @@ import { db } from '../lib/db'
 import { useSettings } from '../lib/store'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
 import { aiChat, extractJson } from '../lib/ai'
+import { toast } from '../lib/toast'
 import { buildSessionReport } from '../lib/session-intelligence'
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, WHISPER_MODELS, type WhisperModelKey } from '../lib/audio/whisperClient'
@@ -40,13 +41,11 @@ export default function Record(): JSX.Element {
   const [segments, setSegments] = useState<TranscriptSegment[]>([])
   const [elapsed, setElapsed] = useState(0)
   const [title, setTitle] = useState('')
-  const [error, setError] = useState<string | null>(null)
   const [model, setModel] = useState<ModelState>({ status: 'none', progress: 0, file: '' })
   const [saving, setSaving] = useState(false)
   const [sessions, setSessions] = useState<MeetingSession[]>([])
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [aiBusyId, setAiBusyId] = useState<number | null>(null)
-  const [aiError, setAiError] = useState<string | null>(null)
   const [lastReport, setLastReport] = useState<SessionReport | null>(null)
 
   const whisperRef = useRef<WhisperClient | null>(null)
@@ -145,14 +144,13 @@ export default function Record(): JSX.Element {
       // 餵 main 的 liveContext:panic(Alt+P)才有「對方問了什麼」的上下文
       void window.api.pushTranscript({ text: seg.text, speaker })
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      toast.error(err instanceof Error ? err.message : String(err))
     }
   }
 
   const start = async (): Promise<void> => {
-    setError(null)
     if (!wantMic && !wantSys) {
-      setError('請至少選擇一個音訊來源')
+      toast.error('請至少選擇一個音訊來源')
       return
     }
     if (settings?.stt.engine === 'local') {
@@ -198,7 +196,7 @@ export default function Record(): JSX.Element {
       setRecording(true)
     } catch (err) {
       stopAll()
-      setError(err instanceof Error ? err.message : String(err))
+      toast.error(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -268,7 +266,6 @@ export default function Record(): JSX.Element {
 
   const generateSummary = async (s: MeetingSession): Promise<void> => {
     if (!settings || s.id == null) return
-    setAiError(null)
     setAiBusyId(s.id)
     try {
       const transcript = s.segments
@@ -299,7 +296,7 @@ export default function Record(): JSX.Element {
       await refreshSessions()
       setExpandedId(s.id)
     } catch (err) {
-      setAiError(err instanceof Error ? err.message : String(err))
+      toast.error(`AI 摘要失敗:${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setAiBusyId(null)
     }
@@ -387,11 +384,6 @@ export default function Record(): JSX.Element {
       )}
       {model.msg && model.status !== 'ready' && (
         <div className="mb-4 text-xs text-amber-450">{model.msg}</div>
-      )}
-      {error && (
-        <div className="mb-4 rounded-lg border border-rose-450/30 bg-rose-450/10 px-4 py-2.5 text-xs text-rose-450">
-          {error}
-        </div>
       )}
 
       {/* 逐字稿 */}
@@ -484,7 +476,6 @@ export default function Record(): JSX.Element {
           <div className="flex items-center gap-2 text-sm font-medium text-ink-200">
             <Save size={14} /> 最近的會議紀錄
           </div>
-          {aiError && <div className="text-[11px] text-rose-450">AI 摘要失敗：{aiError}</div>}
         </div>
         {sessions.length === 0 ? (
           <div className="text-xs text-ink-400">還沒有紀錄</div>
