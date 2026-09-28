@@ -77,6 +77,10 @@ export default function OverlayApp(): JSX.Element {
 
   // ---- 四模式定時引擎 ----
   const o = settings?.overlay
+  // 熱鍵提示動態化:自訂熱鍵後工具列文案不再過期(與側欄熱鍵提示同一教訓,這裡是同族漏網)
+  const panicKey = settings?.hotkeys.panicRescue ?? 'Alt+P'
+  const toggleKey = settings?.hotkeys.toggleOverlay
+  const toggleHint = toggleKey ? `${toggleKey.replaceAll('Control', 'Ctrl')} 可再開` : '於設定頁設定熱鍵後可再開'
   const displayMode = o?.displayMode ?? 'scroll'
   // 個人化語速基準：已校準時 1×＝使用者自己的語速（引擎固定 120 WPM 基準，換算為有效倍率）
   const personalBaseline = settings?.personal.profile?.charsPerMin ?? PhraseVisuals.DEFAULT_WPM
@@ -378,7 +382,7 @@ export default function OverlayApp(): JSX.Element {
         ) : (
           <button
             onClick={triggerPanic}
-            title="Panic 救援(Alt+P)"
+            title={`Panic 救援(${panicKey})`}
             className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-white/72 hover:bg-white/10 hover:text-white/100"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
@@ -427,13 +431,13 @@ export default function OverlayApp(): JSX.Element {
             <ToolBtn title="退出貼鏡模式" active onClick={exitLens}>
               <ScanFace size={13} />
             </ToolBtn>
-            <ToolBtn title="Panic 救援(Alt+P)" active={panicPhase !== 'idle'} onClick={triggerPanic}>
+            <ToolBtn title={`Panic 救援(${panicKey})`} active={panicPhase !== 'idle'} onClick={triggerPanic}>
               <Siren size={13} />
             </ToolBtn>
             <ToolBtn title={playing ? '暫停' : '播放'} active={playing} onClick={controls.toggle}>
               {playing ? <Pause size={13} /> : <Play size={13} />}
             </ToolBtn>
-            <ToolBtn title="隱藏(Ctrl+Alt+T 可再開)" onClick={() => void window.api.overlayHide()}>
+            <ToolBtn title={`隱藏(${toggleHint})`} onClick={() => void window.api.overlayHide()}>
               <X size={13} />
             </ToolBtn>
           </div>
@@ -543,9 +547,9 @@ export default function OverlayApp(): JSX.Element {
             <Gauge size={13} />
           </ToolBtn>
 
-          {/* Panic 救援:被問倒時即時給答案(Alt+P)*/}
+          {/* Panic 救援:被問倒時即時給答案(熱鍵見提示)*/}
           <ToolBtn
-            title="Panic 救援:即時回答要點(Alt+P)"
+            title={`Panic 救援:即時回答要點(${panicKey})`}
             active={panicPhase !== 'idle'}
             onClick={triggerPanic}
           >
@@ -670,7 +674,7 @@ export default function OverlayApp(): JSX.Element {
           >
             <MousePointerClick size={13} />
           </ToolBtn>
-          <ToolBtn title="關閉(Ctrl+Alt+T 可再開)" onClick={() => void window.api.overlayHide()}>
+          <ToolBtn title={`關閉(${toggleHint})`} onClick={() => void window.api.overlayHide()}>
             <X size={13} />
           </ToolBtn>
         </div>

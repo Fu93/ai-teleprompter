@@ -137,6 +137,16 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
   const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recPausedRef = useRef(false)
 
+  // 錄影預覽的 blob URL:關閉按鈕有 revoke,但直接切頁(unmount)也要收,
+  // 否則影片 blob 留在記憶體直到 app 結束
+  useEffect(() => {
+    return () => {
+      if (preview) URL.revokeObjectURL(preview.url)
+    }
+    // 卸載時收當下這筆;平時由關閉按鈕負責
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const pickMime = (): string => {
     const candidates = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
     return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || ''
