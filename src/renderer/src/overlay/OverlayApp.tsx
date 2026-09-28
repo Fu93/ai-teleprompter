@@ -405,6 +405,9 @@ export default function OverlayApp(): JSX.Element {
 
   // 語音跟讀(scroll 模式)
   const [followStatus, setFollowStatus] = useState<FollowStatus>('idle')
+  // 給一次性 effect(onOverlayLoadScript 自動播放)讀最新值用,避免閉包捕獲 stale 'idle'
+  const followStatusRef = useRef<FollowStatus>('idle')
+  followStatusRef.current = followStatus
   const [followMsg, setFollowMsg] = useState('')
   const [lastHeard, setLastHeard] = useState('')
   const [activeChunk, setActiveChunk] = useState(-1)
@@ -435,8 +438,9 @@ export default function OverlayApp(): JSX.Element {
       setActiveChunk(-1)
       setFollowProgress(0)
       // 主視窗「開始提詞」的期待是「打開就開始講」:自動播放。
+      // 語音跟讀進行中則不播:兩套捲動來源(定時引擎 vs STT 對位)會互相拉扯。
       // 手動播放永遠可用(空白鍵/工具列/Alt+K),所以自動播放失敗也不會卡住使用者。
-      controlsRef.current?.play()
+      if (followStatusRef.current === 'idle') controlsRef.current?.play()
     })
     const offSettings = window.api.onSettingsChanged(setSettings)
     return () => {

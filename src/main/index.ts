@@ -338,14 +338,25 @@ function createMainWindow(): void {
 }
 
 function createOverlayWindow(): void {
+  // 還原上次位置前先驗證還在任一螢幕範圍內:拔掉外接螢幕後舊座標會落於畫面外,
+  // 不驗證的話浮層會「消失」,使用者只能刪 settings.json 救回
+  const savedPos =
+    settings.overlay.x !== null && settings.overlay.y !== null &&
+    screen.getAllDisplays().some(
+      (d) =>
+        settings.overlay.x! >= d.bounds.x - 40 &&
+        settings.overlay.x! < d.bounds.x + d.bounds.width &&
+        settings.overlay.y! >= d.bounds.y - 40 &&
+        settings.overlay.y! < d.bounds.y + d.bounds.height
+    )
+      ? { x: settings.overlay.x, y: settings.overlay.y }
+      : {}
   overlayWindow = new BrowserWindow({
     width: settings.overlay.width,
     height: settings.overlay.height,
     minWidth: 280,
     minHeight: 40,
-    ...(settings.overlay.x !== null && settings.overlay.y !== null
-      ? { x: settings.overlay.x, y: settings.overlay.y }
-      : {}),
+    ...savedPos,
     frame: false,
     transparent: true,
     hasShadow: false,
@@ -471,11 +482,15 @@ function registerIpc(): void {
     applyOverlayWindowSettings()
   })
 
-  /** 動畫用即時尺寸:每幀呼叫,只改視窗與記憶體設定,不落盤(結束時由 OverlaySetSize 定案) */
+  /** 動畫用即時尺寸:每幀呼叫,只改視窗與記憶體設定,不落盤(結束時由 OverlaySetSize 定案)。
+   *  刻意不走 applyOverlayWindowSettings:那裡含 setContentProtection/setIgnoreMouseEvents/
+   *  setBackgroundMaterial 與 os.release 解析,每幀 60 次全是浪費,morph 只需要 setSize */
   ipcMain.handle(IPC.OverlaySetSizeLive, (_e, w: number, h: number) => {
     settings.overlay.width = Math.max(240, Math.round(w))
     settings.overlay.height = Math.max(40, Math.round(h))
-    applyOverlayWindowSettings()
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.setSize(settings.overlay.width, settings.overlay.height)
+    }
   })
 
   ipcMain.handle(IPC.AppInfo, (): AppInfo => ({
