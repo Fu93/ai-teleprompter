@@ -30,6 +30,22 @@ const NAV: Array<{ id: PageId; label: string; icon: typeof LayoutDashboard }> = 
   { id: 'settings', label: '設定', icon: SettingsIcon }
 ]
 
+/** 側欄熱鍵提示:跟隨設定動態顯示(自訂熱鍵後文案不再過期) */
+function SidebarHotkeyHint(): JSX.Element {
+  const toggleKey = useSettings((s) => s.settings?.hotkeys.toggleOverlay)
+  const load = useSettings((s) => s.load)
+  const loaded = useSettings((s) => s.loaded)
+  // settings 尚未載入時補一次 load(防外部清除 store);正常啟動流程已載
+  useEffect(() => {
+    if (!loaded) void load()
+  }, [loaded, load])
+  return (
+    <div className="border-t border-ink-800 px-5 py-3 text-[11px] text-ink-400">
+      {toggleKey ? `${toggleKey.replaceAll('Control', 'Ctrl')} 顯示 / 隱藏浮層` : '熱鍵未設定:到設定頁設定'}
+    </div>
+  )
+}
+
 function MainApp(): JSX.Element {
   const [page, setPage] = useState<PageId>(() => {
     const h = window.location.hash.replace('#/', '')
@@ -97,9 +113,7 @@ function MainApp(): JSX.Element {
             </button>
           ))}
         </nav>
-        <div className="border-t border-ink-800 px-5 py-3 text-[11px] text-ink-400">
-          Ctrl+Alt+T 顯示 / 隱藏浮層
-        </div>
+        <SidebarHotkeyHint />
       </aside>
       <main className="flex-1 overflow-y-auto">{render()}</main>
       <ToastHost />

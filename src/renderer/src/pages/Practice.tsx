@@ -62,6 +62,9 @@ export default function Practice(): JSX.Element {
     warmUpVoices()
   }, [refreshHistory])
 
+  /** 最後一段落帳時間:finishAnswer 等待在飛轉錄用 */
+  const lastSegAtRef = useRef(0)
+
   useEffect(() => {
     return () => {
       segmenterRef.current?.stop()
@@ -99,6 +102,7 @@ export default function Practice(): JSX.Element {
       }
       if (text.trim()) {
         segsRef.current = [...segsRef.current, text.trim()]
+        lastSegAtRef.current = Date.now()
         setCurTranscript(segsRef.current.join(''))
         // 餵 main:panic(Alt+P)有作答上下文、coaching 教練提示來源
         void window.api.pushTranscript({ text: text.trim(), speaker: 'me' })
@@ -184,7 +188,20 @@ export default function Practice(): JSX.Element {
   }
 
   const finishAnswer = async (): Promise<void> => {
+    const beforeCount = segsRef.current.length
     stopListening()
+    // 連續說話時 VAD 沒有靜音間隙,整段回答的轉錄都在 segmenter.flush()(async)才送出;
+    // 不等它就讀逐字稿會把整份回答判成「沒有聽到回答內容」(真機實測重現)。
+    // 等在飛轉錄落地:數量增加或歸於安靜(800ms 無新帳),上限 4 秒。
+    await Promise.race([
+      (async () => {
+        for (let i = 0; i < 40; i++) {
+          if (segsRef.current.length > beforeCount && Date.now() - lastSegAtRef.current >= 800) break
+          await new Promise((r) => setTimeout(r, 100))
+        }
+      })(),
+      new Promise((r) => setTimeout(r, 4_000))
+    ])
     const q = questions[qIndex]
     const transcript = segsRef.current.join('')
     if (!transcript.trim()) {
