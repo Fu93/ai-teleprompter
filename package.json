@@ -1,6 +1,6 @@
 {
   "name": "ai-teleprompter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI 提詞機 — 提詞浮層 / 會議轉錄摘要 / 面試練習教練",
   "main": "./out/main/index.js",
   "author": "nn201",
