@@ -547,8 +547,11 @@ export default function OverlayApp(): JSX.Element {
     (text: string): void => {
       // 餵給 main 的 liveContext:panic 觸發時才有語音上下文可用
       void window.api.pushTranscript({ text, speaker: 'me' })
-      // 我方開口 → 即時收掉「該你說話了」提示(你已在回話)
-      notifyTurnYield()
+      // 我方開口 → 即時收掉「該你說話了」提示(你已在回話)。
+      // 硬編碼中文填充詞是刻意的:STT 對極短音沒有把握,即便只聽到
+      // 「嗯」也不該讓「該你了」繼續掛著——誤收一次的代價遠低於漏收。
+      const isMeSpeech = text.trim().length >= 2 || /[嗯呃誒]/.test(text)
+      if (isMeSpeech) notifyTurnYield()
       const f = followRef.current
       const spoken = normalizeForMatch(text)
       if (spoken.length < 4) return
@@ -1265,19 +1268,21 @@ export default function OverlayApp(): JSX.Element {
         </div>
       )}
 
-      {/* turn-yield 提示條(該你說話了)*/}
-      {turnYieldHint && (
-        <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex items-center justify-center gap-2 rounded-full bg-sky-500/25 px-4 py-2 text-xs font-medium text-sky-200 shadow-lg">
-          <MessageCircleQuestion size={14} className="shrink-0" />
-          {turnYieldText}
-        </div>
-      )}
-
-      {/* 即時教練提示條(琥珀色,與 turn-yield 藍色區分)*/}
-      {coachingHint && (
-        <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex items-center justify-center gap-2 rounded-full bg-amber-500/25 px-4 py-2 text-xs font-medium text-amber-200 shadow-lg">
-          <Gauge size={14} className="shrink-0" />
-          {coachingHint.message}
+      {/* 即時回饋提示條(turn-yield 藍 / coaching 琥珀;堆疊避免同時觸發時互相遮擋)*/}
+      {(turnYieldHint || coachingHint) && (
+        <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex flex-col items-center gap-2">
+          {turnYieldHint && (
+            <div className="flex items-center justify-center gap-2 rounded-full bg-sky-500/25 px-4 py-2 text-xs font-medium text-sky-200 shadow-lg">
+              <MessageCircleQuestion size={14} className="shrink-0" />
+              {turnYieldText}
+            </div>
+          )}
+          {coachingHint && (
+            <div className="flex items-center justify-center gap-2 rounded-full bg-amber-500/25 px-4 py-2 text-xs font-medium text-amber-200 shadow-lg">
+              <Gauge size={14} className="shrink-0" />
+              {coachingHint.message}
+            </div>
+          )}
         </div>
       )}
 
