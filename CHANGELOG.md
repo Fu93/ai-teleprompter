@@ -7,7 +7,13 @@
 
 ## [Unreleased]
 
-- 無。
+### 修復
+
+- **選場景包場景後 Panic 救援用錯模板**：`getScene()` 只查內建 8 場景，使用者在設定頁選了場景包場景（如 Interview Essentials 的 Behavioral Question）後觸發救援，模板會無聲落到 Generic 內建場景——選擇被完全忽略。新增 `resolveScene()` 統一從「內建+場景包」全清單解析，未知 key 仍安全退回內建 fallback；單元回歸 + 第三輪 playtest e2e 全旅程驗證。
+
+### 測試
+
+- 新增第三輪真機 playtest e2e（`playtest3.spec.ts` 三條前兩輪未覆蓋的日常旅程）：熱鍵設定→衝突警告→持久化（熱鍵區首次被測）、設定頁選場景包場景→展開模式 Panic→救援卡顯示場景包模板、雲端 STT 設定頁 UI 全程點選→錄音入庫與會後報告（前兩輪均以 setSettings bypass 設定頁 UI）。單元測試增至 **243**，e2e 增至 **14 smoke/visual + 2 journey**。
 
 ## [0.2.0] - 2026-09-28
 

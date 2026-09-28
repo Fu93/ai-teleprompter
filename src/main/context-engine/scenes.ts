@@ -139,6 +139,13 @@ export function getScene(key: string): ScenePreset {
   return SCENE_PRESETS.find((s) => s.key === key) ?? SCENE_PRESETS[SCENE_PRESETS.length - 1]
 }
 
+/** 解析作用場景:先查清單(內建+場景包),再退回內建查表(未知 key → default)。
+ *  分離出純函數讓「場景包場景也要生效」可單元測試——過去 getScene 只查內建,
+ *  使用者選了場景包場景後 panic 救援無聲落到 Generic 模板 */
+export function resolveScene(key: string, scenes: ScenePreset[]): ScenePreset {
+  return scenes.find((s) => s.key === key) ?? getScene(key)
+}
+
 // ── 追問分類 ──
 
 export type FollowUpType =

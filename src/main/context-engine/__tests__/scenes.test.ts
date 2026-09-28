@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest'
 import {
   SCENE_PRESETS,
   getScene,
+  resolveScene,
   classifyFollowUp,
   ConversationTracker,
   buildPanicSystemPrompt,
-  pickFallbackTemplate
+  pickFallbackTemplate,
+  type ScenePreset
 } from '../scenes'
 
 describe('SCENE_PRESETS', () => {
@@ -24,6 +26,24 @@ describe('SCENE_PRESETS', () => {
   it('getScene 未知 key 回退 default', () => {
     expect(getScene('nonexistent').key).toBe('default')
     expect(getScene('sales').label).toBe('Sales Call')
+  })
+
+  it('resolveScene 場景包場景也要生效;未知 key 仍退回內建查表', () => {
+    // 回歸:過去 getScene 只查內建 8 場景,使用者選場景包場景後 panic 無聲落到 Generic 模板
+    const packScene: ScenePreset = {
+      key: 'pack:flowprompt.interview-essentials:behavioral',
+      label: 'Behavioral Question',
+      tone: 'professional',
+      tempo: 'medium',
+      lengthBudget: 90,
+      riskLevel: 'low',
+      turns: 3,
+      templates: ['Pack template A', 'Pack template B', 'Pack template C']
+    }
+    const scenes = [...SCENE_PRESETS, packScene]
+    expect(resolveScene('pack:flowprompt.interview-essentials:behavioral', scenes)).toBe(packScene)
+    expect(resolveScene('interview', scenes).key).toBe('interview')
+    expect(resolveScene('nonexistent', scenes).key).toBe('default')
   })
 })
 

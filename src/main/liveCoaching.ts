@@ -1,6 +1,7 @@
 import { IPC, type RescuePayload } from '@shared/types'
 import { chatCompletion, resolveProvider } from './ai/aiProvider'
-import { getScene, ConversationTracker, buildPanicSystemPrompt, pickFallbackTemplate } from './context-engine/scenes'
+import { getScene, resolveScene, ConversationTracker, buildPanicSystemPrompt, pickFallbackTemplate } from './context-engine/scenes'
+import { listAllScenes } from './packs'
 import { buildPanicPrompt, parseRescueResponse, computeConfidence, structuredFallback } from './context-engine/panicAi'
 import { pushTranscript, getRecentContext, clearContext } from './liveContext'
 import {
@@ -142,8 +143,9 @@ function evaluateTurnYieldForSegment(text: string): void {
 async function handlePanic(): Promise<void> {
   if (panicInFlight) return
   panicInFlight = true
-  // 場景查表純函數(getScene 對未知 key 也有 fallback),放 try 外讓 catch 專注 AI 鏈路
-  const scene = getScene(state.settings.scenario.activeScene)
+  // 場景解析含場景包(選場景包場景後救援模板才會真的用到它);未知 key 仍退回內建 fallback。
+  // 純函數放 try 外讓 catch 專注 AI 鏈路
+  const scene = resolveScene(state.settings.scenario.activeScene, listAllScenes())
   const mode = state.settings.scenario.panicMode
   try {
     // AI 關閉:直接場景模板,不出 AI 卡
