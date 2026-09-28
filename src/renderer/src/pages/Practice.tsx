@@ -73,6 +73,9 @@ export default function Practice(): JSX.Element {
       segmenterRef.current?.stop()
       streamRef.current?.getTracks().forEach((t) => t.stop())
       stopSpeaking()
+      // Whisper worker 帶著數百 MB 模型,離頁一併釋放(Cache API 快取仍在,重進免重新下載)
+      whisperRef.current?.dispose()
+      whisperRef.current = null
     }
   }, [])
 

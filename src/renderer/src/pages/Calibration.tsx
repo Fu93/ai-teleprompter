@@ -78,6 +78,9 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
     return () => {
       stopCamera()
       stopAudioPipeline()
+      // Whisper worker 帶著數百 MB 模型,離頁一併釋放(Cache API 快取仍在,重進免重新下載)
+      whisperRef.current?.dispose()
+      whisperRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

@@ -31,6 +31,8 @@ export class WhisperClient {
   private loadPromise: Promise<WhisperDevice> | null = null
   private loadedKey = ''
   private chain: Promise<unknown> = Promise.resolve()
+  /** dispose 時觸發在飛 load() 的 reject(executor 外無法直接 reject 已建立的 promise) */
+  private rejectActiveLoad: ((e: Error) => void) | null = null
 
   onProgress: ((p: WhisperDownloadProgress) => void) | null = null
   onStatus: ((message: string) => void) | null = null
@@ -75,8 +77,8 @@ export class WhisperClient {
           this.pending.delete(msg.id)
           p.reject(err)
         } else {
+          // 全域錯誤(載入失敗等)不屬於任何一筆轉錄
           this.onStatus?.(msg.message)
-          this.loadPromise = null
         }
         break
       }
@@ -91,12 +93,19 @@ export class WhisperClient {
     const worker = this.ensureWorker()
     this.loadedKey = key
     this.loadPromise = new Promise<WhisperDevice>((resolve, reject) => {
+      // dispose() 經此 rejecter 讓在飛的 load() 落地(否則 await 呼叫端永遠懸掛)
+      this.rejectActiveLoad = (e) => {
+        worker.removeEventListener('message', onMsg)
+        reject(e)
+      }
       const onMsg = (e: MessageEvent<OutMsg>): void => {
         if (e.data.type === 'ready') {
           worker.removeEventListener('message', onMsg)
+          this.rejectActiveLoad = null
           resolve(e.data.device)
         } else if (e.data.type === 'error' && e.data.id == null) {
           worker.removeEventListener('message', onMsg)
+          this.rejectActiveLoad = null
           this.loadPromise = null
           reject(new Error(e.data.message))
         }
@@ -139,8 +148,13 @@ export class WhisperClient {
     const err = new Error('Whisper 已釋放(頁面離開或模型切換)')
     for (const p of this.pending.values()) p.reject(err)
     this.pending.clear()
+    // 在飛的 load() 同樣要落地:await client.load() 的呼叫端(開始聆聽/跟讀/校準)
+    // 否則隨 dispose 永遠懸掛
+    this.rejectActiveLoad?.(err)
+    this.rejectActiveLoad = null
+    this.loadPromise = null
+    this.loadedKey = ''
     this.worker?.terminate()
     this.worker = null
-    this.loadPromise = null
   }
 }

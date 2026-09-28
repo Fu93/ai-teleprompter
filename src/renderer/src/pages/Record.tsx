@@ -89,10 +89,13 @@ export default function Record(): JSX.Element {
   }, [segments])
 
   // unmount 清理:錄音中切頁要收掉分段器與音訊 track(麥克風/系統音訊燈滅),
-  // 否則擷取會在背景持續運作(Practice 已有同樣模式)
+  // 否則擷取會在背景持續運作(Practice 已有同樣模式);
+  // Whisper worker 帶著數百 MB 模型,離頁一併釋放(Cache API 快取仍在,重進免重新下載)
   useEffect(() => {
     return () => {
       stopAll()
+      whisperRef.current?.dispose()
+      whisperRef.current = null
     }
   }, [])
 
