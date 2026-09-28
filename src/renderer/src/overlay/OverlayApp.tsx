@@ -434,6 +434,9 @@ export default function OverlayApp(): JSX.Element {
       setPayload(p)
       setActiveChunk(-1)
       setFollowProgress(0)
+      // 主視窗「開始提詞」的期待是「打開就開始講」:自動播放。
+      // 手動播放永遠可用(空白鍵/工具列/Alt+K),所以自動播放失敗也不會卡住使用者。
+      controlsRef.current?.play()
     })
     const offSettings = window.api.onSettingsChanged(setSettings)
     return () => {
@@ -453,7 +456,8 @@ export default function OverlayApp(): JSX.Element {
 
   const content = payload.content ?? ''
 
-  // 講稿內容變化 → 重建跟讀索引
+  // 講稿內容變化 → 重建跟讀索引,並把捲動位置歸零
+  // (引擎內部 scrollPos 會重置,但 scroll 模式每幀直寫 DOM,暫停時不會再推,殘影會留在畫面上)
   useEffect(() => {
     followRef.current = {
       chunks: buildChunks(content),
@@ -461,6 +465,7 @@ export default function OverlayApp(): JSX.Element {
       pos: 0
     }
     setActiveChunk(-1)
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
   }, [content])
 
   // ---- 四模式定時引擎 ----

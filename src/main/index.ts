@@ -343,6 +343,9 @@ function createOverlayWindow(): void {
     height: settings.overlay.height,
     minWidth: 280,
     minHeight: 40,
+    ...(settings.overlay.x !== null && settings.overlay.y !== null
+      ? { x: settings.overlay.x, y: settings.overlay.y }
+      : {}),
     frame: false,
     transparent: true,
     hasShadow: false,
@@ -365,6 +368,16 @@ function createOverlayWindow(): void {
 
   overlayWindow.on('hide', () => notifyOverlayVisibility(false))
   overlayWindow.on('show', () => notifyOverlayVisibility(true))
+  // 記住使用者拖過的位置:防抖 600ms 落盤,拖動中不狂寫 settings.json
+  let moveSaveTimer: ReturnType<typeof setTimeout> | null = null
+  overlayWindow.on('moved', () => {
+    if (!overlayWindow || overlayWindow.isDestroyed()) return
+    const [x, y] = overlayWindow.getPosition()
+    settings.overlay.x = x
+    settings.overlay.y = y
+    if (moveSaveTimer) clearTimeout(moveSaveTimer)
+    moveSaveTimer = setTimeout(() => saveSettings(settings), 600)
+  })
   overlayWindow.on('closed', () => {
     overlayWindow = null
   })

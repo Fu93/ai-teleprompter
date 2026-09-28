@@ -19,6 +19,16 @@ const SCENE_LABELS_ZH: Record<string, string> = {
   default: '通用'
 }
 
+/** 熱鍵欄位名稱 → 顯示名(衝突提示用) */
+const HOTKEY_LABELS: Record<string, string> = {
+  toggleOverlay: '顯示浮層',
+  hideOverlay: '隱藏浮層',
+  panicRescue: 'Panic 救援',
+  playPause: '播放 / 暫停',
+  speedUp: '語速 +',
+  speedDown: '語速 −'
+}
+
 function sceneLabel(s: SceneSummary): string {
   if (SCENE_LABELS_ZH[s.key]) return SCENE_LABELS_ZH[s.key]
   return s.label.length <= 6 ? s.label : s.label.slice(0, 6)
@@ -632,6 +642,24 @@ export default function SettingsPage({
             </div>
           </div>
         </div>
+        {(() => {
+          // 衝突偵測:兩顆熱鍵設同一組合時,全域註冊會互相覆蓋(後註冊的贏)。
+          // 在這裡指出來,勝過使用者發現「按了沒反應」。空字串 = 未設定,不參與。
+          const entries = Object.entries(settings.hotkeys).filter(([, v]) => v !== '')
+          const seen = new Map<string, string>()
+          const dupes: string[] = []
+          for (const [name, key] of entries) {
+            const prev = seen.get(key)
+            if (prev) dupes.push(`${prev} 與 ${HOTKEY_LABELS[name] ?? name}（${key}）`)
+            else seen.set(key, HOTKEY_LABELS[name] ?? name)
+          }
+          if (dupes.length === 0) return null
+          return (
+            <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              熱鍵衝突：{dupes.join('、')}，衝突時只有一顆會生效，請改開。
+            </div>
+          )
+        })()}
         <div className="mt-1.5 text-[11px] text-ink-400">
           語速步進每次 ±0.1×（0.5–3×）；熱鍵在浮層隱藏或滑鼠穿透時也有效。
         </div>

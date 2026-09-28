@@ -36,6 +36,16 @@ function MainApp(): JSX.Element {
     const valid: PageId[] = ['dashboard', 'scripts', 'record', 'practice', 'calibration', 'settings']
     return (valid.includes(h as PageId) ? h : 'dashboard') as PageId
   })
+  // 講稿編輯中有未存變更:側欄切頁前要攔下來確認
+  const [scriptsDirty, setScriptsDirty] = useState(false)
+
+  const navigate = (target: PageId): void => {
+    if (scriptsDirty && target !== page && !window.confirm('講稿有未儲存的修改，離開將遺失這些變更。確定要離開嗎？')) {
+      return
+    }
+    setScriptsDirty(false)
+    setPage(target)
+  }
 
   useEffect(() => {
     window.history.replaceState(null, '', `#/${page}`)
@@ -44,7 +54,7 @@ function MainApp(): JSX.Element {
   const render = (): JSX.Element => {
     switch (page) {
       case 'scripts':
-        return <Scripts />
+        return <Scripts onDirtyChange={setScriptsDirty} />
       case 'record':
         return <Record />
       case 'practice':
@@ -52,9 +62,9 @@ function MainApp(): JSX.Element {
       case 'calibration':
         return <Calibration onDone={() => setPage('settings')} />
       case 'settings':
-        return <SettingsPage onNavigate={setPage} />
+        return <SettingsPage onNavigate={navigate} />
       default:
-        return <Dashboard onNavigate={setPage} />
+        return <Dashboard onNavigate={navigate} />
     }
   }
 
@@ -74,7 +84,7 @@ function MainApp(): JSX.Element {
           {NAV.map((item) => (
             <button
               key={item.id}
-              onClick={() => setPage(item.id)}
+              onClick={() => navigate(item.id)}
               className={cn(
                 'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors cursor-pointer',
                 page === item.id

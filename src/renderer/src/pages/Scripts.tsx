@@ -13,13 +13,19 @@ function estimateMinutes(content: string, charsPerMin: number): string {
   return `約 ${Math.max(1, Math.round(chars / charsPerMin))} 分鐘（${chars} 字）`
 }
 
-export default function Scripts(): JSX.Element {
+export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}): JSX.Element {
   const [scripts, setScripts] = useState<Script[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [draft, setDraft] = useState<{ title: string; content: string }>({ title: '', content: '' })
   const [query, setQuery] = useState('')
   const [dirty, setDirty] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // 未存變更狀態上報給 App:側欄切頁前的防呆要看到這個旗標
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+    return () => onDirtyChange?.(false)
+  }, [dirty, onDirtyChange])
   const { settings } = useSettings()
 
   const refresh = async (keepId?: number | null): Promise<void> => {

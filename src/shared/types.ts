@@ -26,6 +26,9 @@ export interface OverlaySettings {
   opacity: number // 0.1 - 1.0 (整體視窗內容不透明度)
   width: number
   height: number
+  /** 最後位置;null = 從未移動過,用系統預設。用 x|null 而非 0 免得 (0,0) 誤判 */
+  x: number | null
+  y: number | null
   alwaysOnTop: boolean
 }
 
@@ -117,6 +120,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     opacity: 0.92,
     width: 720,
     height: 260,
+    x: null,
+    y: null,
     alwaysOnTop: true
   },
   stt: {
