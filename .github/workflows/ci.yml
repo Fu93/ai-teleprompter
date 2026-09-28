@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    # e2e 走真 Electron 視窗(顯示/全域熱鍵),windows runner 免 xvfb 可直接跑
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build (required by e2e)
+        run: npm run build
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      # e2e 需要真實顯示/熱鍵環境(smoke 驗證 Alt+P 等全域註冊;顯示用 runner 自帶桌面 session)
+      - name: E2E (smoke + visual)
+        run: npx playwright test e2e/smoke.spec.ts e2e/visual.spec.ts
+
+      # meeting-flow 是時序敏感的演示 spec:CI 上嘗試執行但不擋 merge
+      - name: E2E meeting-flow (best effort)
+        run: npx playwright test e2e/meeting-flow.spec.ts
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-artifacts
+          path: |
+            test-results/
+            docs/screenshots/
+          retention-days: 7

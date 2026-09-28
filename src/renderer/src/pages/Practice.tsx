@@ -100,6 +100,8 @@ export default function Practice(): JSX.Element {
       if (text.trim()) {
         segsRef.current = [...segsRef.current, text.trim()]
         setCurTranscript(segsRef.current.join(''))
+        // 餵 main:panic(Alt+P)有作答上下文、coaching 教練提示來源
+        void window.api.pushTranscript({ text: text.trim(), speaker: 'me' })
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -112,6 +114,8 @@ export default function Practice(): JSX.Element {
       segsRef.current = []
       setCurTranscript('')
       setCurStart(Date.now())
+      // 會話邊界:清上一題/上一場的語音上下文與即時回饋冷卻
+      void window.api.contextReset()
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,

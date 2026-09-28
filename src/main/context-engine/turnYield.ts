@@ -120,3 +120,10 @@ export function recordTurnYield(state: TurnYieldState, result: TurnYieldResult, 
   state.lastFiredText = result.triggerText
   state.lastFiredKind = result.kind
 }
+
+/** 會話邊界重置(新場次開始時呼叫):清冷卻與觸媒記憶 */
+export function resetTurnYieldState(state: TurnYieldState): void {
+  state.lastFiredAt = 0
+  state.lastFiredText = ''
+  state.lastFiredKind = ''
+}

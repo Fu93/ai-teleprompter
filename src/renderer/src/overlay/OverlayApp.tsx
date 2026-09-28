@@ -729,6 +729,28 @@ export default function OverlayApp(): JSX.Element {
     }
   }, [])
 
+  // ---- 全域熱鍵事件(main 廣播):播放/暫停 + 語速步進 ----
+  // 浮層可被滑鼠穿透或失焦,鍵盤控制只剩全域熱鍵這條路
+  const controlsRef = useRef(controls)
+  controlsRef.current = controls
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+  useEffect(() => {
+    const offPlay = window.api.onOverlayPlayPause(() => {
+      controlsRef.current.toggle()
+    })
+    const offStep = window.api.onOverlaySpeedStep((dir) => {
+      if (!settingsRef.current) return
+      const cur = settingsRef.current.overlay.rate
+      const next = Math.min(3, Math.max(0.5, Math.round((cur + dir * 0.1) * 10) / 10))
+      if (next !== cur) void window.api.setSettings({ overlay: { rate: next } })
+    })
+    return () => {
+      offPlay()
+      offStep()
+    }
+  }, [])
+
   // ── 藥丸/貼鏡 morph:彈簧驅動視窗尺寸(開合分離阻尼)──
   // rAF 彈簧積分器:展開用 open(ζ≈0.8 帶彈)、收合用 close(臨界阻尼零彈跳);
   // 每幀 overlaySetSizeLive(不落盤),收斂時 onSettle 才以 overlaySetSize 定案(寫入設定)。

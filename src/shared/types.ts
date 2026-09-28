@@ -57,6 +57,12 @@ export interface HotkeySettings {
   toggleOverlay: string // e.g. Ctrl+Alt+T
   hideOverlay: string
   panicRescue: string // e.g. Alt+P — 求救熱鍵
+  /** 浮層播放/暫停(全域) */
+  playPause: string
+  /** 語速倍率 +0.1×(全域) */
+  speedUp: string
+  /** 語速倍率 −0.1×(全域) */
+  speedDown: string
 }
 
 /** 場景情境設定(Panic 救援 / AI 語氣用) */
@@ -138,7 +144,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   hotkeys: {
     toggleOverlay: 'Control+Alt+T',
     hideOverlay: 'Control+Alt+H',
-    panicRescue: 'Alt+P'
+    panicRescue: 'Alt+P',
+    playPause: 'Alt+K',
+    speedUp: 'Alt+Up',
+    speedDown: 'Alt+Down'
   },
   scenario: {
     activeScene: 'interview',
@@ -196,7 +205,15 @@ export const IPC = {
   /** turn-yield:對方講完問句 → 該你說話了(main → overlay) */
   TurnYieldSignal: 'context:turn-yield',
   /** 即時教練訊號(main → overlay) */
-  CoachingSignal: 'context:coaching'
+  CoachingSignal: 'context:coaching',
+  /** 會話邊界:清空 liveContext / turnYield / coaching 狀態 */
+  ContextReset: 'context:reset',
+  /** 取用目前 coaching 觸發計數(供會後報告) */
+  CoachingStatsGet: 'context:coaching-stats',
+  /** 全域熱鍵:浮層播放/暫停(main → overlay) */
+  OverlayPlayPause: 'overlay:play-pause',
+  /** 全域熱鍵:語速步進 ±0.1×(main → overlay) */
+  OverlaySpeedStep: 'overlay:speed-step'
 } as const
 
 // ===== turn-yield 提示(Phase B)=====
@@ -257,6 +274,8 @@ export interface SessionReport {
   /** 0–100,語速穩定度 */
   steadiness: number
   suggestions: SessionSuggestion[]
+  /** 會議期間各 coaching 訊號的觸發次數(main 端計數,未觸發者不列) */
+  coachingCounts?: Partial<Record<CoachingKind, number>>
   generatedAt: number
 }
 

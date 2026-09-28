@@ -13,7 +13,7 @@ import {
   Square,
   Trash2
 } from 'lucide-react'
-import type { MeetingSession, MeetingSummary, SessionReport, TranscriptSegment } from '@shared/types'
+import type { CoachingKind, MeetingSession, MeetingSummary, SessionReport, TranscriptSegment } from '@shared/types'
 import { db } from '../lib/db'
 import { useSettings } from '../lib/store'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
@@ -47,6 +47,7 @@ export default function Record(): JSX.Element {
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [aiBusyId, setAiBusyId] = useState<number | null>(null)
   const [lastReport, setLastReport] = useState<SessionReport | null>(null)
+  const [coachCounts, setCoachCounts] = useState<Partial<Record<CoachingKind, number>>>({})
 
   const whisperRef = useRef<WhisperClient | null>(null)
   const segsRef = useRef<TranscriptSegment[]>([])
@@ -164,6 +165,9 @@ export default function Record(): JSX.Element {
     setSegments([])
     startedAtRef.current = Date.now()
     setElapsed(0)
+    setCoachCounts({})
+    // 會話邊界:清上一場的語音上下文與即時回饋冷卻狀態
+    await window.api.contextReset()
 
     try {
       if (wantMic) {
@@ -219,10 +223,16 @@ export default function Record(): JSX.Element {
       try {
         const startedAt = startedAtRef.current
         const segments = segsRef.current
-        // 會話量化報告:與 session 一起存,供 Dashboard 趨勢使用
+        // 會話量化報告:與 session 一起存,供 Dashboard 趨勢使用;
+        // 併入會議期間的 coaching 觸發計數,形成改進閉環
         const report = buildSessionReport(segments, {
           durationSec: (Date.now() - startedAt) / 1000
         })
+        try {
+          report.coachingCounts = await window.api.coachingStats()
+        } catch {
+          // 計數不可得時不影響報告本體
+        }
         setLastReport(report)
         await db.sessions.add({
           title: titleRef.current.trim() || `會議 ${formatDateTime(startedAt)}`,
@@ -446,6 +456,27 @@ export default function Record(): JSX.Element {
               </div>
             ))}
           </div>
+          {lastReport.coachingCounts && Object.values(lastReport.coachingCounts).some((n) => (n ?? 0) > 0) && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(
+                [
+                  ['fast', '語速過快'],
+                  ['filler', '填充詞'],
+                  ['interrupt', '損話'],
+                  ['dead_air', '冷場'],
+                  ['monologue', '獨白過長']
+                ] as Array<[CoachingKind, string]>
+              ).map(([kind, label]) => {
+                const n = lastReport.coachingCounts?.[kind] ?? 0
+                if (n <= 0) return null
+                return (
+                  <span key={kind} className="rounded-full bg-amber-500/15 px-2.5 py-1 text-[10px] text-amber-300">
+                    {label} ×{n}
+                  </span>
+                )
+              })}
+            </div>
+          )}
           {lastReport.suggestions.length > 0 && (
             <ul className="mt-3 space-y-1">
               {lastReport.suggestions.map((sg, i) => (

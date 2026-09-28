@@ -1,7 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { IPC } from '../shared/types'
-import type { AppSettings, AppInfo, RescuePayload, TurnYieldPayload, CoachingPayload } from '../shared/types'
+import type {
+  AppSettings,
+  AppInfo,
+  RescuePayload,
+  TurnYieldPayload,
+  CoachingPayload
+} from '../shared/types'
 import type {
   Api,
   OverlayShowPayload,
@@ -53,6 +59,10 @@ const api: Api = {
   onPanicError: (cb: (message: string) => void) => on<string>(IPC.PanicError, cb),
   onTurnYield: (cb: (payload: TurnYieldPayload) => void) => on(IPC.TurnYieldSignal, cb),
   onCoaching: (cb: (payload: CoachingPayload) => void) => on(IPC.CoachingSignal, cb),
+  contextReset: () => ipcRenderer.invoke(IPC.ContextReset),
+  coachingStats: () => ipcRenderer.invoke(IPC.CoachingStatsGet),
+  onOverlayPlayPause: (cb: () => void) => on<void>(IPC.OverlayPlayPause, cb),
+  onOverlaySpeedStep: (cb: (dir: 1 | -1) => void) => on<1 | -1>(IPC.OverlaySpeedStep, cb),
 
   appInfo: (): Promise<AppInfo> => ipcRenderer.invoke(IPC.AppInfo),
   saveRecording: (args: { bytes: Uint8Array; defaultName: string }) =>

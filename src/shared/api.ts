@@ -1,4 +1,11 @@
-import type { AppInfo, AppSettings, RescuePayload, TurnYieldPayload, CoachingPayload } from './types'
+import type {
+  AppInfo,
+  AppSettings,
+  RescuePayload,
+  TurnYieldPayload,
+  CoachingPayload,
+  CoachingKind
+} from './types'
 
 export interface OverlayShowPayload {
   title?: string
@@ -103,6 +110,14 @@ export interface Api {
   onTurnYield(cb: (payload: TurnYieldPayload) => void): Unsubscribe
   /** 即時教練訊號(main → overlay) */
   onCoaching(cb: (payload: CoachingPayload) => void): Unsubscribe
+  /** 會話邊界:清空 main 端語音上下文與即時回饋狀態(新場次開始時呼叫) */
+  contextReset(): Promise<void>
+  /** 目前 coaching 各訊號觸發次數(會後報告用) */
+  coachingStats(): Promise<Partial<Record<CoachingKind, number>>>
+  /** 全域熱鍵:浮層播放/暫停 */
+  onOverlayPlayPause(cb: () => void): Unsubscribe
+  /** 全域熱鍵:語速步進(dir = +1 上/−1 下,各 0.1×) */
+  onOverlaySpeedStep(cb: (dir: 1 | -1) => void): Unsubscribe
   onPanicThinking(cb: () => void): Unsubscribe
   onPanicRescue(cb: (payload: RescuePayload) => void): Unsubscribe
   onPanicError(cb: (message: string) => void): Unsubscribe

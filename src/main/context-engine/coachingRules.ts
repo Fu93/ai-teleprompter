@@ -210,6 +210,16 @@ export function onThemSegment(state: CoachingState, text: string, now: number, o
   void opts
 }
 
+/** 會話邊界重置(新場次開始時呼叫):清統計窗、獨白計時與所有冷卻 */
+export function resetCoachingState(state: CoachingState): void {
+  state.me.length = 0
+  state.them.length = 0
+  state.monologueStart = 0
+  for (const k of Object.keys(state.lastFired) as CoachingKind[]) {
+    state.lastFired[k] = 0
+  }
+}
+
 /** 搶話判定:對方段送達後 INTERRUPT_WINDOW_MS 內我方就開口 */
 export function checkInterrupt(state: CoachingState, now: number, opts: CoachingOptions): CoachingSignal | null {
   const cooldowns: Record<CoachingKind, number> = { ...DEFAULT_COOLDOWNS, ...opts.cooldownMs }

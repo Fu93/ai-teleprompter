@@ -589,6 +589,52 @@ export default function SettingsPage({
             </select>
           </div>
         </div>
+        <div className="flex gap-6 text-sm">
+          <div className="flex-1">
+            <div className="label">播放 / 暫停</div>
+            <select
+              className="input"
+              value={settings.hotkeys.playPause}
+              onChange={(e) => update({ hotkeys: { playPause: e.target.value } })}
+            >
+              {['Alt+K', 'Alt+Space', 'Control+Alt+S'].map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex-1">
+            <div className="label">語速 +/−</div>
+            <div className="flex items-center gap-2">
+              <select
+                className="input"
+                value={settings.hotkeys.speedUp}
+                onChange={(e) => update({ hotkeys: { speedUp: e.target.value } })}
+              >
+                {['Alt+Up', 'Control+Alt+Up'].map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="input"
+                value={settings.hotkeys.speedDown}
+                onChange={(e) => update({ hotkeys: { speedDown: e.target.value } })}
+              >
+                {['Alt+Down', 'Control+Alt+Down'].map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="mt-1.5 text-[11px] text-ink-400">
+          語速步進每次 ±0.1×（0.5–3×）；熱鍵在浮層隱藏或滑鼠穿透時也有效。
+        </div>
       </Section>
     </div>
   )

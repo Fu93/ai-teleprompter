@@ -13,11 +13,12 @@ import { abortOllamaChat, ollamaChat, ollamaListModels, ollamaVersion } from './
 import { chatCompletion, testConnection, getUserKeys, setUserKeys, resolveProvider } from './ai/aiProvider'
 import { getScene, ConversationTracker, buildPanicSystemPrompt, pickFallbackTemplate } from './context-engine/scenes'
 import { buildPanicPrompt, parseRescueResponse, computeConfidence, structuredFallback } from './context-engine/panicAi'
-import { pushTranscript, getRecentContext } from './liveContext'
+import { pushTranscript, getRecentContext, clearContext } from './liveContext'
 import {
   createTurnYieldState,
   evaluateTurnYield,
-  recordTurnYield
+  recordTurnYield,
+  resetTurnYieldState
 } from './context-engine/turnYield'
 import {
   checkDeadAir,
@@ -25,6 +26,8 @@ import {
   createCoachingState,
   onMeSegment,
   onThemSegment,
+  resetCoachingState,
+  type CoachingKind,
   type CoachingSignal as EngineSignal
 } from './context-engine/coachingRules'
 import { listAllScenes } from './packs'
@@ -49,6 +52,8 @@ let turnYieldPending: { kind: 'turn' | 'peer_silence'; question: boolean } | nul
 // 即時教練:語速/填充詞/損話/冷場/獨白(Phase B+)
 const coachingState = createCoachingState()
 let coachingTimer: ReturnType<typeof setInterval> | null = null
+/** 會議期間各 coaching 訊號觸發次數(會後報告用;contextReset 歸零) */
+const coachingCounts: Partial<Record<CoachingKind, number>> = {}
 
 function coachingOptions(): { baselineCpm: number } {
   return { baselineCpm: settings.personal.profile?.charsPerMin ?? 0 }
@@ -69,6 +74,7 @@ function syncCoachingTimer(): void {
 }
 
 function deliverCoaching(signal: EngineSignal): void {
+  coachingCounts[signal.kind] = (coachingCounts[signal.kind] ?? 0) + 1
   if (!overlayWindow || overlayWindow.isDestroyed()) return
   overlayWindow.webContents.send(IPC.CoachingSignal, {
     kind: signal.kind,
@@ -108,6 +114,18 @@ function cancelTurnYield(): void {
   if (turnYieldTimer) {
     clearTimeout(turnYieldTimer)
     turnYieldTimer = null
+  }
+}
+
+/** 會話邊界:清空語音上下文與即時回饋狀態(Record 起停、新場次呼叫) */
+function resetSessionContext(): void {
+  clearContext()
+  conversation.turns.length = 0
+  resetTurnYieldState(turnYieldState)
+  cancelTurnYield()
+  resetCoachingState(coachingState)
+  for (const k of Object.keys(coachingCounts) as CoachingKind[]) {
+    delete coachingCounts[k]
   }
 }
 
@@ -252,6 +270,29 @@ function registerHotkeys(): void {
     if (panicRescue) {
       globalShortcut.register(panicRescue, () => {
         void handlePanic()
+      })
+    }
+    // 播放/語速熱鍵:浮層可被滑鼠穿透或失焦,全域熱鍵是唯一可靠入口。
+    // 廣播給浮層;未顯示時忽略(visibility sync 由 setOverlayVisible 管)
+    if (settings.hotkeys.playPause) {
+      globalShortcut.register(settings.hotkeys.playPause, () => {
+        if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible()) {
+          overlayWindow.webContents.send(IPC.OverlayPlayPause)
+        }
+      })
+    }
+    if (settings.hotkeys.speedUp) {
+      globalShortcut.register(settings.hotkeys.speedUp, () => {
+        if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible()) {
+          overlayWindow.webContents.send(IPC.OverlaySpeedStep, 1)
+        }
+      })
+    }
+    if (settings.hotkeys.speedDown) {
+      globalShortcut.register(settings.hotkeys.speedDown, () => {
+        if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible()) {
+          overlayWindow.webContents.send(IPC.OverlaySpeedStep, -1)
+        }
       })
     }
   } catch (err) {
@@ -595,6 +636,12 @@ function registerIpc(): void {
     void handlePanic()
     return true
   })
+
+  ipcMain.handle(IPC.ContextReset, () => {
+    resetSessionContext()
+  })
+
+  ipcMain.handle(IPC.CoachingStatsGet, () => coachingCounts)
 
   // ---- 系統音訊 loopback 授權（Windows）----
   session.defaultSession.setDisplayMediaRequestHandler(
