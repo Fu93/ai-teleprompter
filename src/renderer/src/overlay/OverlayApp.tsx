@@ -510,6 +510,68 @@ export default function OverlayApp(): JSX.Element {
   // ---- 即時教練(Phase B+):語速過快/填充詞/損話/冷場/獨白過長 ----
   const { hint: coachingHint } = useCoaching(o?.coaching ?? true)
 
+  // ---- 靈動島:事件內容優先序(該你了 > 教練 > panic)----
+  // 事件發生時升為藥丸主角,結束後淡出回常规內容
+  const turnActive = turnYieldHint !== null
+  const coachingActive = coachingHint !== null
+  const panicActive = panicPhase === 'rescue'
+  const liveEventKind: 'turn' | 'coaching' | 'panic' | null = turnActive
+    ? 'turn'
+    : coachingActive
+      ? 'coaching'
+      : panicActive
+        ? 'panic'
+        : null
+  const liveEventText = turnActive
+    ? turnYieldText
+    : coachingActive
+      ? (coachingHint?.message ?? '')
+      : panicActive
+        ? '救援卡顯示中 — 點鈴鐺關閉'
+        : ''
+  interface LiveEvent {
+    kind: 'turn' | 'coaching' | 'panic'
+    text: string
+    at: number
+  }
+  const [shownEvent, setShownEvent] = useState<LiveEvent | null>(null)
+  const eventLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (liveEventKind) {
+      if (eventLeaveTimerRef.current) {
+        clearTimeout(eventLeaveTimerRef.current)
+        eventLeaveTimerRef.current = null
+      }
+      setShownEvent((prev) =>
+        prev?.kind === liveEventKind && prev.text === liveEventText ? prev : { kind: liveEventKind, text: liveEventText, at: Date.now() }
+      )
+      return
+    }
+    // 事件結束:先播淡出動畫再卸載
+    if (shownEvent && eventLeaveTimerRef.current === null) {
+      eventLeaveTimerRef.current = setTimeout(() => {
+        eventLeaveTimerRef.current = null
+        setShownEvent(null)
+      }, 280)
+    }
+  }, [liveEventKind, liveEventText, shownEvent])
+
+  // ---- 靈動島藥丸:聲音反應層 ----
+  // 音量走 ref + rAF 直接寫 CSS 變數,不經過 React render(每幀 setState 會拖累動畫)
+  const followLevelRef = useRef(0)
+  const voiceBarsRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (followStatus !== 'listening') return
+    let raf = 0
+    const tick = (): void => {
+      const el = voiceBarsRef.current
+      if (el) el.style.opacity = String(0.3 + Math.min(1, followLevelRef.current * 2) * 0.7)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [followStatus])
+
   // ---- 視窗尺寸同步 ----
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -620,6 +682,9 @@ export default function OverlayApp(): JSX.Element {
             .transcribe(audio, settings.stt.language)
             .then(handleFollowTranscript)
             .catch(() => undefined)
+        },
+        onLevel: (r) => {
+          followLevelRef.current = r
         },
         threshold: 0.01
       })
@@ -889,56 +954,87 @@ export default function OverlayApp(): JSX.Element {
     } else if (displayMode === 'bullet') {
       nextKeyword = degrade(model.bullets[state.bulletIndex + 1]?.title ?? '', 6)
     }
+    const eventLeaving = liveEventKind === null && shownEvent !== null
+    // 靈動島光暈:顏色講狀態——事件優先(藍該你了/琥珀教練/紅救援),
+    // 其次播放中綠、待機灰;穿透永遠琥珀警示
+    const diGlow = o.clickThrough
+      ? 'rgba(251, 191, 36, 0.5)'
+      : shownEvent?.kind === 'turn'
+        ? 'rgba(56, 189, 248, 0.55)'
+        : shownEvent?.kind === 'coaching'
+          ? 'rgba(251, 191, 36, 0.55)'
+          : shownEvent?.kind === 'panic'
+            ? 'rgba(244, 63, 94, 0.6)'
+            : playing
+              ? 'rgba(52, 211, 153, 0.45)'
+              : 'rgba(148, 163, 184, 0.4)'
     // drag region 會吞掉滑鼠事件:雙擊展開不再可用,以展開按鈕取代(拖曳價值更高)
     return (
       <div
         ref={specRef}
         className={cn(
-          'glass-pill content-morph-in glass-specular flex h-full cursor-default select-none items-center gap-3 rounded-full px-4',
+          'dynamic-island-pill glass-pill content-morph-in glass-specular flex h-full cursor-default select-none items-center gap-3 rounded-full px-4',
           refractOk && o.glass && 'glass-refract'
         )}
         title="拖曳可移動位置"
         onDoubleClick={exitCompact}
-        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+        style={{
+          WebkitAppRegion: 'drag',
+          '--di-glow': diGlow,
+          '--di-glow-o': playing || shownEvent ? '0.8' : '0.45'
+        } as React.CSSProperties}
       >
-        <span
-          className={cn(
-            'h-2 w-2 shrink-0 rounded-full',
-            o.clickThrough ? 'bg-amber-450' : playing ? 'bg-emerald-500' : 'bg-ink-600'
-          )}
-          title={o.clickThrough ? '滑鼠穿透中:熱鍵或主視窗「提詞」按鈕重新顯示時自動解除' : undefined}
-        />
-        <span className="max-w-[110px] truncate text-xs font-medium text-white/100">
-          {degrade(payload.title || '提詞浮層', 8)}
-        </span>
-        <div className="h-1 min-w-6 flex-1 overflow-hidden rounded-full bg-white/10">
+        {shownEvent ? (
+          // 事件視窗:事件升為主角(字級加大、圖示上色),結束後縮回常规內容;
+          // key=at 讓事件輪替時 remount 重播彈入動畫
           <div
-            className="h-full rounded-full bg-gradient-to-r from-accent-400 to-accent-600 transition-[width] duration-300"
-            style={{ width: `${shownProgress * 100}%` }}
-          />
-        </div>
-        {turnYieldHint && (
-          <span
-            title={turnYieldText}
-            className="flex h-6 shrink-0 cursor-default items-center gap-1 rounded-full bg-sky-500/20 px-2 text-[10px] font-medium text-sky-300"
+            key={shownEvent.at}
+            className={cn('flex min-w-0 flex-1 items-center gap-2', eventLeaving ? 'di-event-leaving' : 'di-event')}
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-            <MessageCircleQuestion size={11} /> 該你了
-          </span>
+            {shownEvent.kind === 'turn' && <MessageCircleQuestion size={14} className="shrink-0 text-sky-300" />}
+            {shownEvent.kind === 'coaching' && <Gauge size={14} className="shrink-0 text-amber-300" />}
+            {shownEvent.kind === 'panic' && <Siren size={14} className="shrink-0 text-rose-400" />}
+            <span className="truncate text-[13px] font-medium text-white/95">{shownEvent.text}</span>
+          </div>
+        ) : (
+          <>
+            <span
+              className={cn(
+                'h-2 w-2 shrink-0 rounded-full',
+                o.clickThrough ? 'bg-amber-450' : playing ? 'bg-emerald-500' : 'bg-ink-600'
+              )}
+              title={o.clickThrough ? '滑鼠穿透中:熱鍵或主視窗「提詞」按鈕重新顯示時自動解除' : undefined}
+            />
+            <span className="max-w-[110px] truncate text-xs font-medium text-white/100">
+              {degrade(payload.title || '提詞浮層', 8)}
+            </span>
+            <div className="h-1 min-w-6 flex-1 overflow-hidden rounded-full bg-white/10">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-accent-400 to-accent-600 transition-[width] duration-300"
+                style={{ width: `${shownProgress * 100}%` }}
+              />
+            </div>
+            {followStatus === 'listening' && (
+              // 跟讀中的聲音反應:三根小柱,亮度隨輸入音量(rAF 直寫 opacity)
+              <div
+                ref={voiceBarsRef}
+                className="di-voice-bars shrink-0 text-emerald-300"
+                style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              >
+                <i />
+                <i />
+                <i />
+              </div>
+            )}
+            {nextKeyword && (
+              <span className="text-[11px] text-accent-300" title={`下一個:${nextKeyword}`}>
+                {nextKeyword}
+              </span>
+            )}
+            <span className="shrink-0 font-mono text-[10px] text-white/72">{formatDuration(elapsedSec)}</span>
+          </>
         )}
-        {coachingHint && (
-          <span
-            title={coachingHint.message}
-            className="flex h-6 shrink-0 cursor-default items-center gap-1 rounded-full bg-amber-500/20 px-2 text-[10px] font-medium text-amber-300"
-          >
-            <Gauge size={11} /> 教練
-          </span>
-        )}
-        {nextKeyword && (
-          <span className="text-[11px] text-accent-300" title={`下一個:${nextKeyword}`}>
-            {nextKeyword}
-          </span>
-        )}
-        <span className="shrink-0 font-mono text-[10px] text-white/72">{formatDuration(elapsedSec)}</span>
         {panicPhase !== 'idle' ? (
           <button
             onClick={dismissRescue}
