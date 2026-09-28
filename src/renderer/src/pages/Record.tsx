@@ -82,6 +82,14 @@ export default function Record(): JSX.Element {
     if (el) el.scrollTop = el.scrollHeight
   }, [segments])
 
+  // unmount 清理:錄音中切頁要收掉分段器與音訊 track(麥克風/系統音訊燈滅),
+  // 否則擷取會在背景持續運作(Practice 已有同樣模式)
+  useEffect(() => {
+    return () => {
+      stopAll()
+    }
+  }, [])
+
   const ensureWhisper = async (): Promise<void> => {
     if (!whisperRef.current) {
       const client = new WhisperClient()

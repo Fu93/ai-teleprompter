@@ -152,10 +152,10 @@ function evaluateTurnYieldForSegment(text: string): void {
 async function handlePanic(): Promise<void> {
   if (panicInFlight) return
   panicInFlight = true
+  // 場景查表純函數(getScene 對未知 key 也有 fallback),放 try 外讓 catch 專注 AI 鏈路
+  const scene = getScene(settings.scenario.activeScene)
+  const mode = settings.scenario.panicMode
   try {
-    const scene = getScene(settings.scenario.activeScene)
-    const mode = settings.scenario.panicMode
-
     // AI 關閉:直接場景模板,不出 AI 卡
     if (!settings.scenario.aiModeEnabled) {
       deliverRescue({
@@ -201,6 +201,11 @@ async function handlePanic(): Promise<void> {
       source: 'ai',
       scene: scene.key
     })
+  } catch (err) {
+    // AI 層正常會把錯誤轉成 result.ok=false;這裡是 provider 層拋例外的最後防線。
+    // 沒有它 panicInFlight 會卡在 true,panic 從此無反應。
+    overlayWindow?.webContents.send(IPC.PanicError, err instanceof Error ? err.message : String(err))
+    deliverRescue(structuredFallback(mode))
   } finally {
     panicInFlight = false
   }
@@ -386,6 +391,16 @@ function setOverlayVisible(visible: boolean): void {
 
 function notifyOverlayVisibility(visible: boolean): void {
   mainWindow?.webContents.send(IPC.OverlayVisibilityChanged, visible)
+}
+
+/** 主視窗關閉後的浮層續命寬限;到期仍可見則再等一輪,隱藏後退出整個 app */
+const QUIT_GRACE_MS = 10_000
+function quitWhenOverlayHidden(): void {
+  setTimeout(() => {
+    const overlayVisible = overlayWindow !== null && !overlayWindow.isDestroyed() && overlayWindow.isVisible()
+    if (overlayVisible) quitWhenOverlayHidden()
+    else app.quit()
+  }, QUIT_GRACE_MS)
 }
 
 // ---------- IPC ----------
@@ -683,7 +698,10 @@ if (!gotLock) {
   })
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit()
+    if (process.platform === 'darwin') return
+    // 浮層預設隱藏 → 主視窗關閉後 10s 退出整個 app(過程中 second-instance 仍能救回);
+    // 若使用者正開著浮層提詞則持續寬限,直到浮層隱藏才退出。
+    quitWhenOverlayHidden()
   })
 
   app.on('will-quit', () => {

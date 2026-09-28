@@ -6,6 +6,7 @@ import {
   createCoachingState,
   onMeSegment,
   onThemSegment,
+  resetCoachingState,
   speechUnits,
   DEFAULT_CPM
 } from '../coachingRules'
@@ -182,5 +183,29 @@ describe('checkDeadAir 冷場', () => {
     onMeSegment(s, '好那我們繼續', T0 + 100_000, opts())
     expect(checkDeadAir(s, T0 + 109_000, opts())).toBeNull()
     expect(checkDeadAir(s, T0 + 400_001, opts())).not.toBeNull()
+  })
+
+  it('會話重置後時間戳歸零:不漏報也不誤報(main resetSessionContext 呼叫)', () => {
+    const s = createCoachingState()
+    // 上一輪:講了一句後冷場,dead_air 已觸發
+    onMeSegment(s, '我先說明一下現況', T0, opts())
+    expect(checkDeadAir(s, T0 + 9_000, opts())).not.toBeNull()
+    // 會話邊界重置
+    resetCoachingState(s)
+    // 重置後尚無語音:開場保護 → 不報(也不被上輪冷卻殘留卡住)
+    expect(checkDeadAir(s, T0 + 500_000, opts())).toBeNull()
+    // 新一輪語音後靜音 8s:正常觸發
+    onMeSegment(s, '好,那我們開始', T0 + 600_000, opts())
+    expect(checkDeadAir(s, T0 + 609_000, opts())).not.toBeNull()
+  })
+
+  it('填充詞統計窗:超過 30s 的舊樣本不出窗', () => {
+    const s = createCoachingState()
+    let r: ReturnType<typeof onMeSegment> = null
+    // 每 10s 一顆「嗯」:第 4 顆到達時第 1 顆已出 30s 窗 → 窗內僅 3 顆
+    for (let i = 1; i <= 4; i++) {
+      r = onMeSegment(s, '嗯', T0 + i * 10_000, opts())
+    }
+    expect(r).toBeNull()
   })
 })

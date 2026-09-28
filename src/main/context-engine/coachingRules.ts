@@ -159,8 +159,8 @@ export function onMeSegment(
     }
   }
 
-  // ---- filler:近 30s 填充詞次數 ----
-  const recentFiller = state.me.filter((m) => now - m.t <= FILLER_WINDOW_MS)
+  // ---- filler:近 30s 填充詞次數(嚴格小於:「30s 前」的舊樣本必須出窗)----
+  const recentFiller = state.me.filter((m) => now - m.t < FILLER_WINDOW_MS)
   const fillerCount = recentFiller.reduce((a, b) => a + b.fillers, 0)
   if (fillerCount >= 4 && cooled(state, 'filler', now, cooldowns.filler)) {
     markFired(state, 'filler', now)
@@ -171,8 +171,8 @@ export function onMeSegment(
     }
   }
 
-  // ---- fast:近 60s 語速(以「送達間隔扣停頓」保守估算連續時長)----
-  const recent = state.me.filter((m) => now - m.t <= CPM_WINDOW_MS)
+  // ---- fast:近 60s 語速(以「送達間隔扣停頓」保守估算連續時長;同 filler 用嚴格小於)----
+  const recent = state.me.filter((m) => now - m.t < CPM_WINDOW_MS)
   const totalUnits = recent.reduce((a, b) => a + b.units, 0)
   if (recent.length >= 2 && totalUnits >= 10) {
     // 連續時長:Σ 相鄰段間隔(夾在 CONTINUATION_GAP_MS 內)+ 最後段前的保守餘量
