@@ -81,15 +81,22 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     setDirty(false)
   }
 
-  const save = async (): Promise<void> => {
-    if (selectedId == null) return
-    await db.scripts.update(selectedId, {
-      title: draft.title.trim() || '未命名講稿',
-      content: draft.content,
-      updatedAt: Date.now()
-    })
+  const save = async (): Promise<boolean> => {
+    if (selectedId == null) return false
+    try {
+      await db.scripts.update(selectedId, {
+        title: draft.title.trim() || '未命名講稿',
+        content: draft.content,
+        updatedAt: Date.now()
+      })
+    } catch (err) {
+      // 寫入失敗(磁碟滿/隱私模式等)要有聲:保持 dirty 讓使用者重試,而不是看著「已儲存」以為存好了
+      toast.error(`儲存失敗:${err instanceof Error ? err.message : String(err)}`)
+      return false
+    }
     setDirty(false)
     await refresh(selectedId)
+    return true
   }
 
   const remove = async (): Promise<void> => {
@@ -98,6 +105,7 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     await db.scripts.delete(selectedId)
     setSelectedId(null)
     setDraft({ title: '', content: '' })
+    toast.success('講稿已刪除')
     setDirty(false)
     await refresh(null)
   }
@@ -111,7 +119,8 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
 
   const launch = async (): Promise<void> => {
     if (selectedId == null || !draft.content.trim()) return
-    if (dirty) await save()
+    // 儲存失敗就停:浮層若照開,使用者看到的是舊稿,比不開更糟
+    if (dirty && !(await save())) return
     await db.scripts.update(selectedId, { lastUsedAt: Date.now() })
     await window.api.overlayShow({ title: draft.title, content: draft.content })
   }
@@ -135,7 +144,7 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
 
   const beginRecording = async (): Promise<void> => {
     if (selectedId == null || !draft.content.trim()) return
-    if (dirty) await save()
+    if (dirty && !(await save())) return
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -373,7 +382,12 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
               <button className="btn-outline text-xs" onClick={save} disabled={!dirty}>
                 <Save size={14} /> {dirty ? '儲存' : '已儲存'}
               </button>
-              <button className="btn-primary text-xs" onClick={launch}>
+              <button
+                className="btn-primary text-xs"
+                onClick={launch}
+                disabled={!draft.content.trim()}
+                title={draft.content.trim() ? undefined : '先輸入講稿內容再開始提詞'}
+              >
                 <Play size={14} /> 開始提詞
               </button>
               {recording ? (
