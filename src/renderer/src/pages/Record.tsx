@@ -51,6 +51,8 @@ export default function Record(): JSX.Element {
 
   const whisperRef = useRef<WhisperClient | null>(null)
   const segsRef = useRef<TranscriptSegment[]>([])
+  /** 最後一段落帳時間:停止時判斷在飛轉錄是否已完成 */
+  const lastSegmentAtRef = useRef(0)
   const startedAtRef = useRef(0)
   const streamsRef = useRef<{ mic?: MediaStream; sys?: MediaStream }>({})
   const segmentersRef = useRef<{ mic?: AudioSegmenter; sys?: AudioSegmenter }>({})
@@ -149,6 +151,7 @@ export default function Record(): JSX.Element {
         end
       }
       segsRef.current = [...segsRef.current, seg]
+      lastSegmentAtRef.current = Date.now()
       setSegments(segsRef.current)
       // 餵 main 的 liveContext:panic(Alt+P)才有「對方問了什麼」的上下文
       void window.api.pushTranscript({ text: seg.text, speaker })
@@ -225,7 +228,23 @@ export default function Record(): JSX.Element {
 
   const stop = async (): Promise<void> => {
     setRecording(false)
+    // 最後一段話此刻多半還在 segmenter 的靜音判定窗裡(750ms):
+    // flush 送出的轉錄是 async,不等它就存檔會把使用者的最後一句話丟掉。
+    // 記住停止當下的數量,等所有在飛轉錄完成(或逾時)再收帳。
+    const pendingAtStop = segsRef.current.length
     stopAll()
+    await Promise.race([
+      (async () => {
+        for (let i = 0; i < 40 && segsRef.current.length === pendingAtStop; i++) {
+          await new Promise((r) => setTimeout(r, 100))
+        }
+        // 再給一小段緩衝,若期間又進帳了段落,同樣等它安定
+        for (let i = 0; i < 30 && Date.now() - lastSegmentAtRef.current < 800; i++) {
+          await new Promise((r) => setTimeout(r, 100))
+        }
+      })(),
+      new Promise((r) => setTimeout(r, 4_000))
+    ])
     if (segsRef.current.length > 0) {
       setSaving(true)
       try {
@@ -470,7 +489,7 @@ export default function Record(): JSX.Element {
                 [
                   ['fast', '語速過快'],
                   ['filler', '填充詞'],
-                  ['interrupt', '損話'],
+                  ['interrupt', '搶話'],
                   ['dead_air', '冷場'],
                   ['monologue', '獨白過長']
                 ] as Array<[CoachingKind, string]>

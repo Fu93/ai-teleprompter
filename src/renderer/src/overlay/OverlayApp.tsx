@@ -408,6 +408,9 @@ export default function OverlayApp(): JSX.Element {
   // 給一次性 effect(onOverlayLoadScript 自動播放)讀最新值用,避免閉包捕獲 stale 'idle'
   const followStatusRef = useRef<FollowStatus>('idle')
   followStatusRef.current = followStatus
+  // 換稿自動播放旗標:實際 play 延到 content 變化後的 effect(引擎已重建),
+  // 立即 play 會落在舊引擎上、隨即被新引擎實例替換吃掉
+  const autoPlayRef = useRef(false)
   const [followMsg, setFollowMsg] = useState('')
   const [lastHeard, setLastHeard] = useState('')
   const [activeChunk, setActiveChunk] = useState(-1)
@@ -437,10 +440,8 @@ export default function OverlayApp(): JSX.Element {
       setPayload(p)
       setActiveChunk(-1)
       setFollowProgress(0)
-      // 主視窗「開始提詞」的期待是「打開就開始講」:自動播放。
-      // 語音跟讀進行中則不播:兩套捲動來源(定時引擎 vs STT 對位)會互相拉扯。
-      // 手動播放永遠可用(空白鍵/工具列/Alt+K),所以自動播放失敗也不會卡住使用者。
-      if (followStatusRef.current === 'idle') controlsRef.current?.play()
+      // 主視窗「開始提詞」= 打開就開始講;實際 play 在 content 變化後的 effect
+      autoPlayRef.current = true
     })
     const offSettings = window.api.onSettingsChanged(setSettings)
     return () => {
@@ -470,6 +471,12 @@ export default function OverlayApp(): JSX.Element {
     }
     setActiveChunk(-1)
     if (scrollRef.current) scrollRef.current.scrollTop = 0
+    // 自動播放:引擎此刻已隨 content 重建,play 才會落在正確的實例上。
+    // 語音跟讀進行中則不播:兩套捲動來源(定時引擎 vs STT 對位)會互相拉扯。
+    if (autoPlayRef.current) {
+      autoPlayRef.current = false
+      if (followStatusRef.current === 'idle' && content) controlsRef.current?.play()
+    }
   }, [content])
 
   // ---- 四模式定時引擎 ----

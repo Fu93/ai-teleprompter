@@ -217,6 +217,12 @@ let lastOverlayPayload: { title?: string; content?: string } = {}
 
 const isDev = !app.isPackaged
 
+// e2e 隔離:測試進程以 AI_TP_E2E=1 啟動時,把 userData 重導到暫存目錄,
+// 測試建立的講稿/會議/設定不會汙染真實使用者資料(真實發生過:測試講稿出現在使用者 Dashboard)
+if (process.env['AI_TP_E2E'] === '1') {
+  app.setPath('userData', join(app.getPath('temp'), `ai-teleprompter-e2e-${Date.now()}`))
+}
+
 /** 視窗安全:禁新視窗;僅允許 dev server 或本地檔案內部導航 */
 function hardenWebContents(win: BrowserWindow): void {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
