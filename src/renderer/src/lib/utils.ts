@@ -26,8 +26,12 @@ export function uid(): string {
  * 精度降級取代截斷(Island 慣例):寬度不足時直接降到前 N 字,永不出現「…」。
  * 比起 CSS truncate,保留完整資訊語意(關鍵詞可見即可用),也避免 CJK 斷字位置怪異。
  */
+/** 前導標點:從句中切字時會把逗號/句號切進來(「，今天想跟」),顯示前剝掉 */
+const LEADING_PUNCT = /^[，。、；：！？「」『』（）．,\.:;!?\s]+/
+
 export function degrade(text: string, maxChars: number): string {
-  const t = text.trim()
+  const t = text.trim().replace(LEADING_PUNCT, '')
   if (t.length <= maxChars) return t
-  return t.slice(0, Math.max(1, maxChars))
+  // 切完再剝一次:切點可能正好落在標點上
+  return t.slice(0, Math.max(1, maxChars)).replace(LEADING_PUNCT, '')
 }

@@ -31,7 +31,11 @@ export function useGlassRefraction(glassOn: boolean): UseGlassRefractionResult {
     const rebuild = (): void => {
       const w = Math.max(1, window.innerWidth)
       const h = Math.max(1, window.innerHeight)
-      const map = buildDisplacementMap(w, h, 18, 14, 12)
+      // 折射半徑跟隨形態:藥丸 rounded-full(半徑=高一半)、貼鏡/展開 rounded-2xl(16px)。
+      // 寫死 18 會讓折射環不跟膠囊邊緣走,圓端產生錯位亮弧(即白邊來源之一)
+      const pill = document.querySelector('.dynamic-island-pill')
+      const radius = pill ? Math.round(h / 2) : 16
+      const map = buildDisplacementMap(w, h, radius, 14, 12)
       ensureGlassFilter('liquid-glass', map, 2)
       setWinSize({ w, h })
     }
