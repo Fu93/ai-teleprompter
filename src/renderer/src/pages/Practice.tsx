@@ -309,8 +309,11 @@ export default function Practice(): JSX.Element {
 
   const removeHistory = async (id?: number): Promise<void> => {
     if (id == null) return
+    // 永久刪除要有確認:與 Record 會議歷史、Scripts 講稿刪除同一標準
+    if (!window.confirm('確定刪除這次練習紀錄嗎？反饋與總評將一併移除，無法復原。')) return
     await db.practiceRuns.delete(id)
     await refreshHistory()
+    toast.info('練習紀錄已刪除')
   }
 
   const loadHistory = (r: PracticeRun): void => {

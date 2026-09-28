@@ -231,8 +231,10 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     recorderRef.current = null
   }
 
+  // 標題與內容統一不分大小寫(原本標題忽略大小寫、內容分,搜尋行為不可預期)
+  const q = query.toLowerCase()
   const filtered = scripts.filter(
-    (s) => s.title.toLowerCase().includes(query.toLowerCase()) || s.content.includes(query)
+    (s) => s.title.toLowerCase().includes(q) || s.content.toLowerCase().includes(q)
   )
 
   return (

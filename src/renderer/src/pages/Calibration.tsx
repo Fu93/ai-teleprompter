@@ -64,6 +64,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
   const [level, setLevel] = useState(0)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const micStreamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<Float32Array[]>([])
   const recStartRef = useRef(0)
   const whisperRef = useRef<WhisperClient | null>(null)
@@ -184,6 +185,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: true }
     })
+    micStreamRef.current = stream
     const ctx = new AudioContext({ sampleRate: 16000 })
     await ctx.resume()
     audioCtxRef.current = ctx
@@ -206,6 +208,10 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
     void audioCtxRef.current?.close()
     processorRef.current = null
     audioCtxRef.current = null
+    // 麥克風 track 也要收:「唸完了」之後指示燈持續亮著就是這漏的
+    // (與 Record/Practice 的同族修法一致)
+    micStreamRef.current?.getTracks().forEach((t) => t.stop())
+    micStreamRef.current = null
     setLevel(0)
   }
 
