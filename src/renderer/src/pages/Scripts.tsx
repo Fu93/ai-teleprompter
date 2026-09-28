@@ -26,6 +26,21 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     onDirtyChange?.(dirty)
     return () => onDirtyChange?.(false)
   }, [dirty, onDirtyChange])
+
+  // unmount 清理:錄影中切頁要收掉計時器、錄音器與攝影機/麥克風 track;
+  // recorder.onstop 會在離頁後觸發,此時 mainWindow 還在所以 saveRecording 對話框仍會跳出——
+  // 這比資料無聲消失好,但不該讓攝影機燈在背景亮著
+  useEffect(() => {
+    return () => {
+      if (recTimerRef.current) {
+        clearInterval(recTimerRef.current)
+        recTimerRef.current = null
+      }
+      recorderRef.current?.stop()
+      recStreamRef.current?.getTracks().forEach((t) => t.stop())
+      recStreamRef.current = null
+    }
+  }, [])
   const { settings } = useSettings()
 
   const refresh = async (keepId?: number | null): Promise<void> => {

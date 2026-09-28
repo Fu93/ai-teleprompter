@@ -118,13 +118,13 @@ test('即時教練:搶話訊號經 IPC → 浮層顯示教練提示', async () =
     await overlay!.waitForLoadState('domcontentloaded')
 
     await main.evaluate(() => window.api.setSettings({ overlay: { coaching: true } }))
-    // 對方剛講完 → 2s 內我方開口 = 搶話
-    await main.evaluate(() =>
-      window.api.pushTranscript({ text: '那我們請你說明一下這個案例的背景', speaker: 'them' })
-    )
-    await main.evaluate(() =>
-      window.api.pushTranscript({ text: '這個專案主要是我負責資料管線的設計', speaker: 'me' })
-    )
+    // 對方剛講完 → 2s 內我方開口 = 搶話。
+    // 兩段必須在同一個 evaluate 內背靠背送出:分開兩次呼叫在併跑負載下
+    // 可能間隔超過 2s 判定窗,搶話不觸發(併跑 flake 來源)
+    await main.evaluate(() => {
+      void window.api.pushTranscript({ text: '那我們請你說明一下這個案例的背景', speaker: 'them' })
+      void window.api.pushTranscript({ text: '這個專案主要是我負責資料管線的設計', speaker: 'me' })
+    })
     await overlay!.waitForSelector('text=打斷對方', { timeout: 8_000 })
   } finally {
     await app.close()

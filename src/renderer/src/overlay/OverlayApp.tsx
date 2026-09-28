@@ -900,6 +900,7 @@ export default function OverlayApp(): JSX.Element {
             'h-2 w-2 shrink-0 rounded-full',
             o.clickThrough ? 'bg-amber-450' : playing ? 'bg-emerald-500' : 'bg-ink-600'
           )}
+          title={o.clickThrough ? '滑鼠穿透中:熱鍵或主視窗「提詞」按鈕重新顯示時自動解除' : undefined}
         />
         <span className="max-w-[110px] truncate text-xs font-medium text-white/100">
           {degrade(payload.title || '提詞浮層', 8)}
@@ -1234,7 +1235,7 @@ export default function OverlayApp(): JSX.Element {
             <ScanEye size={13} />
           </ToolBtn>
           <ToolBtn
-            title={o.clickThrough ? '滑鼠穿透:開(點擊會穿過視窗,到主視窗或熱鍵關閉)' : '滑鼠穿透:關'}
+            title={o.clickThrough ? '滑鼠穿透:開(浮層已收不到點擊;熱鍵或主視窗「提詞」重新顯示時自動解除)' : '滑鼠穿透:關'}
             active={o.clickThrough}
             onClick={() => void window.api.overlaySetClickThrough(!o.clickThrough)}
           >

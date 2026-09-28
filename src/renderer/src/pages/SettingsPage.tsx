@@ -307,7 +307,7 @@ export default function SettingsPage({
             </div>
           )}
         </div>
-        <Switch label="滑鼠穿透" hint="滑鼠點擊直接穿過浮層操作底下的視窗" checked={o.clickThrough} onChange={(v) => window.api.overlaySetClickThrough(v)} />
+        <Switch label="滑鼠穿透" hint="滑鼠點擊直接穿過浮層操作底下的視窗;熱鍵或「提詞」按鈕重新顯示浮層時會自動解除" checked={o.clickThrough} onChange={(v) => window.api.overlaySetClickThrough(v)} />
         <Switch label="永遠置頂" checked={o.alwaysOnTop} onChange={(v) => patchO({ alwaysOnTop: v })} />
       </Section>
 

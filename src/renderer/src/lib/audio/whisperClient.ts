@@ -129,13 +129,18 @@ export class WhisperClient {
   }
 
   isLoaded(): boolean {
-    return this.loadPromise !== null
+    // loadPromise 在 load 失敗時會被清成 null;worker 存在但 promise 沒了 = 載入中斷,視為未載入
+    return this.loadPromise !== null && this.worker !== null
   }
 
   dispose(): void {
+    // 先 reject 所有等待中的轉錄(離頁時 transcribe() 呼叫端還在 await;
+    // 只 clear 不 reject 會讓那些 Promise 永遠懸掛,catch 不會跑到)
+    const err = new Error('Whisper 已釋放(頁面離開或模型切換)')
+    for (const p of this.pending.values()) p.reject(err)
+    this.pending.clear()
     this.worker?.terminate()
     this.worker = null
     this.loadPromise = null
-    this.pending.clear()
   }
 }

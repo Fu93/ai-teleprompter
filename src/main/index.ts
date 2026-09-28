@@ -396,6 +396,14 @@ function setOverlayVisible(visible: boolean): void {
   }
   const win = overlayWindow!
   if (visible) {
+    // 點擊穿透是單向門:穿透中浮層收不到任何滑鼠事件,原設計唯一的解除入口在主視窗設定頁。
+    // 重新顯示浮層(熱鍵或「提詞」按鈕)時自動解除,工具列恢復可點;要再穿透按一下工具列即可。
+    if (settings.overlay.clickThrough) {
+      settings.overlay.clickThrough = false
+      saveSettings(settings)
+      applyOverlayWindowSettings()
+      broadcastSettings()
+    }
     win.showInactive() // 不搶焦點，避免打斷正在使用的應用
   } else {
     win.hide()
