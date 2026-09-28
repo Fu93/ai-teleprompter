@@ -216,6 +216,9 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
   }
 
   const startReading = async (): Promise<void> => {
+    // 進場先置位:按鈕 disabled={transcribing} 由此關閉模型載入/麥克風的連點競態窗
+    // (原本只在「本地模型需要載入」分支才置位,雲端/已載入路徑整段 await 期間可再按)
+    setTranscribing(true)
     try {
       if (!whisperRef.current) whisperRef.current = new WhisperClient()
       const client = whisperRef.current
@@ -224,7 +227,6 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       }
       if (settings?.stt.engine === 'local') {
         if (!client.isLoaded()) {
-          setTranscribing(true)
           setModelProgress(0)
           await client.load(modelKey)
         }

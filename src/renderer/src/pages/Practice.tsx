@@ -39,6 +39,9 @@ export default function Practice(): JSX.Element {
   const [curTranscript, setCurTranscript] = useState('')
   const [curStart, setCurStart] = useState(0)
   const [recording, setRecording] = useState(false)
+  /** startListening 的多步 await(模型載入/麥克風)期間擋再按:雙擊會洩漏第一組管線且重複轉錄 */
+  const [starting, setStarting] = useState(false)
+  const startingRef = useRef(false)
   const [level, setLevel] = useState(0)
   const [busy, setBusy] = useState<string | null>(null) // 'questions' | 'feedback' | 'overall'
   const [run, setRun] = useState<PracticeRun | null>(null)
@@ -113,6 +116,18 @@ export default function Practice(): JSX.Element {
   }
 
   const startListening = async (): Promise<void> => {
+    if (startingRef.current || recording) return
+    startingRef.current = true
+    setStarting(true)
+    try {
+      await startListeningInner()
+    } finally {
+      startingRef.current = false
+      setStarting(false)
+    }
+  }
+
+  const startListeningInner = async (): Promise<void> => {
     try {
       if (settings?.stt.engine === 'local') await ensureWhisper()
       segsRef.current = []
@@ -559,9 +574,10 @@ export default function Practice(): JSX.Element {
                 <button
                   className="btn-primary w-full"
                   onClick={startListening}
-                  disabled={busy !== null}
+                  disabled={busy !== null || starting}
                 >
-                  <Mic size={14} /> 開始回答
+                  {starting ? <Loader2 size={14} className="animate-spin" /> : <Mic size={14} />}
+                  {starting ? '啟動中…' : '開始回答'}
                 </button>
               )}
             </div>

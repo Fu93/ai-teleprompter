@@ -34,6 +34,10 @@ type ModelState = {
 export default function Record(): JSX.Element {
   const { settings } = useSettings()
   const [recording, setRecording] = useState(false)
+  /** start() 的多步 await(模型載入/麥克風/AudioContext)期間擋再按:
+   *  雙擊會讓第一組 stream/segmenter ref 被覆蓋而永久洩漏,且兩組分段器重複送轉錄 */
+  const [starting, setStarting] = useState(false)
+  const startingRef = useRef(false)
   const [wantMic, setWantMic] = useState(true)
   const [wantSys, setWantSys] = useState(false)
   const [micLevel, setMicLevel] = useState(0)
@@ -161,6 +165,18 @@ export default function Record(): JSX.Element {
   }
 
   const start = async (): Promise<void> => {
+    if (startingRef.current || recording) return
+    startingRef.current = true
+    setStarting(true)
+    try {
+      await startInner()
+    } finally {
+      startingRef.current = false
+      setStarting(false)
+    }
+  }
+
+  const startInner = async (): Promise<void> => {
     if (!wantMic && !wantSys) {
       toast.error('請至少選擇一個音訊來源')
       return
@@ -228,6 +244,8 @@ export default function Record(): JSX.Element {
 
   const stop = async (): Promise<void> => {
     setRecording(false)
+    // 歸零讓 elapsed interval 停止寫入(否則每 500ms 空轉 re-render)
+    startedAtRef.current = 0
     // 最後一段話此刻多半還在 segmenter 的靜音判定窗裡(750ms):
     // flush 送出的轉錄是 async,不等它就存檔會把使用者的最後一句話丟掉。
     // 記住停止當下的數量,等所有在飛轉錄完成(或逾時)再收帳。
@@ -380,8 +398,9 @@ export default function Record(): JSX.Element {
               value={title}
               onChange={(e) => setTitle(e.target.value)}
             />
-            <button className="btn-primary ml-auto" onClick={start}>
-              <Play size={14} /> 開始聆聽
+            <button className="btn-primary ml-auto" onClick={start} disabled={starting}>
+              {starting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+              {starting ? '啟動中…' : '開始聆聽'}
             </button>
           </>
         )}

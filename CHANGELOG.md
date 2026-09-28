@@ -17,6 +17,8 @@
 
 ### 修復
 
+- **啟動按鈕連點競態（三頁同族）**：「開始聆聽／開始回答／開始朗讀」都是多步 async（模型載入＋麥克風＋AudioContext，可達數秒），期間按鈕仍可再按——雙擊會讓第一組音訊管線的 ref 被覆蓋而永久洩漏（指示燈長亮），且兩組分段器同時送轉錄造成逐字稿段落成對重複。Record 原本完全沒有 disabled，Practice/Calibration 的 disabled 條件在 await 期間也無效；三頁統一加啟動旗標防重入（按鈕顯示「啟動中…」），Calibration 另將 disabled 置位提前到函數進場。
+- **停止錄音後計時空轉**：Record 的 elapsed 計時器在停止後仍每 500ms 空轉 setState（無限 re-render）；停止時歸零計時基準。
 - **校準語速量測的麥克風外洩**：量測音訊管線的麥克風 track 從未被 stop，按「唸完了」之後（或離開校準頁時）麥克風指示燈持續亮著、擷取在背景持續運作——與先前修復的 Record/Practice 同族問題，唯獨這頁漏網；已補 track 收掉。
 - **設定廣播重複訂閱**：設定 store 的 `load()` 每次呼叫都重新註冊 `onSettingsChanged`/`onOverlayVisibility` listener 且永不解除，而啟動流程（App 與側欄熱鍵提示兩個 effect）註定至少呼叫兩次——每次啟動同一則設定廣播被處理多份。改為綁定只發生一次、`load()` 冪等。
 - **會後摘要出處標記錯誤**：AI 摘要的 model 紀錄寫死 Ollama 欄位——設定為 OpenAI 相容 API 時摘要實際由該 API 產生，紀錄的卻是 ollama 設定（多半空字串），出處無從排查；改為依目前 provider 解析實際模型。
