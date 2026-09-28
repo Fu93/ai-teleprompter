@@ -1,0 +1,236 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { AppSettings } from '@shared/types'
+import {
+  bestMatchPosition,
+  buildChunks,
+  chunkAtPosition,
+  normalizeForMatch,
+  type FollowChunk
+} from '../lib/follow'
+import { AudioSegmenter } from '../lib/audio/segmenter'
+import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
+import type { TeleprompterControls } from './useTeleprompterEngine'
+
+export type FollowStatus = 'idle' | 'loading' | 'listening' | 'error'
+
+export interface UseFollowModeParams {
+  settings: AppSettings | null
+  /** 引擎控制存 ref:startFollow 時暫停自動捲動(controls 在呼叫端較晚宣告,延後到執行期存取) */
+  controlsRef: React.MutableRefObject<TeleprompterControls | null>
+  scrollRef: React.RefObject<HTMLDivElement | null>
+  /** 我方開口(≥2 字或填充詞)→ 即時收掉「該你說話了」提示 */
+  onMeSpeech?: () => void
+}
+
+export interface UseFollowModeResult {
+  followStatus: FollowStatus
+  /** 一次性 effect(自動播放)讀最新狀態用,避免閉包捕獲 stale 值 */
+  followStatusRef: React.MutableRefObject<FollowStatus>
+  followMsg: string
+  lastHeard: string
+  activeChunk: number
+  followProgress: number
+  /** 跟讀中高亮的 chunk 清單;非跟讀時為 null(scroll surface 退回純文字) */
+  followChunks: FollowChunk[] | null
+  /** 即時輸入音量(0~1),藥丸音柱 rAF 直寫用 */
+  followLevelRef: React.MutableRefObject<number>
+  chunkElsRef: React.MutableRefObject<Map<number, HTMLSpanElement>>
+  startFollow: () => Promise<void>
+  stopFollow: () => void
+  toggleFollow: () => void
+  /** 跟隨中滾輪微調:調整偏移而非直接捲動,下次自動對位仍尊重使用者的視線位置 */
+  adjustFollowOffset: (deltaY: number) => void
+  /** content effect:重建跟讀索引(維持原 effect 順序與其餘副作用) */
+  rebuildIndex: (content: string) => void
+  clearActiveChunk: () => void
+  /** 換稿(onOverlayLoadScript):高亮與進度一起歸零 */
+  resetProgress: () => void
+}
+
+/**
+ * 語音跟讀(scroll 模式限定):Whisper 本地轉錄 + chunk 對位,唸到哪、捲到哪。
+ * 自 OverlayApp 抽出;effect 順序敏感的部分(rebuildIndex/resetProgress)由呼叫端
+ * 在原 effect 內以函數呼叫,行為不變。
+ */
+export function useFollowMode(params: UseFollowModeParams): UseFollowModeResult {
+  const { settings, controlsRef, scrollRef, onMeSpeech } = params
+
+  const [followStatus, setFollowStatus] = useState<FollowStatus>('idle')
+  // 給一次性 effect(onOverlayLoadScript 自動播放)讀最新值用,避免閉包捕獲 stale 'idle'
+  const followStatusRef = useRef<FollowStatus>('idle')
+  followStatusRef.current = followStatus
+  const [followMsg, setFollowMsg] = useState('')
+  const [lastHeard, setLastHeard] = useState('')
+  const [activeChunk, setActiveChunk] = useState(-1)
+  const [followProgress, setFollowProgress] = useState(0)
+
+  const whisperRef = useRef<WhisperClient | null>(null)
+  const segmenterRef = useRef<AudioSegmenter | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const followRef = useRef<{ chunks: FollowChunk[]; norm: string; pos: number }>({
+    chunks: [],
+    norm: '',
+    pos: 0
+  })
+  const chunkElsRef = useRef<Map<number, HTMLSpanElement>>(new Map())
+  // 跟隨模式的手動滾輪偏移:使用者滾動後,自動對位仍以此偏移為基準(不回彈)
+  const followOffsetRef = useRef(0)
+  const followLevelRef = useRef(0)
+
+  useEffect(() => {
+    return () => {
+      // 視窗關閉時清理音訊
+      segmenterRef.current?.stop()
+      streamRef.current?.getTracks().forEach((t) => t.stop())
+      whisperRef.current?.dispose()
+    }
+  }, [])
+
+  const clearActiveChunk = useCallback((): void => {
+    setActiveChunk(-1)
+  }, [])
+
+  const resetProgress = useCallback((): void => {
+    setActiveChunk(-1)
+    setFollowProgress(0)
+  }, [])
+
+  const rebuildIndex = useCallback((text: string): void => {
+    followRef.current = {
+      chunks: buildChunks(text),
+      norm: normalizeForMatch(text),
+      pos: 0
+    }
+  }, [])
+
+  const scrollToChunk = useCallback((idx: number): void => {
+    const el = scrollRef.current
+    const target = chunkElsRef.current.get(idx)
+    if (!el || !target) return
+    const top = target.offsetTop - el.clientHeight * 0.33 + followOffsetRef.current
+    el.scrollTo({ top: Math.max(0, Math.min(top, el.scrollHeight - el.clientHeight)), behavior: 'smooth' })
+    const maxScroll = el.scrollHeight - el.clientHeight
+    if (maxScroll > 0) setFollowProgress(Math.min(1, el.scrollTop / maxScroll))
+  }, [scrollRef])
+
+  const handleFollowTranscript = useCallback(
+    (text: string): void => {
+      // 餵給 main 的 liveContext:panic 觸發時才有語音上下文可用
+      void window.api.pushTranscript({ text, speaker: 'me' })
+      // 我方開口 → 即時收掉「該你說話了」提示(你已在回話)。
+      // 硬編碼中文填充詞是刻意的:STT 對極短音沒有把握,即便只聽到
+      // 「嗯」也不該讓「該你了」繼續掛著——誤收一次的代價遠低於漏收。
+      const isMeSpeech = text.trim().length >= 2 || /[嗯呃誒]/.test(text)
+      if (isMeSpeech) onMeSpeech?.()
+      const f = followRef.current
+      const spoken = normalizeForMatch(text)
+      if (spoken.length < 4) return
+      // 兩段式:先在當前位置附近找;失敗時放寬向後視窗 — 偵測「重複唸上一段」自動跳回關鍵詞
+      let end = bestMatchPosition(f.norm, spoken, f.pos)
+      if (end < 0) {
+        end = bestMatchPosition(f.norm, spoken, f.pos, { backward: 160 })
+      }
+      if (end >= 0) {
+        f.pos = end
+        const idx = chunkAtPosition(f.chunks, Math.max(0, end - 1))
+        setActiveChunk(idx)
+        scrollToChunk(idx)
+        setLastHeard(text.slice(0, 60))
+      }
+    },
+    [scrollToChunk, onMeSpeech]
+  )
+
+  // 跟隨中滾輪微調:調整偏移而非直接捲動,下次自動對位仍尊重使用者的視線位置
+  const adjustFollowOffset = useCallback(
+    (deltaY: number): void => {
+      if (followStatus !== 'listening') return
+      followOffsetRef.current = Math.max(-3000, Math.min(3000, followOffsetRef.current + deltaY))
+    },
+    [followStatus]
+  )
+
+  const startFollow = useCallback(async (): Promise<void> => {
+    if (!settings) return
+    // 跟讀時暫停自動捲動,讓位給語音對齊
+    controlsRef.current?.pause()
+    followOffsetRef.current = 0
+    setFollowMsg('')
+    setFollowStatus('loading')
+    try {
+      if (!whisperRef.current) whisperRef.current = new WhisperClient()
+      const client = whisperRef.current
+      client.onProgress = (p) => {
+        if (p.status === 'progress') setFollowMsg(`載入模型 ${p.progress?.toFixed(0) ?? 0}%`)
+      }
+      client.onStatus = (m) => setFollowMsg(m)
+      await client.load((settings.stt.localModel ?? 'base') as WhisperModelKey)
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      })
+      streamRef.current = stream
+      segmenterRef.current = new AudioSegmenter({
+        onSegment: (audio, sr) => {
+          void client
+            .transcribe(audio, settings.stt.language)
+            .then(handleFollowTranscript)
+            .catch(() => undefined)
+        },
+        onLevel: (r) => {
+          followLevelRef.current = r
+        },
+        threshold: 0.01
+      })
+      await segmenterRef.current.start(stream)
+      setFollowStatus('listening')
+      setFollowMsg('')
+    } catch (err) {
+      setFollowStatus('error')
+      setFollowMsg(err instanceof Error ? err.message : String(err))
+    }
+  }, [settings, handleFollowTranscript, controlsRef])
+
+  const stopFollow = useCallback((): void => {
+    segmenterRef.current?.stop()
+    segmenterRef.current = null
+    streamRef.current?.getTracks().forEach((t) => t.stop())
+    streamRef.current = null
+    followOffsetRef.current = 0
+    setFollowStatus('idle')
+    setFollowMsg('')
+    setActiveChunk(-1)
+  }, [])
+
+  const toggleFollow = useCallback((): void => {
+    if (followStatus === 'idle' || followStatus === 'error') {
+      void startFollow()
+    } else {
+      stopFollow()
+    }
+  }, [followStatus, startFollow, stopFollow])
+
+  return {
+    followStatus,
+    followStatusRef,
+    followMsg,
+    lastHeard,
+    activeChunk,
+    followProgress,
+    followChunks: followStatus === 'listening' ? followRef.current.chunks : null,
+    followLevelRef,
+    chunkElsRef,
+    startFollow,
+    stopFollow,
+    toggleFollow,
+    adjustFollowOffset,
+    rebuildIndex,
+    clearActiveChunk,
+    resetProgress
+  }
+}

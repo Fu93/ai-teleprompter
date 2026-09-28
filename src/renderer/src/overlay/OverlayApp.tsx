@@ -1,14 +1,12 @@
 import type { JSX } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  AlignJustify,
   AudioLines,
   ChevronLeft,
   ChevronRight,
   FlipHorizontal2,
   Gauge,
   Hand,
-  List,
   Loader2,
   Maximize2,
   MessageCircleQuestion,
@@ -19,416 +17,42 @@ import {
   ScanEye,
   ScanFace,
   Siren,
-  Type,
   X
 } from 'lucide-react'
 import type { AppSettings, OverlayDisplayMode } from '@shared/types'
 import type { OverlayShowPayload } from '@shared/api'
 import { cn, degrade, formatDuration } from '../lib/utils'
-import {
-  bestMatchPosition,
-  buildChunks,
-  chunkAtPosition,
-  normalizeForMatch,
-  type FollowChunk
-} from '../lib/follow'
-import { AudioSegmenter } from '../lib/audio/segmenter'
-import { SpringAnimator, SPRING_PRESETS } from '../lib/spring'
-import { buildDisplacementMap, ensureGlassFilter } from '../lib/glassRefraction'
-import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { PhraseVisuals } from '../lib/teleprompter/constants'
 import { effectiveEngineRate } from '../lib/calibration'
-import type { EngineState } from '../lib/teleprompter/engine'
-import type { ScriptModel } from '../lib/teleprompter/scriptModel'
 import { useTeleprompterEngine } from './useTeleprompterEngine'
 import { usePanic } from './usePanic'
 import { useTurnYield } from './useTurnYield'
 import { useCoaching } from './useCoaching'
+import { useFollowMode } from './useFollowMode'
+import { useLiveEvents } from './useLiveEvents'
+import { useMorph } from './useMorph'
+import { useGlassRefraction } from './useGlassRefraction'
 import { RescueCard } from './RescueCard'
 import { Segmented } from '../components/Segmented'
-
-type FollowStatus = 'idle' | 'loading' | 'listening' | 'error'
-
-/** 進入藥丸/貼鏡模式前的視窗尺寸(morph 動畫的還原基準;module-level 供切頁保留) */
-const expandedSize = { current: null as { w: number; h: number } | null }
-const lensPrevSize = { current: null as { w: number | null; h: number | null } | null }
-
-const MODES: Array<{ id: OverlayDisplayMode; label: string; icon: typeof AlignJustify }> = [
-  { id: 'scroll', label: '連續捲動', icon: AlignJustify },
-  { id: 'phrase', label: '逐句短語', icon: Type },
-  { id: 'bullet', label: '重點要點', icon: List },
-  { id: 'karaoke', label: '逐詞卡拉OK', icon: AudioLines }
-]
-
-function ToolBtn({
-  onClick,
-  active,
-  title,
-  children
-}: {
-  onClick: () => void
-  active?: boolean
-  title: string
-  children: React.ReactNode
-}): JSX.Element {
-  return (
-    <button
-      title={title}
-      onClick={onClick}
-      className={cn(
-        'flex h-7 w-7 items-center justify-center rounded-md transition-colors cursor-pointer no-drag',
-        active ? 'bg-accent-500/25 text-accent-300' : 'text-white/72 hover:bg-white/10 hover:text-white'
-      )}
-    >
-      {children}
-    </button>
-  )
-}
-
-// ── 模式畫面 ──
-
-function ScrollSurface({
-  model,
-  settings,
-  onTogglePlay,
-  scrollRef,
-  followChunks,
-  activeChunk,
-  chunkElRef,
-  onWheelAdjust
-}: {
-  model: ScriptModel
-  settings: AppSettings['overlay']
-  onTogglePlay: () => void
-  scrollRef: React.RefObject<HTMLDivElement | null>
-  followChunks: FollowChunk[] | null
-  activeChunk: number
-  chunkElRef: (i: number, el: HTMLSpanElement | null) => void
-  onWheelAdjust: (deltaY: number) => void
-}): JSX.Element {
-  return (
-    <div
-      ref={scrollRef}
-      className="h-full cursor-pointer overflow-y-auto px-7 py-5"
-      style={{ scrollbarWidth: 'none' }}
-      onClick={followChunks ? undefined : onTogglePlay}
-      onWheel={(e) => onWheelAdjust(e.deltaY)}
-    >
-      <div
-        className="font-medium text-white/100 select-none"
-        style={{
-          fontSize: settings.fontSize,
-          lineHeight: settings.lineHeight,
-          textShadow: '0 1px 6px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.9)',
-          letterSpacing: '0.02em'
-        }}
-      >
-        {followChunks
-          ? followChunks.map((chunk, i) => {
-              const isActive = i === activeChunk
-              const isRead = activeChunk >= 0 && i < activeChunk
-              return (
-                <span
-                  key={i}
-                  ref={(el) => chunkElRef(i, el)}
-                  className={cn(
-                    'transition-colors duration-300',
-                    isActive && 'rounded bg-accent-500/35',
-                    isRead && 'text-white/45'
-                  )}
-                >
-                  {chunk.text}
-                  {'\n'}
-                </span>
-              )
-            })
-          : model.content}
-      </div>
-      <div className="h-[40vh]" />
-    </div>
-  )
-}
-
-function PhraseSurface({
-  model,
-  state,
-  fontSize
-}: {
-  model: ScriptModel
-  state: EngineState
-  fontSize: number
-}): JSX.Element {
-  const phrases = model.phrases[state.sentenceIndex] ?? []
-  const nextSentence = model.sentences[state.sentenceIndex + 1] ?? null
-  // 預讀:當前步驟將在 500ms 內結束時,先亮起下一短語
-  const readAhead =
-    state.status === 'playing' &&
-    state.stepDurationMs - state.stepElapsedMs <= PhraseVisuals.UPCOMING_PHRASE_ADVANCE_MS
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col justify-center px-7 py-4">
-      {/* 行寬鎖 30-35 字(W3C 中文排版甜蜜點),一眼掃完不動頭 */}
-      <div
-        className="flex max-w-[32em] flex-wrap gap-x-3 gap-y-1 font-semibold select-none"
-        style={{ fontSize, lineHeight: PhraseVisuals.LINE_HEIGHT }}
-      >
-        {phrases.map((p, i) => {
-          const isActive = i === state.phraseIndex
-          const isNext = readAhead && i === state.phraseIndex + 1
-          const opacity = isActive
-            ? PhraseVisuals.ACTIVE_PHRASE_OPACITY
-            : isNext
-              ? PhraseVisuals.UPCOMING_PHRASE_OPACITY
-              : i < state.phraseIndex
-                ? PhraseVisuals.PREV_LINE_OPACITY
-                : PhraseVisuals.NEXT_LINE_OPACITY
-          return (
-            <span
-              key={i}
-              className="transition-opacity duration-150"
-              style={{
-                opacity,
-                color: isActive ? '#fff' : isNext ? 'var(--color-accent-300)' : undefined,
-                textShadow: '0 1px 3px rgba(0,0,0,0.85), 0 0 8px rgba(0,0,0,0.5)'
-              }}
-            >
-              {p.text}
-            </span>
-          )
-        })}
-      </div>
-      {nextSentence && (
-        <div
-          className="mt-3 truncate border-t border-white/5 pt-2 text-white/52 select-none"
-          style={{ fontSize: Math.max(14, fontSize * 0.55) }}
-        >
-          下一句:{nextSentence}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function BulletSurface({
-  model,
-  state,
-  fontSize
-}: {
-  model: ScriptModel
-  state: EngineState
-  fontSize: number
-}): JSX.Element {
-  const bullet = model.bullets[state.bulletIndex]
-
-  if (!bullet) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-white/52 select-none">
-        此講稿無法切出重點
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col justify-center px-7 py-4 select-none">
-      <div
-        className="font-semibold text-white"
-        style={{ fontSize: fontSize * 1.05, lineHeight: 1.35, textShadow: '0 1px 6px rgba(0,0,0,0.85)' }}
-      >
-        {bullet.title}
-      </div>
-      {bullet.subPoints.length > 0 && (
-        <ul className="mt-2 space-y-1 text-white/72" style={{ fontSize: Math.max(14, fontSize * 0.58) }}>
-          {bullet.subPoints.map((sp, i) => (
-            <li key={i} className="flex gap-1.5">
-              <span className="text-accent-400">•</span>
-              <span>{sp}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="mt-3 font-mono text-[10px] text-white/52">
-        {state.bulletIndex + 1} / {model.bullets.length} ・ ← → 切換
-      </div>
-    </div>
-  )
-}
-
-/**
- * 貼鏡模式表面(v3 TeleprompterGazeSurface 的幾何錨定 lite 版):
- * 當前行鎖定在鏡頭下方 ~2° 視角的 camera band,下面依 0.62/0.38 淡出預讀。
- * 文字距鏡頭 <5cm 時眼球偏轉角極小,錄出來就像直視鏡頭。
- */
-function LensSurface({
-  model,
-  state,
-  displayMode
-}: {
-  model: ScriptModel
-  state: EngineState
-  displayMode: OverlayDisplayMode
-}): JSX.Element {
-  if (displayMode === 'bullet') {
-    const bullet = model.bullets[state.bulletIndex]
-    const next = model.bullets[state.bulletIndex + 1]
-    return (
-      <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
-        <div className="font-semibold leading-snug text-white/72 reading-shadow" style={{ fontSize: 19 }}>
-          {bullet?.title ?? '—'}
-        </div>
-        {bullet && bullet.subPoints.length > 0 && (
-          <div className="mt-0.5 truncate text-[11px] text-white/72" style={{ opacity: 0.8 }}>
-            {bullet.subPoints[0]}
-          </div>
-        )}
-        <div className="mt-auto truncate pb-1.5 text-[11px] text-white/72" style={{ opacity: 0.62 }}>
-          下一點:{next?.title ?? '(結束)'}
-        </div>
-      </div>
-    )
-  }
-
-  if (displayMode === 'karaoke') {
-    const words = model.karaokeWordChunks[state.karaokeChunkIndex] ?? []
-    const nextChunk = model.karaokeChunks[state.karaokeChunkIndex + 1]
-    return (
-      <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
-        <div className="flex flex-wrap gap-x-1.5 font-semibold leading-snug reading-shadow" style={{ fontSize: 19 }}>
-          {words.map((w, i) => (
-            <span
-              key={i}
-              style={{
-                color:
-                  i === state.karaokeWordIndex
-                    ? '#fff'
-                    : i < state.karaokeWordIndex
-                      ? 'var(--color-accent-300)'
-                      : 'var(--color-ink-400)'
-              }}
-            >
-              {w}
-            </span>
-          ))}
-        </div>
-        <div className="mt-auto truncate pb-1.5 text-[11px] text-white/72" style={{ opacity: 0.62 }}>
-          下一詞組:{nextChunk ?? '(結束)'}
-        </div>
-      </div>
-    )
-  }
-
-  // phrase / scroll:句子 band + 短語高亮
-  const phrases = model.phrases[state.sentenceIndex] ?? []
-  const nextSentence = model.sentences[state.sentenceIndex + 1] ?? null
-  const upcoming = model.sentences[state.sentenceIndex + 2] ?? null
-  return (
-    <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
-      <div className="flex flex-wrap gap-x-2 font-medium leading-snug reading-shadow" style={{ fontSize: 19 }}>
-        {phrases.map((p, i) => (
-          <span
-            key={i}
-            style={{
-              color: i === state.phraseIndex ? '#fff' : undefined,
-              opacity:
-                i === state.phraseIndex
-                  ? 1
-                  : i === state.phraseIndex + 1
-                    ? 0.62
-                    : i < state.phraseIndex
-                      ? 0.22
-                      : 0.38
-            }}
-          >
-            {p.text}
-          </span>
-        ))}
-      </div>
-      <div className="mt-auto space-y-0.5 pb-1.5">
-        <div className="truncate text-[12px] text-white/72" style={{ opacity: 0.62 }}>
-          下一句:{nextSentence ?? '—'}
-        </div>
-        {upcoming && (
-          <div className="truncate text-[11px] text-white/72" style={{ opacity: 0.38 }}>
-            再下一句:{upcoming}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function KaraokeSurface({
-  model,
-  state,
-  fontSize
-}: {
-  model: ScriptModel
-  state: EngineState
-  fontSize: number
-}): JSX.Element {  const words = model.karaokeWordChunks[state.karaokeChunkIndex] ?? []
-  const totalChunks = model.karaokeChunks.length
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col justify-center px-7 py-4 select-none">
-      <div
-        className="flex flex-wrap gap-x-2 gap-y-0.5 font-semibold"
-        style={{ fontSize, lineHeight: PhraseVisuals.LINE_HEIGHT }}
-      >
-        {words.map((w, i) => {
-          const done = i < state.karaokeWordIndex
-          const active = i === state.karaokeWordIndex
-          return (
-            <span
-              key={i}
-              className="transition-colors duration-100"
-              style={{
-                color: active ? '#fff' : done ? 'var(--color-accent-300)' : 'var(--color-ink-600)',
-                textShadow: active
-                  ? '0 0 12px rgba(143,140,250,0.55), 0 1px 6px rgba(0,0,0,0.85)'
-                  : undefined
-              }}
-            >
-              {w}
-            </span>
-          )
-        })}
-      </div>
-      <div className="mt-2 font-mono text-[10px] text-white/52">
-        {Math.min(state.karaokeChunkIndex + 1, totalChunks)} / {totalChunks}
-      </div>
-    </div>
-  )
-}
+import {
+  BulletSurface,
+  KaraokeSurface,
+  LensSurface,
+  MODES,
+  PhraseSurface,
+  ScrollSurface,
+  ToolBtn
+} from './Surfaces'
 
 export default function OverlayApp(): JSX.Element {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [payload, setPayload] = useState<OverlayShowPayload>({})
 
-  // 語音跟讀(scroll 模式)
-  const [followStatus, setFollowStatus] = useState<FollowStatus>('idle')
-  // 給一次性 effect(onOverlayLoadScript 自動播放)讀最新值用,避免閉包捕獲 stale 'idle'
-  const followStatusRef = useRef<FollowStatus>('idle')
-  followStatusRef.current = followStatus
   // 換稿自動播放旗標:實際 play 延到 content 變化後的 effect(引擎已重建),
   // 立即 play 會落在舊引擎上、隨即被新引擎實例替換吃掉
   const autoPlayRef = useRef(false)
-  const [followMsg, setFollowMsg] = useState('')
-  const [lastHeard, setLastHeard] = useState('')
-  const [activeChunk, setActiveChunk] = useState(-1)
-  const [followProgress, setFollowProgress] = useState(0)
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
-
-  const whisperRef = useRef<WhisperClient | null>(null)
-  const segmenterRef = useRef<AudioSegmenter | null>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const followRef = useRef<{ chunks: FollowChunk[]; norm: string; pos: number }>({
-    chunks: [],
-    norm: '',
-    pos: 0
-  })
-  const chunkElsRef = useRef<Map<number, HTMLSpanElement>>(new Map())
-  // 跟隨模式的手動滾輪偏移:使用者滾動後,自動對位仍以此偏移為基準(不回彈)
-  const followOffsetRef = useRef(0)
 
   // ---- 初始化 ----
   useEffect(() => {
@@ -438,8 +62,7 @@ export default function OverlayApp(): JSX.Element {
     void window.api.overlayGetLastPayload().then(setPayload)
     const offScript = window.api.onOverlayLoadScript((p) => {
       setPayload(p)
-      setActiveChunk(-1)
-      setFollowProgress(0)
+      follow.resetProgress()
       // 主視窗「開始提詞」= 打開就開始講;實際 play 在 content 變化後的 effect
       autoPlayRef.current = true
     })
@@ -450,34 +73,7 @@ export default function OverlayApp(): JSX.Element {
     }
   }, [])
 
-  useEffect(() => {
-    return () => {
-      // 視窗關閉時清理音訊
-      segmenterRef.current?.stop()
-      streamRef.current?.getTracks().forEach((t) => t.stop())
-      whisperRef.current?.dispose()
-    }
-  }, [])
-
   const content = payload.content ?? ''
-
-  // 講稿內容變化 → 重建跟讀索引,並把捲動位置歸零
-  // (引擎內部 scrollPos 會重置,但 scroll 模式每幀直寫 DOM,暫停時不會再推,殘影會留在畫面上)
-  useEffect(() => {
-    followRef.current = {
-      chunks: buildChunks(content),
-      norm: normalizeForMatch(content),
-      pos: 0
-    }
-    setActiveChunk(-1)
-    if (scrollRef.current) scrollRef.current.scrollTop = 0
-    // 自動播放:引擎此刻已隨 content 重建,play 才會落在正確的實例上。
-    // 語音跟讀進行中則不播:兩套捲動來源(定時引擎 vs STT 對位)會互相拉扯。
-    if (autoPlayRef.current) {
-      autoPlayRef.current = false
-      if (followStatusRef.current === 'idle' && content) controlsRef.current?.play()
-    }
-  }, [content])
 
   // ---- 四模式定時引擎 ----
   const o = settings?.overlay
@@ -517,6 +113,34 @@ export default function OverlayApp(): JSX.Element {
   // ---- 即時教練(Phase B+):語速過快/填充詞/損話/冷場/獨白過長 ----
   const { hint: coachingHint } = useCoaching(o?.coaching ?? true)
 
+  const controlsRef = useRef(controls)
+  controlsRef.current = controls
+
+  // ---- 語音跟讀(scroll 模式限定:Whisper + chunk 對位)----
+  const follow = useFollowMode({
+    settings,
+    controlsRef,
+    scrollRef,
+    onMeSpeech: notifyTurnYield
+  })
+  const { followStatus, followMsg, lastHeard, activeChunk, followProgress, followChunks, toggleFollow, adjustFollowOffset } = follow
+  const followStatusRef = follow.followStatusRef
+  const followLevelRef = follow.followLevelRef
+  const chunkElsRef = follow.chunkElsRef
+
+  // 講稿內容變化 → 重建跟讀索引,並把捲動位置歸零
+  // (引擎內部 scrollPos 會重置,但 scroll 模式每幀直寫 DOM,暫停時不會再推,殘影會留在畫面上)
+  useEffect(() => {
+    follow.rebuildIndex(content)
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+    // 自動播放:引擎此刻已隨 content 重建,play 才會落在正確的實例上。
+    // 語音跟讀進行中則不播:兩套捲動來源(定時引擎 vs STT 對位)會互相拉扯。
+    if (autoPlayRef.current) {
+      autoPlayRef.current = false
+      if (followStatusRef.current === 'idle' && content) controlsRef.current?.play()
+    }
+  }, [content])
+
   // ---- 靈動島:事件內容優先序(該你了 > 教練 > panic)----
   // 事件發生時升為藥丸主角,結束後淡出回常规內容
   const turnActive = turnYieldHint !== null
@@ -536,36 +160,10 @@ export default function OverlayApp(): JSX.Element {
       : panicActive
         ? '救援卡顯示中 — 點鈴鐺關閉'
         : ''
-  interface LiveEvent {
-    kind: 'turn' | 'coaching' | 'panic'
-    text: string
-    at: number
-  }
-  const [shownEvent, setShownEvent] = useState<LiveEvent | null>(null)
-  const eventLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => {
-    if (liveEventKind) {
-      if (eventLeaveTimerRef.current) {
-        clearTimeout(eventLeaveTimerRef.current)
-        eventLeaveTimerRef.current = null
-      }
-      setShownEvent((prev) =>
-        prev?.kind === liveEventKind && prev.text === liveEventText ? prev : { kind: liveEventKind, text: liveEventText, at: Date.now() }
-      )
-      return
-    }
-    // 事件結束:先播淡出動畫再卸載
-    if (shownEvent && eventLeaveTimerRef.current === null) {
-      eventLeaveTimerRef.current = setTimeout(() => {
-        eventLeaveTimerRef.current = null
-        setShownEvent(null)
-      }, 280)
-    }
-  }, [liveEventKind, liveEventText, shownEvent])
+  const { shownEvent, leaving: eventLeaving } = useLiveEvents(liveEventKind, liveEventText)
 
   // ---- 靈動島藥丸:聲音反應層 ----
   // 音量走 ref + rAF 直接寫 CSS 變數,不經過 React render(每幀 setState 會拖累動畫)
-  const followLevelRef = useRef(0)
   const voiceBarsRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     if (followStatus !== 'listening') return
@@ -604,128 +202,11 @@ export default function OverlayApp(): JSX.Element {
 
   const setMode = useCallback(
     (mode: OverlayDisplayMode): void => {
-      if (mode !== 'scroll' && followStatus !== 'idle') stopFollowRef.current()
+      if (mode !== 'scroll' && followStatus !== 'idle') follow.stopFollow()
       void patchOverlay({ displayMode: mode })
     },
-    [patchOverlay, followStatus]
+    [patchOverlay, followStatus, follow.stopFollow]
   )
-
-  // ---- 語音跟讀(scroll 模式限定)----
-  const scrollToChunk = useCallback((idx: number): void => {
-    const el = scrollRef.current
-    const target = chunkElsRef.current.get(idx)
-    if (!el || !target) return
-    const top = target.offsetTop - el.clientHeight * 0.33 + followOffsetRef.current
-    el.scrollTo({ top: Math.max(0, Math.min(top, el.scrollHeight - el.clientHeight)), behavior: 'smooth' })
-    const maxScroll = el.scrollHeight - el.clientHeight
-    if (maxScroll > 0) setFollowProgress(Math.min(1, el.scrollTop / maxScroll))
-  }, [])
-
-  const handleFollowTranscript = useCallback(
-    (text: string): void => {
-      // 餵給 main 的 liveContext:panic 觸發時才有語音上下文可用
-      void window.api.pushTranscript({ text, speaker: 'me' })
-      // 我方開口 → 即時收掉「該你說話了」提示(你已在回話)。
-      // 硬編碼中文填充詞是刻意的:STT 對極短音沒有把握,即便只聽到
-      // 「嗯」也不該讓「該你了」繼續掛著——誤收一次的代價遠低於漏收。
-      const isMeSpeech = text.trim().length >= 2 || /[嗯呃誒]/.test(text)
-      if (isMeSpeech) notifyTurnYield()
-      const f = followRef.current
-      const spoken = normalizeForMatch(text)
-      if (spoken.length < 4) return
-      // 兩段式:先在當前位置附近找;失敗時放寬向後視窗 — 偵測「重複唸上一段」自動跳回關鍵詞
-      let end = bestMatchPosition(f.norm, spoken, f.pos)
-      if (end < 0) {
-        end = bestMatchPosition(f.norm, spoken, f.pos, { backward: 160 })
-      }
-      if (end >= 0) {
-        f.pos = end
-        const idx = chunkAtPosition(f.chunks, Math.max(0, end - 1))
-        setActiveChunk(idx)
-        scrollToChunk(idx)
-        setLastHeard(text.slice(0, 60))
-      }
-    },
-    [scrollToChunk, notifyTurnYield]
-  )
-
-  // 跟隨中滾輪微調:調整偏移而非直接捲動,下次自動對位仍尊重使用者的視線位置
-  const adjustFollowOffset = useCallback(
-    (deltaY: number): void => {
-      if (followStatus !== 'listening') return
-      followOffsetRef.current = Math.max(-3000, Math.min(3000, followOffsetRef.current + deltaY))
-    },
-    [followStatus]
-  )
-
-  const startFollow = useCallback(async (): Promise<void> => {
-    if (!settings) return
-    // 跟讀時暫停自動捲動,讓位給語音對齊
-    controls.pause()
-    followOffsetRef.current = 0
-    setFollowMsg('')
-    setFollowStatus('loading')
-    try {
-      if (!whisperRef.current) whisperRef.current = new WhisperClient()
-      const client = whisperRef.current
-      client.onProgress = (p) => {
-        if (p.status === 'progress') setFollowMsg(`載入模型 ${p.progress?.toFixed(0) ?? 0}%`)
-      }
-      client.onStatus = (m) => setFollowMsg(m)
-      await client.load((settings.stt.localModel ?? 'base') as WhisperModelKey)
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      })
-      streamRef.current = stream
-      segmenterRef.current = new AudioSegmenter({
-        onSegment: (audio, sr) => {
-          void client
-            .transcribe(audio, settings.stt.language)
-            .then(handleFollowTranscript)
-            .catch(() => undefined)
-        },
-        onLevel: (r) => {
-          followLevelRef.current = r
-        },
-        threshold: 0.01
-      })
-      await segmenterRef.current.start(stream)
-      setFollowStatus('listening')
-      setFollowMsg('')
-    } catch (err) {
-      setFollowStatus('error')
-      setFollowMsg(err instanceof Error ? err.message : String(err))
-    }
-  }, [settings, handleFollowTranscript, controls])
-
-  const stopFollow = useCallback((): void => {
-    segmenterRef.current?.stop()
-    segmenterRef.current = null
-    streamRef.current?.getTracks().forEach((t) => t.stop())
-    streamRef.current = null
-    followOffsetRef.current = 0
-    setFollowStatus('idle')
-    setFollowMsg('')
-    setActiveChunk(-1)
-  }, [])
-
-  // setMode 需要引用最新的 stopFollow(避免 effect 依賴膨脹)
-  const stopFollowRef = useRef(stopFollow)
-  stopFollowRef.current = stopFollow
-
-  const toggleFollow = useCallback((): void => {
-    if (followStatus === 'idle' || followStatus === 'error') {
-      void startFollow()
-    } else {
-      stopFollow()
-    }
-  }, [followStatus, startFollow, stopFollow])
 
   const setMirror = useCallback((): void => {
     void patchOverlay({ mirror: !settings!.overlay.mirror })
@@ -756,64 +237,11 @@ export default function OverlayApp(): JSX.Element {
     return () => clearTimeout(t)
   }, [lensOn])
 
-  // ── Liquid Glass 真折射(P2-13):位移圖隨視窗尺寸重建,filter 注入 DOM ──
-  // CSS 端 @supports 讓不支援 SVG backdrop-filter 的引擎自動退回一般 blur。
-  const [refractOk, setRefractOk] = useState(false)
-  const [winSize, setWinSize] = useState({ w: 0, h: 0 })
-  useEffect(() => {
-    // 偵測:Chromium 才允許 url() 於 backdrop-filter;以 CSS.supports 探測
-    setRefractOk(
-      typeof CSS !== 'undefined' &&
-        (CSS.supports('backdrop-filter', 'url(#x)') || CSS.supports('-webkit-backdrop-filter', 'url(#x)'))
-    )
-  }, [])
-  useEffect(() => {
-    if (!refractOk || !o?.glass) return
-    let timer: ReturnType<typeof setTimeout> | null = null
-    const rebuild = (): void => {
-      const w = Math.max(1, window.innerWidth)
-      const h = Math.max(1, window.innerHeight)
-      const map = buildDisplacementMap(w, h, 18, 14, 12)
-      ensureGlassFilter('liquid-glass', map, 2)
-      setWinSize({ w, h })
-    }
-    rebuild()
-    // morph 動畫期間每幀都 resize,debounce 300ms 後重建
-    const onResize = (): void => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(rebuild, 300)
-    }
-    window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      if (timer) clearTimeout(timer)
-    }
-  }, [refractOk, o?.glass, winSize.w === 0])
-
-  // pill 隨游標 specular(P2-13):滑鼠移動更新 --spec-x/--spec-y(ref 套在 pill 外殼)
-  const specRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    const el = specRef.current
-    if (!el) return
-    const onMove = (e: MouseEvent): void => {
-      const rect = el.getBoundingClientRect()
-      el.style.setProperty('--spec-x', `${((e.clientX - rect.left) / rect.width) * 100}%`)
-      el.style.setProperty('--spec-y', `${((e.clientY - rect.top) / rect.height) * 100}%`)
-      el.style.setProperty('--spec-o', '1')
-    }
-    const onLeave = (): void => el.style.setProperty('--spec-o', '0')
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseout', onLeave)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseout', onLeave)
-    }
-  }, [])
+  // ── Liquid Glass 真折射(P2-13)+ pill specular ──
+  const { refractOk, specRef } = useGlassRefraction(o?.glass ?? false)
 
   // ---- 全域熱鍵事件(main 廣播):播放/暫停 + 語速步進 ----
   // 浮層可被滑鼠穿透或失焦,鍵盤控制只剩全域熱鍵這條路
-  const controlsRef = useRef(controls)
-  controlsRef.current = controls
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   useEffect(() => {
@@ -832,69 +260,7 @@ export default function OverlayApp(): JSX.Element {
     }
   }, [])
 
-  // ── 藥丸/貼鏡 morph:彈簧驅動視窗尺寸(開合分離阻尼)──
-  // rAF 彈簧積分器:展開用 open(ζ≈0.8 帶彈)、收合用 close(臨界阻尼零彈跳);
-  // 每幀 overlaySetSizeLive(不落盤),收斂時 onSettle 才以 overlaySetSize 定案(寫入設定)。
-  // 注意:hooks 必須在下方 early return 之前,否則 settings 載入前後 hook 數不一致(React #310)。
-  const sizeSpringRef = useRef<SpringAnimator | null>(null)
-  /** morph 定案後的「原始展開尺寸」;進入貼鏡/藥丸前的還原基準 */
-  const settledSizeRef = useRef<{ w: number; h: number } | null>(null)
-
-  const stopSizeSpring = useCallback((): void => {
-    sizeSpringRef.current?.stop()
-    sizeSpringRef.current = null
-  }, [])
-
-  useEffect(
-    () => () => stopSizeSpring(),
-    [stopSizeSpring]
-  )
-
-  /** 以彈簧把視窗從目前尺寸 morph 到 (toW,toH);isOpening 決定阻尼(open 有彈/close 無彈)。
-   *  settleSize = 收斂時寫入設定的最終尺寸(通常等於 toW/toH) */
-  const morphSize = useCallback(
-    (toW: number, toH: number, isOpening: boolean, settleSize: { w: number; h: number }): void => {
-      const startW = window.innerWidth
-      const startH = window.innerHeight
-      // 目標就是目前尺寸:直接定案,不播動畫
-      if (startW === toW && startH === toH) {
-        settledSizeRef.current = settleSize
-        void window.api.overlaySetSize(toW, toH)
-        return
-      }
-      settledSizeRef.current = null
-      stopSizeSpring()
-      const animator = new SpringAnimator(
-        0,
-        1,
-        isOpening ? SPRING_PRESETS.open : SPRING_PRESETS.close,
-        () => {},
-        () => {
-          settledSizeRef.current = settleSize
-          void window.api.overlaySetSize(settleSize.w, settleSize.h)
-        }
-      )
-      sizeSpringRef.current = animator
-      const wSpan = toW - startW
-      const hSpan = toH - startH
-      let lastAt: number | null = null
-      const tick = (now: number): void => {
-        if (sizeSpringRef.current !== animator) return // 已被新的 morph 取代
-        const dt = lastAt === null ? 16.7 : Math.min(64, now - lastAt)
-        lastAt = now
-        animator.advance(dt)
-        const p = animator.value
-        void window.api.overlaySetSizeLive(Math.round(startW + wSpan * p), Math.round(startH + hSpan * p))
-        if (animator.settled) {
-          sizeSpringRef.current = null // onSettle 已在 advance() 內定案
-        } else {
-          requestAnimationFrame(tick)
-        }
-      }
-      requestAnimationFrame(tick)
-    },
-    [stopSizeSpring]
-  )
+  const { morphSize, enterCompact, exitCompact, enterLens, exitLens } = useMorph({ patchOverlay })
 
   if (!o || !state) {
     return <div className="h-full" />
@@ -905,48 +271,7 @@ export default function OverlayApp(): JSX.Element {
   const isBullet = displayMode === 'bullet'
   const isTimedMode = displayMode === 'phrase' || displayMode === 'karaoke'
   const following = followStatus === 'listening' || followStatus === 'loading'
-  const followChunks = followStatus === 'listening' ? followRef.current.chunks : null
   const shownProgress = followChunks ? followProgress : progress
-
-  // ── 藥丸模式:縮小視窗成一行玻璃藥丸,展開還原原尺寸 ──
-  const enterCompact = (): void => {
-    // 原始展開尺寸:從「最後定案的展開尺寸」取;直接從貼鏡進來時用 lensPrevSize,
-    // 都沒有才用設定值(morph 途中 o.width/height 尚未定案,不可用)
-    const prevLens = lensPrevSize.current
-    const fromLens = prevLens && prevLens.w !== null && prevLens.h !== null ? { w: prevLens.w, h: prevLens.h } : null
-    const expanded = settledSizeRef.current ?? fromLens ?? { w: o.width, h: o.height }
-    expandedSize.current = expanded
-    void patchOverlay({ compact: true })
-    morphSize(460, 56, false, expanded)
-  }
-  const exitCompact = (): void => {
-    const size = expandedSize.current ?? settledSizeRef.current ?? { w: 720, h: 260 }
-    void patchOverlay({ compact: false })
-    morphSize(size.w, size.h, true, size)
-  }
-
-  // ── 貼鏡模式:窄條視窗貼近攝影機,當前行鎖定鏡頭下方 ~2° 視角 ──
-  const enterLens = (): void => {
-    const expanded =
-      settledSizeRef.current ??
-      (o.compact ? expandedSize.current : null) ??
-      { w: o.width, h: o.height }
-    lensPrevSize.current = expanded
-    void patchOverlay({ lensMode: true, compact: false })
-    morphSize(420, 170, false, expanded)
-  }
-  const exitLens = (): void => {
-    const prev = lensPrevSize.current
-    // prev.w === null 表示進貼鏡前本來就是藥丸:還原回藥丸而非強制展開
-    const size = prev && prev.w !== null && prev.h !== null ? { w: prev.w, h: prev.h } : null
-    if (!size) {
-      void patchOverlay({ lensMode: false, compact: true })
-      morphSize(460, 56, true, { w: 720, h: 260 })
-      return
-    }
-    void patchOverlay({ lensMode: false })
-    morphSize(size.w, size.h, true, size)
-  }
 
   if (o.compact) {
     // 漸進揭露:pill 顯示「下一個關鍵詞」(各模式游標的下一單元開頭);
@@ -961,7 +286,6 @@ export default function OverlayApp(): JSX.Element {
     } else if (displayMode === 'bullet') {
       nextKeyword = degrade(model.bullets[state.bulletIndex + 1]?.title ?? '', 6)
     }
-    const eventLeaving = liveEventKind === null && shownEvent !== null
     // 靈動島光暈:顏色講狀態——事件優先(藍該你了/琥珀教練/紅救援),
     // 其次播放中綠、待機灰;穿透永遠琥珀警示
     const diGlow = o.clickThrough
@@ -1229,7 +553,7 @@ export default function OverlayApp(): JSX.Element {
           </ToolBtn>
 
           {/* 收合成藥丸 */}
-          <ToolBtn title="收合成藥丸(低存在感)" onClick={enterCompact}>
+          <ToolBtn title="收合成藥丸(低存在感)" onClick={() => enterCompact(o)}>
             <Minimize2 size={13} />
           </ToolBtn>
 
@@ -1237,7 +561,7 @@ export default function OverlayApp(): JSX.Element {
           <ToolBtn
             title="貼鏡模式:貼近攝影機 5cm 內,眼神自然對準鏡頭(建議搭配逐句短語)"
             active={o.lensMode}
-            onClick={enterLens}
+            onClick={() => enterLens(o)}
           >
             <ScanFace size={13} />
           </ToolBtn>
