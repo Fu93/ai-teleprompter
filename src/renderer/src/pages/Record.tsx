@@ -272,6 +272,9 @@ export default function Record(): JSX.Element {
       } finally {
         setSaving(false)
       }
+    } else {
+      // 0 段落停止:不留「看起來存了但其實什麼都沒有」的沉默,給使用者明確回饋
+      toast.info('這次沒有偵測到語音,未建立會議紀錄')
     }
   }
 
