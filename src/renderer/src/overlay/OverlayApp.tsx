@@ -889,6 +889,7 @@ export default function OverlayApp(): JSX.Element {
     } else if (displayMode === 'bullet') {
       nextKeyword = degrade(model.bullets[state.bulletIndex + 1]?.title ?? '', 6)
     }
+    // drag region 會吞掉滑鼠事件:雙擊展開不再可用,以展開按鈕取代(拖曳價值更高)
     return (
       <div
         ref={specRef}
@@ -896,8 +897,9 @@ export default function OverlayApp(): JSX.Element {
           'glass-pill content-morph-in glass-specular flex h-full cursor-default select-none items-center gap-3 rounded-full px-4',
           refractOk && o.glass && 'glass-refract'
         )}
-        title="雙擊展開"
+        title="拖曳可移動位置"
         onDoubleClick={exitCompact}
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <span
           className={cn(
@@ -942,6 +944,7 @@ export default function OverlayApp(): JSX.Element {
             onClick={dismissRescue}
             title="救援顯示中 — 點擊關閉"
             className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-rose-500/25 text-rose-400"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
             <Siren size={13} />
           </button>
@@ -950,6 +953,7 @@ export default function OverlayApp(): JSX.Element {
             onClick={triggerPanic}
             title="Panic 救援(Alt+P)"
             className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-white/72 hover:bg-white/10 hover:text-white/100"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
             <Siren size={13} />
           </button>
@@ -958,24 +962,18 @@ export default function OverlayApp(): JSX.Element {
           onClick={playing ? controls.pause : controls.play}
           title={playing ? '暫停' : '播放'}
           className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-white/72 hover:bg-white/10 hover:text-white/100"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           {playing ? <Pause size={13} /> : <Play size={13} />}
         </button>
         <button
           onClick={exitCompact}
-          title="展開完整面板(或雙擊藥丸)"
+          title="展開完整面板"
           className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-white/72 hover:bg-white/10 hover:text-white/100"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <Maximize2 size={12} />
         </button>
-        {turnYieldHint && (
-          <span
-            title={turnYieldText}
-            className="flex h-6 shrink-0 cursor-default items-center gap-1 rounded-full bg-sky-500/20 px-2 text-[10px] font-medium text-sky-300"
-          >
-            <MessageCircleQuestion size={11} /> 該你了
-          </span>
-        )}
       </div>
     )
   }
