@@ -29,6 +29,12 @@ export async function aiChat(
   return res.text ?? ''
 }
 
+/** 實際會收到請求的模型名稱(與 aiChat 的路由一致);摘要紀錄等出處標記用 */
+export function resolvedModelName(settings: AppSettings): string {
+  const ai = settings.ai
+  return ai.provider === 'ollama' ? ai.ollama.model : ai.openaiCompatible.model
+}
+
 /** 從 LLM 輸出中取出 JSON（容忍 ```json 圍籬、前後雜文） */
 export function extractJson<T>(raw: string): T {
   const trimmed = raw.trim()

@@ -9,6 +9,9 @@
 
 ### 修復
 
+- **設定廣播重複訂閱**：設定 store 的 `load()` 每次呼叫都重新註冊 `onSettingsChanged`/`onOverlayVisibility` listener 且永不解除，而啟動流程（App 與側欄熱鍵提示兩個 effect）註定至少呼叫兩次——每次啟動同一則設定廣播被處理多份。改為綁定只發生一次、`load()` 冪等。
+- **會後摘要出處標記錯誤**：AI 摘要的 model 紀錄寫死 Ollama 欄位——設定為 OpenAI 相容 API 時摘要實際由該 API 產生，紀錄的卻是 ollama 設定（多半空字串），出處無從排查；改為依目前 provider 解析實際模型。
+- **會議歷史一鍵永久刪除無確認**：歷史列表的垃圾桶按鈕直接刪除逐字稿與報告，誤觸即不可復原；補上確認對話框，與講稿刪除同一標準。
 - **選場景包場景後 Panic 救援用錯模板**：`getScene()` 只查內建 8 場景，使用者在設定頁選了場景包場景（如 Interview Essentials 的 Behavioral Question）後觸發救援，模板會無聲落到 Generic 內建場景——選擇被完全忽略。新增 `resolveScene()` 統一從「內建+場景包」全清單解析，未知 key 仍安全退回內建 fallback；單元回歸 + 第三輪 playtest e2e 全旅程驗證。
 
 ### 測試

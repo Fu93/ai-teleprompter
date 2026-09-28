@@ -17,7 +17,7 @@ import type { CoachingKind, MeetingSession, MeetingSummary, SessionReport, Trans
 import { db } from '../lib/db'
 import { useSettings } from '../lib/store'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
-import { aiChat, extractJson } from '../lib/ai'
+import { aiChat, extractJson, resolvedModelName } from '../lib/ai'
 import { toast } from '../lib/toast'
 import { buildSessionReport } from '../lib/session-intelligence'
 import { AudioSegmenter } from '../lib/audio/segmenter'
@@ -300,6 +300,8 @@ export default function Record(): JSX.Element {
 
   const removeSession = async (id?: number): Promise<void> => {
     if (id == null) return
+    // 永久刪除要有確認:與 Scripts 頁刪除講稿同一標準,誤觸即失去逐字稿+報告無法復原
+    if (!window.confirm('確定刪除這場會議紀錄嗎？逐字稿與報告將一併移除，無法復原。')) return
     await db.sessions.delete(id)
     await refreshSessions()
   }
@@ -330,7 +332,7 @@ export default function Record(): JSX.Element {
         todos: summary.todos ?? [],
         followUps: summary.followUps ?? [],
         generatedAt: Date.now(),
-        model: settings.ai.ollama.model
+        model: resolvedModelName(settings)
       }
       await db.sessions.update(s.id, { summary: clean })
       await refreshSessions()
