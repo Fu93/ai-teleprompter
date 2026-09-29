@@ -1,10 +1,10 @@
-appId: tw.nn201.ai-teleprompter
+appId: tw.fu93.ai-teleprompter
 productName: AI 提詞機
 # 自動更新:推 tag → GitHub Actions 產安裝包+latest.yml → 使用者端 electron-updater 檢查
 # (CI 需加 GH_TOKEN 執行 `electron-builder --publish always`;push tag 前不會觸發)
 publish:
   provider: github
-  owner: nn201
+  owner: Fu93
   repo: ai-teleprompter
 directories:
   output: dist

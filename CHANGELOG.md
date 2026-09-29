@@ -123,6 +123,6 @@
 - **個人校準**：說話基準速度等個人檔案設定，作為教練訊號的比較基準。
 - **打包與安全**：NSIS 安裝包（unicode、可選安裝目錄）、asar 打包、contextIsolation/preload 沙箱、Playwright e2e（真 IPC 鏈路煙霧 + 視覺快照）。
 
-[Unreleased]: https://github.com/nn201/ai-teleprompter/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/nn201/ai-teleprompter/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/nn201/ai-teleprompter/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Fu93/ai-teleprompter/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Fu93/ai-teleprompter/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/Fu93/ai-teleprompter/releases/tag/v0.1.0

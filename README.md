@@ -18,7 +18,7 @@
 
 ## 安裝
 
-從 [GitHub Releases](https://github.com/nn201/ai-teleprompter/releases) 下載 `AI 提詞機 Setup x.x.x.exe` 安裝。
+從 [GitHub Releases](https://github.com/Fu93/ai-teleprompter/releases) 下載 `AI 提詞機 Setup x.x.x.exe` 安裝。
 
 > 安裝程式未做數位簽章，Windows SmartScreen 可能顯示「Windows 已保護您的電腦」——點「更多資訊」→「仍要執行」即可。這是開源專案省下憑證費用的取捨，安裝包本身可在本 repo 以 `npm run dist` 重新建置驗證。
 
