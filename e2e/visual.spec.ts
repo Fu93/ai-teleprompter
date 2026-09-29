@@ -64,9 +64,14 @@ test('toast 堆疊與 hover 暫停截圖', async () => {
     expect(await main.locator('.toast-item').count()).toBe(2)
     await main.screenshot({ path: 'docs/screenshots/13-toast-hover-pause.png' })
 
-    // 移開滑鼠 → 都在 4s 內到期
+    // 移開滑鼠 → 到期消失。
+    // 這兩則都是錯誤,停留 12s 而非資訊的 4s:使用者看到「麥克風權限被拒」之後
+    // 要離開 App 去 Windows 設定改權限再回來,4 秒不夠他讀完一句話。
     await main.mouse.move(10, 10)
-    await main.waitForTimeout(5200)
+    await main.waitForTimeout(4000)
+    // 4s 過後資訊該死了、錯誤還在 —— 這是「錯誤比較久」的可見證據
+    expect(await main.locator('.toast-item').count()).toBeGreaterThan(0)
+    await main.waitForTimeout(9000)
     expect(await main.locator('.toast-item').count()).toBe(0)
   } finally {
     await app.close()

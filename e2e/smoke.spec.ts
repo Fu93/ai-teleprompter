@@ -35,6 +35,9 @@ test('preload 橋接可用:appInfo 回傳版本與平台', async () => {
     expect(info.version).toBeTruthy()
     expect(info.platform).toBe('win32')
     expect(info.userDataPath).toContain('ai-teleprompter')
+    // e2e 進程以 AI_TP_E2E=1 啟動,除錯能力必須是關的:否則除錯面板會出現在
+    // 每一張稽核截圖與 DOM 稽核裡,量到的就不是使用者所見(見 src/main/debug.ts)
+    expect(info.debug).toBe(false)
   } finally {
     await app.close()
   }
@@ -97,10 +100,25 @@ test('turn-yield:對方問句經 IPC → 浮層顯示「該你說話了」提示
     await main.evaluate(() => window.api.setSettings({ overlay: { turnYield: true } }))
     // 經真 IPC 推對方問句(與 Record 頁系統音訊轉錄相同的 context:push-transcript 路徑)
     // main 偵測問句語尾 → 1.2s 防抖 → 廣播 context:turn-yield → 浮層提示
-    await main.evaluate(() =>
-      window.api.pushTranscript({ text: '可以請你介紹一下你自己嗎', speaker: 'them' })
-    )
-    await overlay!.waitForSelector('text=該你說話了', { timeout: 8_000 })
+    //
+    // 與下方教練測試同樣的竞態:setSettings 回了不代表浮層 renderer 已套用
+    // turnYield=true,滿載時推送可能先到而被忽略。與其猜延遲不如重試到訊號真的出現。
+    await expect
+      .poll(
+        async () => {
+          await main.evaluate(() =>
+            window.api.pushTranscript({ text: '可以請你介紹一下你自己嗎', speaker: 'them' })
+          )
+          try {
+            await overlay!.waitForSelector('text=該你說話了', { timeout: 3_000 })
+            return true
+          } catch {
+            return false
+          }
+        },
+        { timeout: 30_000, intervals: [3_500] }
+      )
+      .toBe(true)
   } finally {
     await app.close()
   }
@@ -120,12 +138,91 @@ test('即時教練:搶話訊號經 IPC → 浮層顯示教練提示', async () =
     await main.evaluate(() => window.api.setSettings({ overlay: { coaching: true } }))
     // 對方剛講完 → 2s 內我方開口 = 搶話。
     // 兩段必須在同一個 evaluate 內背靠背送出:分開兩次呼叫在併跑負載下
-    // 可能間隔超過 2s 判定窗,搶話不觸發(併跑 flake 來源)
-    await main.evaluate(() => {
-      void window.api.pushTranscript({ text: '那我們請你說明一下這個案例的背景', speaker: 'them' })
-      void window.api.pushTranscript({ text: '這個專案主要是我負責資料管線的設計', speaker: 'me' })
+    // 可能間隔超過 2s 判定窗,搶話不觸發(併跑 flake 來源)。
+    //
+    // 另一個 flake 來源是「設定廣播」與「逐字稿推送」的競態:setSettings 回了不代表
+    // 浮層 renderer 已經套用 coaching=true,滿載時推送可能先到而被忽略。
+    // 與其猜延遲,不如重試到訊號真的出現為止 —— 斷言本身不變,走的仍是
+    // 真 IPC → main 教練判定 → 浮層渲染 的完整路徑。
+    await expect
+      .poll(
+        async () => {
+          await main.evaluate(() => {
+            void window.api.pushTranscript({ text: '那我們請你說明一下這個案例的背景', speaker: 'them' })
+            void window.api.pushTranscript({ text: '這個專案主要是我負責資料管線的設計', speaker: 'me' })
+          })
+          try {
+            await overlay!.waitForSelector('text=打斷對方', { timeout: 3_000 })
+            return true
+          } catch {
+            return false
+          }
+        },
+        { timeout: 30_000, intervals: [3_500] }
+      )
+      .toBe(true)
+  } finally {
+    await app.close()
+  }
+})
+/**
+ * P2:執行中拔螢幕 / 改解析度會讓浮層座標失效而「靜默消失」——
+ * 使用者在台上沒有任何錯誤提示,只能靠盲按熱鍵猜。
+ * 這支測試兩個出口:重新顯示時的自動拉回,與工具列的「置中」按鈕。
+ */
+test('浮層掉出畫面:自動拉回 + 工具列「置中」按鈕', async () => {
+  const { app, main } = await launchApp()
+  test.setTimeout(60_000)
+  try {
+    await expect
+      .poll(() => app.windows().length, { timeout: 15_000, intervals: [500, 1_000, 2_000] })
+      .toBeGreaterThanOrEqual(2)
+    const overlayPage = app.windows().find((w) => w !== main)!
+    await overlayPage.waitForLoadState('domcontentloaded')
+    await main.evaluate(() => window.api.overlayShow({ title: '置中測試', content: '測試內容' }))
+
+    // 浮層與主視窗共用同一份 index.html,標題都是「AI 提詞機」,
+    // 只能用 URL hash(#/overlay)區分 —— 這也是先前測試抓錯視窗的原因。
+    const overlayId = await app.evaluate(({ BrowserWindow }) => {
+      // dev 是 #/overlay、packaged 是 #overlay(win.loadFile 的 hash 會吃掉斜線),兩種都收
+      const isOverlay = (u: string): boolean => u.endsWith('#overlay') || u.endsWith('#/overlay')
+      const w = BrowserWindow.getAllWindows().find((x) => isOverlay(x.webContents.getURL()))
+      return w ? w.id : -1
     })
-    await overlay!.waitForSelector('text=打斷對方', { timeout: 8_000 })
+    expect(overlayId).toBeGreaterThan(0)
+
+    const posOf = (): Promise<number> =>
+      app.evaluate(({ BrowserWindow }, id) => {
+        const w = BrowserWindow.fromId(id)
+        return w && !w.isDestroyed() ? w.getPosition()[0] : Number.POSITIVE_INFINITY
+      }, overlayId)
+    const shoveOffscreen = (): Promise<void> =>
+      app.evaluate(({ BrowserWindow }, id) => {
+        BrowserWindow.fromId(id).setPosition(-4000, -4000)
+      }, overlayId)
+
+    // 模擬「執行中拔掉螢幕」:推到遠離任何螢幕的座標
+    await shoveOffscreen()
+    // 先確認前提成立,避免測試在「其實沒推出去」的假前提下通過
+    expect(await posOf()).toBeLessThan(-3000)
+
+    // 出口 1:自動防護 —— 重新顯示時 setOverlayVisible 會先 ensureOverlayOnScreen
+    await main.evaluate(() => window.api.overlayShow({ title: '置中測試', content: '測試內容' }))
+    await expect.poll(posOf).toBeGreaterThan(-3000)
+
+    // 出口 2:使用者手動 —— 工具列「置中」按鈕
+    await shoveOffscreen()
+    expect(await posOf()).toBeLessThan(-3000)
+
+    const workArea = await app.evaluate(({ screen }) => screen.getPrimaryDisplay().workArea)
+    // 用 DOM click 而非真實指標點擊:浮層是 transparent + alwaysOnTop 的無邊框視窗,
+    // 真實點擊還要過 Playwright 的 actionability(命中測試)檢查,在滿載時會不穩。
+    // 而這裡要驗證的是「按鈕 → preload → IPC → 視窗移動」這條鏈,不是浮層的點擊穿透
+    // ——穿透由 setOverlayVisible 處理,另有測試涵蓋。
+    await overlayPage.locator('button[title^="浮層置中"]').dispatchEvent('click')
+    // 落在工作區內,而不只是「x 座標變正」
+    await expect.poll(posOf).toBeGreaterThan(workArea.x - 10)
+    await expect.poll(posOf).toBeLessThan(workArea.x + workArea.width)
   } finally {
     await app.close()
   }

@@ -24,6 +24,12 @@ export interface ToastItem {
 }
 
 const DISPLAY_MS = 4000
+/**
+ * 錯誤停留更久。使用者看到「麥克風權限被拒」之後要做的是離開 App 去 Windows
+ * 設定改權限再回來 —— 4 秒不夠他讀完一句話。成功/資訊是「已經好了」的告知,
+ * 4 秒合理;錯誤是「你要去做點什麼」,所以加長。
+ */
+const ERROR_DISPLAY_MS = 12_000
 const MAX_VISIBLE = 3
 
 interface ToastState {
@@ -43,14 +49,15 @@ export const useToasts = create<ToastState>((set) => ({
 
   push: (kind, message) =>
     set((s) => {
-      // 重複訊息不堆疊,重設計時(常見:同一錯誤連續觸發)
+      const displayMs = kind === 'error' ? ERROR_DISPLAY_MS : DISPLAY_MS
+      // 重複訊息不堆疊,重設計時(常常:同一錯誤連續觸發)
       const dupe = s.items.find((t) => t.message === message && t.kind === kind)
       if (dupe) {
         return {
-          items: s.items.map((t) => (t.id === dupe.id ? { ...t, remainingMs: DISPLAY_MS, running: true } : t))
+          items: s.items.map((t) => (t.id === dupe.id ? { ...t, remainingMs: displayMs, running: true } : t))
         }
       }
-      const item: ToastItem = { id: nextId++, kind, message, remainingMs: DISPLAY_MS, running: true }
+      const item: ToastItem = { id: nextId++, kind, message, remainingMs: displayMs, running: true }
       const items = [item, ...s.items]
       // 上限 3 則,超額移除最舊(最舊者多半已被看到)
       return { items: items.length > MAX_VISIBLE ? items.slice(0, MAX_VISIBLE) : items }

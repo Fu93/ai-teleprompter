@@ -37,7 +37,21 @@ describe('toast store', () => {
     toast.error('same')
     const items = useToasts.getState().items
     expect(items).toHaveLength(1)
-    expect(items[0].remainingMs).toBe(4000)
+    expect(items[0].remainingMs).toBe(12000)
+  })
+
+  it('錯誤比資訊久:使用者看到權限被拒後要離開 App 去改設定,4 秒不夠', () => {
+    toast.info('即將消失')
+    toast.error('需要你去做點什麼')
+    const byKind = Object.fromEntries(
+      useToasts.getState().items.map((t) => [t.kind, t.remainingMs] as const)
+    )
+    expect(byKind.info).toBe(4000)
+    expect(byKind.error).toBe(12000)
+    // 資訊到點消失時,錯誤訊息必須還在——否則使用者根本來不及讀完
+    useToasts.getState().tick(4000)
+    const kinds = useToasts.getState().items.map((t) => t.kind)
+    expect(kinds).toEqual(['error'])
   })
 
   it('上限 3 則,超額丟最舊', () => {
