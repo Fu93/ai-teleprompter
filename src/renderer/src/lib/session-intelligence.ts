@@ -76,20 +76,36 @@ interface Turn {
   speaker: 'me' | 'them'
   start: number
   end: number
+  /** 只累計逐字稿片段覆蓋的語音時間，不把同說者段落間的靜音算成發言 */
+  speechSec: number
+  /** 同一輪內已覆蓋的最晚片段時間，避免重疊片段重複計時 */
+  coveredUntil: number
   text: string
 }
 
-/** 相鄰同說者段落合併為輪次 */
+/** 相同說者且間隔不超過冷場門檻的段落合併為一輪；長停頓保留為可量測的冷場 */
 function toTurns(segments: TranscriptSegment[]): Turn[] {
   const sorted = [...segments].sort((a, b) => a.start - b.start)
   const turns: Turn[] = []
   for (const seg of sorted) {
+    const start = Math.min(seg.start, seg.end)
+    const end = Math.max(seg.start, seg.end)
     const last = turns[turns.length - 1]
-    if (last && last.speaker === seg.speaker) {
-      last.end = Math.max(last.end, seg.end)
+    const gap = last ? start - last.end : Number.POSITIVE_INFINITY
+    if (last && last.speaker === seg.speaker && gap <= GAP_THRESHOLD_SEC) {
+      last.end = Math.max(last.end, end)
       last.text += ` ${seg.text}`
+      last.speechSec += Math.max(0, end - Math.max(start, last.coveredUntil))
+      last.coveredUntil = Math.max(last.coveredUntil, end)
     } else {
-      turns.push({ speaker: seg.speaker, start: seg.start, end: seg.end, text: seg.text })
+      turns.push({
+        speaker: seg.speaker,
+        start,
+        end,
+        speechSec: end - start,
+        coveredUntil: end,
+        text: seg.text
+      })
     }
   }
   return turns
@@ -128,8 +144,8 @@ export function buildSessionReport(
 
   const myTurns = turns.filter((t) => t.speaker === 'me')
   const theirTurns = turns.filter((t) => t.speaker === 'them')
-  const mySec = myTurns.reduce((a, t) => a + (t.end - t.start), 0)
-  const theirSec = theirTurns.reduce((a, t) => a + (t.end - t.start), 0)
+  const mySec = myTurns.reduce((a, t) => a + t.speechSec, 0)
+  const theirSec = theirTurns.reduce((a, t) => a + t.speechSec, 0)
   const talkRatio = mySec + theirSec > 0 ? mySec / (mySec + theirSec) : 0
 
   const myUnits = myTurns.reduce((a, t) => a + countSpeechUnits(t.text), 0)
@@ -147,8 +163,8 @@ export function buildSessionReport(
   }
 
   const myTurnCpms = myTurns
-    .filter((t) => t.end - t.start >= 2)
-    .map((t) => countSpeechUnits(t.text) / ((t.end - t.start) / 60))
+    .filter((t) => t.speechSec >= 2)
+    .map((t) => countSpeechUnits(t.text) / (t.speechSec / 60))
     .filter((v) => v > 0)
   const steadiness = myTurnCpms.length < 2 ? 100 : Math.round(100 * Math.max(0, 1 - cv(myTurnCpms)))
 
@@ -161,7 +177,7 @@ export function buildSessionReport(
     myCpm,
     turnCount: turns.length,
     avgMyTurnSec: myTurns.length ? Math.round(mySec / myTurns.length) : 0,
-    longestMyTurnSec: myTurns.length ? Math.round(Math.max(...myTurns.map((t) => t.end - t.start))) : 0,
+    longestMyTurnSec: myTurns.length ? Math.round(Math.max(...myTurns.map((t) => t.speechSec))) : 0,
     gapCount,
     gapTotalSec: Math.round(gapTotalSec),
     theirQuestionCount: theirTurns.filter((t) => isQuestion(t.text)).length,

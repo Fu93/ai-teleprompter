@@ -76,6 +76,29 @@ describe('buildSessionReport', () => {
     expect(r.longestMyTurnSec).toBe(20)
   })
 
+  it('同說者段落間的長停頓不計入發言時間，並列為冷場', () => {
+    const r = buildSessionReport([
+      seg('me', '字'.repeat(10), 0, 2),
+      seg('me', '字'.repeat(10), 10, 12)
+    ])
+    expect(r.turnCount).toBe(2)
+    expect(r.mySec).toBe(4)
+    expect(r.myCpm).toBe(300)
+    expect(r.longestMyTurnSec).toBe(2)
+    expect(r.gapCount).toBe(1)
+    expect(r.gapTotalSec).toBe(8)
+  })
+
+  it('同說者重疊片段只把交集計時一次', () => {
+    const r = buildSessionReport([
+      seg('me', '第一段', 0, 4),
+      seg('me', '重疊段', 3, 6)
+    ])
+    expect(r.turnCount).toBe(1)
+    expect(r.mySec).toBe(6)
+    expect(r.longestMyTurnSec).toBe(6)
+  })
+
   it('冷場統計(>5 秒的間隙)', () => {
     const r = buildSessionReport([
       seg('me', '開場', 0, 10),
