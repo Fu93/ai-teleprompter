@@ -7,7 +7,10 @@
   --color-ink-800: #1a1e29;
   --color-ink-700: #262c3d;
   --color-ink-600: #3a4256;
-  --color-ink-400: #6b7590;
+  /* ink-400 是全站次要文字色(85 處),沿用舊值時在 ink-800/850/900 三種底色上
+     只有 3.6~4.3:1,全部低於 WCAG AA 一般文字的 4.5:1。往白推 12% 後
+     最深底色(ink-800)有 4.55:1,其餘只會更高,色溫幾乎不變。 */
+  --color-ink-400: #7d869d;
   --color-ink-300: #9aa3ba;
   --color-ink-200: #c4cadb;
   --color-ink-100: #e9ecf5;
@@ -43,8 +46,10 @@
   border-radius: 4px;
 }
 
-/* 按壓回饋:全部按鈕統一 scale 0.97(Emil Kowalski / Raycast 慣例) */
-button:not(:disabled):active {
+/* 按壓回饋:小按鈕統一 scale 0.97(Emil Kowalski / Raycast 慣例)。
+   排除滿版寬度的區塊按鈕(sidebar 項目、設定開關列):那些一縮就整排
+   文字和開關一起位移,是「整個版面在跳」而不是「按鈕被壓下去」。 */
+button:not(:disabled):not(.w-full):active {
   transform: scale(0.97);
 }
 
@@ -230,7 +235,9 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 .segmented-item {
-  @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium
+  /* py-2 而非 py-1.5:分段控件的項目原本只有 25px 高,低於 28px 的點擊目標下限。
+     浮層工具列用的是 icon-only 版本(沒有文字),加高後外觀變化不明顯但好點。*/
+  @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium
     text-ink-300 transition-all duration-200 cursor-pointer select-none;
 }
 .segmented-item:hover {
@@ -245,14 +252,22 @@ body {
 }
 
 /* ── iOS 滑桿 ── */
+/* 元素高度是「命中帶」不是「軌道高度」。原本直接把 height 設成 4px,
+   軌道跟命中區綁在一起,結果滑塊畫成 18px 卻只有中間 4px 點得到 ——
+   使用者看得到滑塊露出的上下半部,按下去卻沒反應,會以為是壞掉。
+   軌道改畫在 ::-webkit-slider-runnable-track 上,元素本身留 22px。 */
 input[type='range'] {
   -webkit-appearance: none;
   appearance: none;
+  height: 22px;
+  background: transparent;
+  outline: none;
+  cursor: pointer;
+}
+input[type='range']::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.14);
-  outline: none;
-  cursor: pointer;
 }
 input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -265,7 +280,18 @@ input[type='range']::-webkit-slider-thumb {
   box-shadow:
     0 1px 4px rgba(0, 0, 0, 0.45),
     0 0 0 0.5px rgba(0, 0, 0, 0.1);
-  transition: transform 0.15s var(--ease-spring);
+  transition:
+    transform 0.15s var(--ease-spring),
+    box-shadow 0.15s var(--ease-spring);
+}
+/* 鍵盤焦點:input[type='range'] 的選擇器特異度比全域 :focus-visible 高,
+   原本的 outline:none 會把它蓋掉,滑塊是設定頁主要控制項,
+   沒有焦點外框等於不能用鍵盤調。焦點環畫在滑塊上,跟著拇指走。 */
+input[type='range']:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.45),
+    0 0 0 0.5px rgba(0, 0, 0, 0.1),
+    0 0 0 4px rgba(143, 140, 250, 0.5);
 }
 input[type='range']::-webkit-slider-thumb:hover {
   transform: scale(1.12);

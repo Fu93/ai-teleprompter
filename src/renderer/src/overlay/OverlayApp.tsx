@@ -424,6 +424,28 @@ export default function OverlayApp(): JSX.Element {
             className={cn('h-1.5 w-1.5 rounded-full', playing ? 'bg-emerald-500' : 'bg-ink-600')}
           />
           <span className="flex-1" />
+          {/* 角落吸附:貼到螢幕上緣,離鏡頭軸線最近 */}
+          <div
+            className="flex items-center gap-1"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          >
+            {(
+              [
+                { id: 'tl', label: '↖ 左上' },
+                { id: 'tc', label: '↑ 上中' },
+                { id: 'tr', label: '↗ 右上' }
+              ] as const
+            ).map((c) => (
+              <button
+                key={c.id}
+                onClick={() => void window.api.snapOverlayCorner(c.id)}
+                title={`浮層吸附到螢幕${c.label.replace(/[^一-龥]/g, '')}`}
+                className="rounded-full bg-white/8 px-2 py-2 text-[10px] text-white/72 transition-colors hover:bg-white/15 hover:text-white/72 cursor-pointer whitespace-nowrap"
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
           <div
             className="flex items-center gap-0.5"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -442,28 +464,16 @@ export default function OverlayApp(): JSX.Element {
             </ToolBtn>
           </div>
         </div>
+        {/* 角落吸附的按鈕改放在上方工具列的空白處(見下方註解) */}
         <LensSurface model={model} state={state} displayMode={displayMode} />
-        {/* 角落吸附:貼到螢幕上緣,離鏡頭軸線最近 */}
-        <div
-          className="absolute inset-x-0 top-9 z-10 flex justify-center gap-1"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-        >
-          {(
-            [
-              { id: 'tl', label: '↖ 左上' },
-              { id: 'tc', label: '↑ 上中' },
-              { id: 'tr', label: '↗ 右上' }
-            ] as const
-          ).map((c) => (
-            <button
-              key={c.id}
-              onClick={() => void window.api.snapOverlayCorner(c.id)}
-              className="rounded-full bg-white/8 px-2 py-0.5 text-[10px] text-white/72 transition-colors hover:bg-white/15 hover:text-white/72 cursor-pointer"
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
+        {/* 角落吸附:貼到螢幕上緣,離鏡頭軸線最近。
+            原本是 absolute top-9 浮在正文上方,實測把第一行提詞文字整行蓋住;
+            改成把正文往下讓位(pt-8)又會把底部的「下一句」擠出 170px 的視窗。
+            貼鏡視窗只有 420x170,扣掉工具列 36px、底部提示 22px 後,
+            「下一句/再下一句」再吃掉 40px,留给正文只剩 70px ——
+            沒有任何浮層層能再吃高度。所以這三顆按鈕改放進工具列的空白處
+            (原本是 flex-1 spacer,什麼都沒放),不再占用正文空間。*/}
+        {null}
         {lensHint && (
           <div className="pointer-events-none absolute inset-x-3 bottom-1.5 z-10 rounded-full bg-black/60 px-3 py-1 text-center text-[10px] text-white/72">
             把這條貼到攝影機 5cm 內 — 眼神會自然對準鏡頭,錄起來不像看稿
@@ -518,12 +528,22 @@ export default function OverlayApp(): JSX.Element {
           />
         </div>
 
-        <div className="flex-1" />
+        <div className="min-w-0 flex-1" />
 
+        {/* 工具列。預設浮層寬 720px,這裡卻塞了計時器 + 18 顆左右,
+            實測需要 551px 而可用空間只有約 422px。根節點是 overflow-hidden,
+            多出來的 113px 直接被裁掉 —— 最右側的「速度 +」等按鈕落在視窗外,
+            既看不到也點不到。
+            外面包一層可橫向捲動的殼,內層用 w-max 撐出 max-content 寬度。
+            只加 overflow-x-auto 沒用:捲動容器裡的 block 子元素會被壓成
+            容器寬度,而 flex 子項預設可以收縮,於是按鈕被擠成 20px 寬的長條
+            而不是捲動 —— 換個方式壞而已。*/}
         <div
-          className="flex items-center gap-0.5"
+          className="min-w-0 shrink overflow-x-auto"
+          data-allow-h-scroll="1"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          <div className="flex w-max items-center gap-0.5">
           <span className="mr-1.5 select-none font-mono text-[10px] text-white/52">
             {formatDuration(elapsedSec)}
             {remainingMs !== null && ` / -${formatDuration(remainingMs / 1000)}`}
@@ -677,6 +697,7 @@ export default function OverlayApp(): JSX.Element {
           <ToolBtn title={`關閉(${toggleHint})`} onClick={() => void window.api.overlayHide()}>
             <X size={13} />
           </ToolBtn>
+          </div>
         </div>
       </div>
 

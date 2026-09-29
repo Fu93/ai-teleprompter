@@ -8,3 +8,6 @@ playwright-report/
 dist/
 .freebuff/
 *.tsbuildinfo
+
+# UI 稽核產物(每次執行重新產生)
+docs/audit/
