@@ -664,6 +664,18 @@ export default function SettingsPage({
           語速步進每次 ±0.1×（0.5–3×）；熱鍵在浮層隱藏或滑鼠穿透時也有效。
         </div>
       </Section>
+
+      <Section title="疑難排解" desc="遇到問題時，日誌是回報與自障的第一手資料">
+        <button
+          className="btn-outline text-xs"
+          onClick={() => void window.api.openLogDir()}
+        >
+          開啟記錄資料夾
+        </button>
+        <div className="mt-1.5 text-[11px] text-ink-400">
+          main.log 記錄啟動、未捕捉例外與前端錯誤（輪替保留 3 檔）；回報問題時附上最新的它最有幫助。
+        </div>
+      </Section>
     </div>
   )
 }

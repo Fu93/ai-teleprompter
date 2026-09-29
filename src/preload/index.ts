@@ -70,7 +70,9 @@ const api: Api = {
   shareSimulation: () => ipcRenderer.invoke(IPC.ShareSimulation),
   snapOverlayCorner: (corner: 'tl' | 'tc' | 'tr') => ipcRenderer.invoke(IPC.OverlaySnapCorner, corner),
   revealPath: (path: string) => ipcRenderer.invoke(IPC.RevealPath, path),
-  exportFile: (args) => ipcRenderer.invoke(IPC.ExportFile, args)
+  exportFile: (args) => ipcRenderer.invoke(IPC.ExportFile, args),
+  logFromRenderer: (level, message) => ipcRenderer.invoke(IPC.LogFromRenderer, { level, message }),
+  openLogDir: () => ipcRenderer.invoke(IPC.OpenLogDir)
 }
 
 contextBridge.exposeInMainWorld('api', api)

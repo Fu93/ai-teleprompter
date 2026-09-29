@@ -1,10 +1,20 @@
 appId: tw.nn201.ai-teleprompter
 productName: AI 提詞機
+# 自動更新:推 tag → GitHub Actions 產安裝包+latest.yml → 使用者端 electron-updater 檢查
+# (CI 需加 GH_TOKEN 執行 `electron-builder --publish always`;push tag 前不會觸發)
+publish:
+  provider: github
+  owner: nn201
+  repo: ai-teleprompter
 directories:
   output: dist
+# files 不排除 node_modules:electron-builder 會自動只帶 package.json dependencies
+# 的生產依賴並剪掉 devDependencies。renderer 依賴已由 vite 打進 bundle,全放
+# devDependencies 後,asar 內僅 electron-updater 一棵小樹。
+# (曾因 '!node_modules/**' 排除整個 node_modules,externalizeDepsPlugin 外部化的
+#  electron-updater 在打包版 require 不到 → main 在 import 階段炸死,連日誌都沒有)
 files:
   - out/**
-  - '!node_modules/**'
 asar: true
 compression: maximum
 # 場景包:main/packs.ts 掃 process.resourcesPath/packs

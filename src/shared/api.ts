@@ -133,4 +133,8 @@ export interface Api {
   snapOverlayCorner(corner: 'tl' | 'tc' | 'tr'): Promise<void>
   /** 在檔案總管中顯示檔案 */
   revealPath(path: string): Promise<void>
+  /** renderer 錯誤落盤到 main 日誌(產品化:崩潰回報的最低可行形式) */
+  logFromRenderer(level: 'ERROR' | 'WARN' | 'INFO', message: string): Promise<void>
+  /** 開啟記錄資料夾(設定頁用) */
+  openLogDir(): Promise<void>
 }

@@ -200,6 +200,8 @@ export const IPC = {
   OverlaySnapCorner: 'overlay:snap-corner',
   RevealPath: 'util:reveal-path',
   ExportFile: 'util:export-file',
+  LogFromRenderer: 'util:log-from-renderer',
+  OpenLogDir: 'util:open-log-dir',
   // events (main -> renderer)
   OverlayVisibilityChanged: 'overlay:visibility-changed',
   OverlaySettingsChanged: 'overlay:settings-changed',

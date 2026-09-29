@@ -7,6 +7,7 @@ import { chatCompletion, testConnection, getUserKeys, setUserKeys } from './ai/a
 import { listAllScenes } from './packs'
 import { broadcastSettings, state } from './state'
 import { applyOverlayWindowSettings, setOverlayVisible } from './windows'
+import { logFromRenderer, logDir } from './logging'
 import {
   getCoachingCounts,
   handlePanic,
@@ -251,6 +252,15 @@ export function registerIpc(): void {
   // ---- 在檔案總管顯示檔案 ----
   ipcMain.handle(IPC.RevealPath, (_e, path: string) => {
     if (path && typeof path === 'string') shell.showItemInFolder(path)
+  })
+
+  // ---- 崩潰回報基礎:renderer 錯誤落盤 + 開啟記錄資料夾 ----
+  ipcMain.handle(IPC.LogFromRenderer, (_e, args: { level: 'ERROR' | 'WARN' | 'INFO'; message: string }) => {
+    logFromRenderer(args.level, String(args.message).slice(0, 4000))
+  })
+
+  ipcMain.handle(IPC.OpenLogDir, () => {
+    shell.openPath(logDir())
   })
 
   // ---- 匯出檔案 ----

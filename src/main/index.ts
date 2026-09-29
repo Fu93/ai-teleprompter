@@ -4,6 +4,8 @@ import { initState, state } from './state'
 import { createMainWindow, createOverlayWindow, quitWhenOverlayHidden } from './windows'
 import { registerHotkeys, registerIpc } from './ipc'
 import { syncCoachingTimer } from './liveCoaching'
+import { initLogging } from './logging'
+import { initUpdater } from './updater'
 
 // e2e 隔離:測試進程以 AI_TP_E2E=1 啟動時,把 userData 重導到暫存目錄,
 // 測試建立的講稿/會議/設定不會汙染真實使用者資料(真實發生過:測試講稿出現在使用者 Dashboard)。
@@ -13,6 +15,7 @@ if (process.env['AI_TP_E2E'] === '1') {
 }
 
 initState()
+initLogging()
 
 // ---------- 生命週期 ----------
 const gotLock = app.requestSingleInstanceLock()
@@ -32,6 +35,7 @@ if (!gotLock) {
     createOverlayWindow()
     registerHotkeys()
     syncCoachingTimer()
+    initUpdater()
   })
 
   app.on('window-all-closed', () => {

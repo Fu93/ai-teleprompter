@@ -7,8 +7,18 @@
 
 ## [Unreleased]
 
+### 新增（公開發佈準備）
+
+- **崩潰與錯誤日誌落盤**：main 進程的 uncaughtException/unhandledRejection 與 app 啟動事件寫入 `%APPDATA%/ai-teleprompter/logs/main.log`（1MB 輪替、保留 3 檔），renderer 的 window error/unhandledrejection 經 IPC 落同一份檔案——公開發佈後唯一可診斷的回饋來源。
+- **設定頁「疑難排解」區塊**：「開啟記錄資料夾」按鈕（shell.openPath）與日誌輪替說明，出問題時引導使用者回報 main.log。
+- **自動更新骨架**：electron-updater + GitHub Releases（publish 配置、啟動 30 秒靜默檢查、下載完成廣播 `app:update-downloaded` 供未來 UI 提示）；dev 環境自動跳過。
+- **README 全面重寫（使用者視角）**：三模式功能清單、截圖、系統需求（Win10 22H2+/Win11）、安裝與 SmartScreen 未簽署說明、使用前準備（Whisper 本地模型 / Ollama / 雲端 API）、FAQ（熱鍵衝突、分享隱形、麥克風燈、隱私）、開發指令。
+- **MIT LICENSE**。
+
 ### 修復
 
+- **打包版啟動即靜默死亡（零視窗、零日誌）**：`electron-builder.yml` 的 `'!node_modules/**'` 把 node_modules 完全排除出 asar，而 `externalizeDepsPlugin` 讓 `electron-updater` 不打進 bundle、運行時才 require——main 在 import 階段就拋錯，連 `initState()`/`initLogging()` 都執行不到，且 stderr 無任何輸出（錯誤走 GUI 對話框），完全無法診斷。修復：renderer 依賴移入 devDependencies（已被 vite 打進 bundle）、asar 允許 electron-builder 自帶 production deps（僅 electron-updater 一棵小樹）；updater 改動態 import + try/catch，打包配置再出錯也只損失自動更新、不擋啟動。
+- **electron-updater 動態 import 的 ESM interop**：CJS 包經 Node 原生 `import()` 的命名導出（`autoUpdater`）為 undefined（實體在 `default` = `module.exports` 上），首次打包煙霧日誌直接抓出 `Cannot set properties of undefined`；改為 `default ?? namespace` 相容兩種形狀，取不到時落日誌明確報錯。
 - **靈動島藥丸白邊**：三層成因疊加——狀態光暈向外擴散但視窗就是藥丸本身的大小，整圈被視窗裁切只剩貼邊亮圈；邊框與頂部高光的白度在深色桌布上明顯；折射位移圖寫死圓角 18px 與膠囊的 rounded-full（半徑＝高一半）不匹配，圓端產生錯位亮弧。光暈改為 iOS 式向內暈光、邊框/高光減白、折射半徑跟隨形態（藥丸 h/2、其他 16px）。
 - **藥丸關鍵詞預覽以標點開頭**：從句中切出的「下一個關鍵詞」曾顯示「，今天想跟」——`degrade()` 未剝前導標點；切字前後各剝一次，補單元回歸。
 
