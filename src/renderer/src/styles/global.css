@@ -102,45 +102,63 @@ body {
   background: transparent;
 }
 
-/* ── 玻璃層(Apple vibrancy 質感)──
-   境內玻璃:半透明 + backdrop blur + 頂緣 specular 高光 + 柔和投影
-   blur 會抽飽和,saturate(1.8) 補回(Liquid Glass 配方) */
+/* ── Liquid Glass 材質 ──────────────────────────────────────
+   改版思路:先前的玻璃是「半透明方塊 + 白邊框 + 白色高光」堆出來的,
+   每一層都在不同輪次造成過視覺 bug(白邊調查前後花了三輪)。
+   Liquid Glass 的做法相反:輪廓不是畫一條線,而是讓材質自己的邊緣
+   因為折射與受光而自然變亮。所以這裡取消所有 border 與 inset 高光,
+   改由 .lg-rim 提供方向性輪廓光(見下)。 */
+
+/* 底色:比純黑亮一點、通透一點,這是 Liquid Glass 的「玻璃感」來源。
+   仍然維持暗色 —— 提詞器必須在任意桌布上可讀,純透射不可行。 */
 .glass {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.03));
   -webkit-backdrop-filter: blur(20px) saturate(1.8);
   backdrop-filter: blur(20px) saturate(1.8);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.25),
-    inset 0 -1px 1px rgba(255, 255, 255, 0.08),
-    0 12px 40px rgba(0, 0, 0, 0.42);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.42);
 }
 
-/* 浮層表面:窗後 acrylic 開啟時降低自身底色讓材質透出。
-   邊緣用暗色髮絲 + 移除白色 inset 高光:亮邊框與白色高光在深色內容上
-   就是一圈白邊(逐像素實測邊緣/中心亮度比 1.85 倍,見 .dynamic-island-pill)。 */
 .glass-overlay {
   background: rgba(12, 14, 20, 0.62);
   -webkit-backdrop-filter: blur(20px) saturate(1.8);
   backdrop-filter: blur(20px) saturate(1.8);
-  border: 1px solid rgba(5, 6, 10, 0.5);
-  box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.18),
-    0 16px 48px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
 }
 
 .glass-pill {
   background: rgba(12, 14, 20, 0.66);
   -webkit-backdrop-filter: blur(20px) saturate(1.8);
   backdrop-filter: blur(20px) saturate(1.8);
-  /* 暗色髮絲:定義輪廓但不發亮;白邊實測來源就是白 border + inset 白高光。
-     內側那圈 inset 0 0 0 1px 看似冗餘(拿掉後最外 0-1px 像素完全不變),
-     但實測拿掉會讓 2-3px 帶變亮(20.8 → 23.4)——而 2-3px 正是光暈亮環
-     成形的位置,所以這圈是有效的,不能省。 */
-  border: 1px solid rgba(5, 6, 10, 0.55);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+
+/* ── 方向性輪廓光(Liquid Glass 的靈魂)──
+   真實靈動島的邊緣亮度來自材質彎曲處的受光,不是畫上去的一條線:
+   上緣接近光源所以亮、下緣背光所以暗。這裡用一層 inset 遮罩模擬,
+   上下兩半分別給不同強度的白色,並且**四周都有暗環把邊界壓回去**。
+
+   三輪白邊調查換來的鐵律:亮度峰值絕對不能落在最外圈像素。
+   先前的光暈與 specular 都是因為峰值在邊界上,整圈被視窗裁掉後
+   變成一圈亮邊。這裡的參數是內縮式的(inset 正值 = 由內往外),
+   且最外 1px 由暗環接手,逐像素驗證標準為「邊緣/內部 ≤ 1.0」。 */
+.lg-rim {
+  position: relative;
+}
+.lg-rim::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
   box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.2),
-    0 18px 50px rgba(0, 0, 0, 0.55);
+    /* 暗環:壓住最外 2px。純白桌布下量測時發現藥丸左右兩端(膠囊曲率最大處)
+       會被折射把外側的白色擠進來,噴到 190/255。暗環加寬加深是對症的,
+       因為它直接作用在「最外圈像素」這個問題根源上。*/
+    inset 0 0 0 2px rgba(4, 6, 11, 0.72),
+    /* 下緣輪廓:背光,只有很弱的一點 */
+    inset 0 -1.5px 2px -1px rgba(255, 255, 255, 0.1),
+    /* 上緣輪廓:受光。負 spread 把峰值推離邊界 1px 再糊開 */
+    inset 0 1.5px 3px -1px rgba(255, 255, 255, 0.22);
 }
 
 /* ── Liquid Glass 真折射(P2-13)──
@@ -154,23 +172,9 @@ body {
     backdrop-filter: url(#liquid-glass-f);
   }
 }
-/* 隨游標 specular 高光:JS 更新 --spec-x/--spec-y(百分比);搭配 .glass-specular */
+/* 隨游標 specular 高光層已移除:見 useGlassRefraction.ts 的說明。 */
 .glass-specular {
   position: relative;
-}
-.glass-specular::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background: radial-gradient(
-    220px circle at var(--spec-x, 50%) var(--spec-y, 0%),
-    rgba(255, 255, 255, 0.14),
-    transparent 60%
-  );
-  opacity: var(--spec-o, 0);
-  transition: opacity var(--dur-base) var(--ease-hover);
 }
 
 /* ── 共用元件 ── */
@@ -398,17 +402,12 @@ h2 {
   border-radius: 6px;
 }
 
-/* ── 靈動島藥丸:狀態光暈呼吸 + 事件事件淡出 ─────────────────────
- * 光暈以 box-shadow 呈現,由 --di-glow / --di-glow-o 兩個 CSS 變數驅動。
- * 呼吸動畫只動 opacity(合成器層,不掉幀)。事件淡出用獨立 keyframes。
- * 注意:CSS animation 優先級高於一般屬性宣告 —— 這裡若把 opacity 寫死成
- * 數值,::before 上的 opacity:var(--di-glow-o) 會被整個覆蓋,OverlayApp 依狀態
- * 傳的 0.45(待機)/0.8(播放)形同虛設,待機時也比預期亮。必須以變數為基準。 */
-@keyframes di-glow-breathe {
-  0%, 100% { opacity: calc(var(--di-glow-o, 0.6) * 0.7); }
-  50% { opacity: var(--di-glow-o, 0.6); }
-}
-
+/* ── 靈動島藥丸:事件彈入淡出 ─────────────────────
+ * 狀態光暈(::before 呼吸動畫 + --di-glow)已移除。
+ * 真正的 iOS 靈動島沒有彩色光暈環,狀態靠內容裡的小圖示與小圓點表達。
+ * 而那層光暈是本專案白邊問題的最終元凶:inset 光暈的亮度峰值就落在形狀
+ * 最外圈,而藥丸就是視窗本身,超出部分被裁掉後只剩一圈貼邊亮線。
+ * 拆掉之後狀態資訊沒有損失(圖示更清楚),而整類邊緣問題直接從源頭消失。 */
 @keyframes di-pop-in {
   0% { transform: scale(0.6); opacity: 0; }
   60% { transform: scale(1.08); opacity: 1; }
@@ -427,29 +426,6 @@ h2 {
 
 .dynamic-island-pill {
   position: relative;
-}
-.dynamic-island-pill::before {
-  content: '';
-  position: absolute;
-  /* 內收式暈光(iOS 靈動島做法):視窗就是藥丸本身的大小,
-     外擴 box-shadow 會整圈被視窗裁切只剩貼邊亮圈(看起來像白邊);
-     改向內暈,光感存在且不被裁 */
-  inset: 0;
-  border-radius: inherit;
-  /* 狀態光暈:兩層,順序有意義(box-shadow 清單第一層畫在最上)
-     1. 暗環壓邊 — inset 陰影的亮度峰值就在形狀最外圈,不壓住的話亮光直接
-        蓋在視窗邊緣那一像素上,就是「白邊光暈」
-     2. 負 spread 把峰值推到邊界內側再糊開,亮環因此不貼邊
-     參數來自實測掃描(六個真實狀態色逐像素剖面,取各狀態「邊緣/中心」比值
-     的最差者):未壓邊時琥珀色高達 1.85 倍(白邊最明顯的狀態),下列參數
-     降到 0.86 倍,光暈本身仍看得見(狀態色語意保留)。琥珀亮度遠高於綠/紅,
-     調參必須以琥珀為準。 */
-  box-shadow:
-    inset 0 0 6px rgba(6, 8, 14, 0.95),
-    inset 0 0 22px -8px var(--di-glow, rgba(148, 163, 184, 0.4));
-  opacity: var(--di-glow-o, 0.6);
-  animation: di-glow-breathe 3.2s ease-in-out infinite;
-  pointer-events: none;
 }
 
 /* 事件視窗:靈動島的內容交換——事件以大字升為主角,4s 後縮回 */

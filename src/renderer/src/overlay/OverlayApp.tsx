@@ -292,32 +292,17 @@ export default function OverlayApp(): JSX.Element {
     }
     // 靈動島光暈:顏色講狀態——事件優先(藍該你了/琥珀教練/紅救援),
     // 其次播放中綠、待機灰;穿透永遠琥珀警示
-    const diGlow = o.clickThrough
-      ? 'rgba(251, 191, 36, 0.5)'
-      : shownEvent?.kind === 'turn'
-        ? 'rgba(56, 189, 248, 0.55)'
-        : shownEvent?.kind === 'coaching'
-          ? 'rgba(251, 191, 36, 0.55)'
-          : shownEvent?.kind === 'panic'
-            ? 'rgba(244, 63, 94, 0.6)'
-            : playing
-              ? 'rgba(52, 211, 153, 0.45)'
-              : 'rgba(148, 163, 184, 0.4)'
     // drag region 會吞掉滑鼠事件:雙擊展開不再可用,以展開按鈕取代(拖曳價值更高)
     return (
       <div
         ref={specRef}
         className={cn(
-          'dynamic-island-pill glass-pill content-morph-in glass-specular flex h-full cursor-default select-none items-center gap-3 rounded-full px-4',
+          'dynamic-island-pill glass-pill lg-rim content-morph-in flex h-full cursor-default select-none items-center gap-3 rounded-full px-4',
           refractOk && o.glass && 'glass-refract'
         )}
         title="拖曳可移動位置"
         onDoubleClick={exitCompact}
-        style={{
-          WebkitAppRegion: 'drag',
-          '--di-glow': diGlow,
-          '--di-glow-o': playing || shownEvent ? '0.8' : '0.45'
-        } as React.CSSProperties}
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         {shownEvent ? (
           // 事件視窗:事件升為主角(字級加大、圖示上色),結束後縮回常规內容;
@@ -335,11 +320,15 @@ export default function OverlayApp(): JSX.Element {
         ) : (
           <>
             <span
+              // 狀態改用小圓點表達(iOS 靈動島的方式):待機時不發光、
+              // 播放時一個綠點。原先的彩色呼吸光暈已移除,這裡是唯一的狀態指示。
+              // 待機色從 bg-ink-600(#3a4256,幾乎看不見)改成 white/25,
+              // 否則在沒有光暈襯底之後會整個消失在深色藥丸裡。
               className={cn(
                 'h-2 w-2 shrink-0 rounded-full',
-                o.clickThrough ? 'bg-amber-450' : playing ? 'bg-emerald-500' : 'bg-ink-600'
+                o.clickThrough ? 'bg-amber-450' : playing ? 'bg-emerald-400' : 'bg-white/25'
               )}
-              title={o.clickThrough ? '滑鼠穿透中:熱鍵或主視窗「提詞」按鈕重新顯示時自動解除' : undefined}
+              title={o.clickThrough ? '滑鼠穿透中:熱鍵或主視窗「提詞」按鈕重新顯示時自動解除' : playing ? '播放中' : '待機'}
             />
             <span className="max-w-[110px] truncate text-xs font-medium text-white/100">
               {degrade(payload.title || '提詞浮層', 8)}
@@ -413,7 +402,7 @@ export default function OverlayApp(): JSX.Element {
   if (o.lensMode) {
     return (
       <div
-        className="glass-overlay relative flex h-full flex-col overflow-hidden rounded-2xl"
+        className="glass-overlay lg-rim relative flex h-full flex-col overflow-hidden rounded-2xl"
         style={{ background: `rgba(12, 14, 20, ${Math.max(0.25, Math.min(0.9, o.opacity))})` }}
       >
         <div
@@ -493,7 +482,7 @@ export default function OverlayApp(): JSX.Element {
 
   return (
     <div
-      className="glass-overlay relative flex h-full flex-col overflow-hidden rounded-2xl"
+      className="glass-overlay lg-rim relative flex h-full flex-col overflow-hidden rounded-2xl"
       style={{ background: `rgba(12, 14, 20, ${Math.max(0.25, Math.min(0.9, o.opacity))})` }}
     >
       {/* 工具列(可拖曳視窗)*/}

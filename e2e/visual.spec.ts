@@ -73,7 +73,7 @@ test('toast 堆疊與 hover 暫停截圖', async () => {
   }
 })
 
-test('藥丸折射 + specular 截圖', async () => {
+test('藥丸折射 + 輪廓光截圖', async () => {
   const { app, main } = await launchApp()
   test.setTimeout(60_000)
   try {
@@ -114,7 +114,7 @@ test('藥丸折射 + specular 截圖', async () => {
       hasFilter: !!document.getElementById('liquid-glass'),
       filterId: document.getElementById('liquid-glass')?.querySelector('filter')?.id ?? null,
       hasRefractClass: !!document.querySelector('.glass-refract'),
-      hasSpecular: !!document.querySelector('.glass-specular')
+      hasRim: !!document.querySelector('.lg-rim')
     }))
 
     if (chromiumRefract) {
@@ -126,15 +126,16 @@ test('藥丸折射 + specular 截圖', async () => {
       // 降級路徑:不套折射 class(@supports 擋住)= 正確 fallback
       expect(info.hasRefractClass).toBe(false)
     }
-    expect(info.hasSpecular).toBe(true)
+    // 輪廓改由 CSS 的方向性 rim light 表達;游標 specular 與彩色呼吸光暈
+    // 都已移除(見 CHANGELOG 的 Liquid Glass 改版),這裡確保它們不會回來。
+    expect(info.hasRim).toBe(true)
+    const removed = await overlay.evaluate(() => ({
+      spec: !!document.querySelector('.glass-specular'),
+      glow: getComputedStyle(document.querySelector('.dynamic-island-pill')!, '::before').content
+    }))
+    expect(removed.spec).toBe(false)
+    expect(removed.glow).not.toContain('""') // 舊的呼吸光暈 ::before 已不存在
 
-    // 注入 specular CSS 變數(模擬游標在左上 30%,40%)後截圖
-    await overlay.evaluate(() => {
-      const el = document.querySelector('.glass-specular') as HTMLElement | null
-      el?.style.setProperty('--spec-x', '30%')
-      el?.style.setProperty('--spec-y', '40%')
-      el?.style.setProperty('--spec-o', '1')
-    })
     await overlay.waitForTimeout(400)
     await overlay.screenshot({ path: 'docs/screenshots/14-pill-refraction.png' })
   } finally {

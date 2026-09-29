@@ -73,9 +73,20 @@ test('第一次使用者的完整流程', async () => {
     await overlay.waitForTimeout(1_200)
     const pill = overlay.locator('.dynamic-island-pill')
     await expect(pill).toHaveCount(1)
-    // 光暈 CSS 變數存在且非預設
-    const glow = await pill.evaluate((el) => el.style.getPropertyValue('--di-glow'))
-    expect(glow).toContain('rgba')
+    // Liquid Glass 改版後:輪廓由 CSS 的方向性 rim light 表達,
+    // 彩色呼吸光暈(--di-glow)與游標 specular 都已移除。
+    // 這裡反向錨定,確保舊的光暈層不會回來(它就是白邊的最終元凶)。
+    // lg-rim 是與 pill 同一個元素上的 class(不是子元素)
+    await expect(pill).toHaveClass(/lg-rim/)
+    const glassState = await pill.evaluate((el) => ({
+      hasDiGlowVar: el.style.getPropertyValue('--di-glow').length > 0,
+      borderTop: getComputedStyle(el).borderTopWidth,
+      hasSpecular: !!el.querySelector('.glass-specular')
+    }))
+    expect(glassState.hasDiGlowVar).toBe(false)
+    // 邊框已改為無邊框(輪廓不再靠線條定義),確認 0px
+    expect(glassState.borderTop).toBe('0px')
+    expect(glassState.hasSpecular).toBe(false)
     // no-drag 按鈕數:panic/播放/展開 = 3(穿透鈕在展開模式)
     const noDrag = await pill.evaluate((el) => el.querySelectorAll('[style*="no-drag"]').length)
     expect(noDrag).toBeGreaterThanOrEqual(3)
@@ -85,9 +96,11 @@ test('第一次使用者的完整流程', async () => {
     const ev = pill.locator('.di-event')
     await expect(ev).toBeVisible({ timeout: 6_000 })
     await expect(ev).toContainText('該你說話了')
-    // 光暈應切為事件藍
-    const glowDuring = await pill.evaluate((el) => el.style.getPropertyValue('--di-glow'))
-    expect(glowDuring).toContain('56, 189, 248')
+    // 事件期間狀態改用圖示表達(不再有光暈變數),確認搶話圖示已上色
+    const iconDuring = await ev.locator('svg').first()
+    await expect(iconDuring).toBeVisible()
+    const iconColor = await iconDuring.evaluate((el) => getComputedStyle(el).color)
+    expect(iconColor).not.toBe('rgb(255, 255, 255)')
     // 事件淡出後縮回常規內容(6s 顯示 + 0.28s 退場 + 餘裕;常規內容的標題是講稿標題)
     await expect(ev).toHaveCount(0, { timeout: 10_000 })
     await expect(pill.locator('span.font-mono')).toBeVisible({ timeout: 3_000 })

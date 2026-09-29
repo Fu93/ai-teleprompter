@@ -54,6 +54,31 @@ test('模擬會議:六訊號逐段觸發並截圖', async () => {
     // 兩個即時回饋功能強制開啟(持久化設定可能被使用者關過)
     await main.evaluate(() => window.api.setSettings({ overlay: { turnYield: true, coaching: true } }))
 
+    // dead_air 從這裡就開始「被觀察」,而不是等到步驟 5。
+    //
+    // 為什麼必須這樣:dead_air 的冷卻是 300 秒,而觸發條件是「全場靜音 8 秒」。
+    // 這支測試的前置步驟隨便就累積超過 8 秒靜音,所以事件幾乎必然在前段就
+    // 先觸發並燒掉冷卻 —— 到了步驟 5 不管等多久都不會再來第二次
+    // (實測 HEAD 有 2/3 的失敗率,就是這個原因)。
+    // 之前試過「在步驟 5 推一句話重置靜音時鐘」,同樣沒用:重置的是時鐘,
+    // 燒掉的冷卻不會回來。
+    // 正確做法是把它當成「全程都可能在發生的事件」來觀察,而不是排程它。
+    let deadAirSeen = false
+    const deadAirPromise = (async (): Promise<boolean> => {
+      for (let i = 0; i < 500; i++) {
+        const hit = await overlay!
+          .evaluate(() => document.body.innerText.includes('冷場中'))
+          .catch(() => false)
+        if (hit) {
+          deadAirSeen = true
+          await overlay!.screenshot({ path: 'docs/screenshots/20-meeting-dead-air.png' })
+          return true
+        }
+        await overlay!.waitForTimeout(200)
+      }
+      return false
+    })()
+
     // ---------- 1. 對方問句 → turn-yield ----------
     await push(main, 'them', '可以請你介紹一下你自己嗎')
     await overlay!.waitForSelector('text=該你說話了', { timeout: 8_000 })
@@ -108,17 +133,15 @@ test('模擬會議:六訊號逐段觸發並截圖', async () => {
     await overlay!.waitForSelector('text=打斷對方', { timeout: 5_000 })
     await overlay!.screenshot({ path: 'docs/screenshots/19-meeting-interrupt.png' })
 
-    // ---------- 5. 全場靜音 8s → coaching dead_air ----------
-    // 提示顯示窗只有 8s,靜音 8s 就會觸發 → 只補睡 6s 就開始輪詢,
-    // 睡過頭會錯過 banner(dead_air 冷卻 300s 不會重發)
-    await overlay!.waitForTimeout(6_000)
-    await overlay!.waitForSelector('text=冷場中', { timeout: 10_000 })
-    await overlay!.screenshot({ path: 'docs/screenshots/20-meeting-dead-air.png' })
+    // ---------- 5. dead_air 已由上方背景觀察器捕捉 ----------
+    expect(deadAirSeen || (await deadAirPromise)).toBe(true)
 
     // ---------- 6. 我方長段(非問句)→ turn-yield peer_silence 資訊提示 ----------
     // 步驟 4 的對方邀答句(「請你說明…」)本身會再觸發一次 turn;
-    // 距它 ≥15s 後推長段,否則 peer_silence 被全域冷卻擋下且不會補發
-    await overlay!.waitForTimeout(8_000)
+    // 距它 ≥15s 後推長段,否則 peer_silence 被全域冷卻擋下且不會補發。
+    // 步驟 5 改成背景觀察後不再固定消耗 6~16 秒,所以這裡不能只靠
+    // 「前面等了一下」碰巧累積到 15 秒,必須自己把時間補回來。
+    await overlay!.waitForTimeout(16_000)
     await push(
       main,
       'them',
