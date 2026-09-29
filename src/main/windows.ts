@@ -94,6 +94,10 @@ export function createOverlayWindow(): void {
     ...savedPos,
     frame: false,
     transparent: true,
+    // Windows:frameless 視窗預設帶 WS_THICKFRAME,DWM 會沿視窗矩形畫 1px 淺色邊框——
+    // 這是 CSS 怎麼調都還有「白邊」的根因(邊框由系統合成,在 web 內容之外)。
+    // thickFrame:false 移除它;resizable 仍由 electron-vite 的 transparent 路徑處理。
+    thickFrame: false,
     hasShadow: false,
     resizable: true,
     maximizable: false,

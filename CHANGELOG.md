@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### 修復（視覺）
+
+- **浮層白邊的真正根因（視窗層）**：Windows 上 frameless 視窗預設帶 `WS_THICKFRAME`，DWM 會沿視窗矩形外緣畫一圈 1px 淺色邊框——它由系統合成、在 web 內容之外，上一輪把 CSS 邊框 alpha 降到 0.07 自然蓋不掉。overlay 視窗加 `thickFrame: false` 移除系統邊框，藥丸/貼鏡/展開三種形態一併受惠。
+
 ### 修復（冷啟動/UX 巡檢）
 
 - **每場會議的時長與時間戳爆表**：`stop()` 為了停計時器先歸零 `startedAtRef`，存檔時才讀取——每場會議的 `startedAt` 永遠存成 0（1970/1/1），會後報告「時長」與 Dashboard「共 X 分鐘」累計出天文數字。改為停止當下先捕捉時間戳，歸零與存檔分用捕捉值；Dashboard 累計另加 clamp 防護既有異常資料；user-journey e2e 補時長數值範圍回歸鎖（先前只驗 chips 存在，放過了這個 bug）。
