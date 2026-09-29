@@ -114,7 +114,7 @@ export default function OverlayApp(): JSX.Element {
         ? '該你說話了 — 對方在等你回答'
         : '對方已停頓 — 該接話了'
 
-  // ---- 即時教練(Phase B+):語速過快/填充詞/損話/冷場/獨白過長 ----
+  // ---- 即時教練(Phase B+):語速過快/填充詞/搶話/冷場/獨白過長 ----
   const { hint: coachingHint } = useCoaching(o?.coaching ?? true)
 
   const controlsRef = useRef(controls)

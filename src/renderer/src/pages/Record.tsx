@@ -47,6 +47,9 @@ export default function Record(): JSX.Element {
   const [title, setTitle] = useState('')
   const [model, setModel] = useState<ModelState>({ status: 'none', progress: 0, file: '' })
   const [saving, setSaving] = useState(false)
+  /** stop() 的多步 await(等在飛轉錄落地、寫 DB)期間擋再按:
+   *  雙擊會重複跑收帳/存檔流程(重複 toast、重複 build report、第二次可能存進空段落) */
+  const stoppingRef = useRef(false)
   const [sessions, setSessions] = useState<MeetingSession[]>([])
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [aiBusyId, setAiBusyId] = useState<number | null>(null)
@@ -246,56 +249,65 @@ export default function Record(): JSX.Element {
   }
 
   const stop = async (): Promise<void> => {
-    setRecording(false)
-    // 歸零讓 elapsed interval 停止寫入(否則每 500ms 空轉 re-render)
-    startedAtRef.current = 0
-    // 最後一段話此刻多半還在 segmenter 的靜音判定窗裡(750ms):
-    // flush 送出的轉錄是 async,不等它就存檔會把使用者的最後一句話丟掉。
-    // 記住停止當下的數量,等所有在飛轉錄完成(或逾時)再收帳。
-    const pendingAtStop = segsRef.current.length
-    stopAll()
-    await Promise.race([
-      (async () => {
-        for (let i = 0; i < 40 && segsRef.current.length === pendingAtStop; i++) {
-          await new Promise((r) => setTimeout(r, 100))
-        }
-        // 再給一小段緩衝,若期間又進帳了段落,同樣等它安定
-        for (let i = 0; i < 30 && Date.now() - lastSegmentAtRef.current < 800; i++) {
-          await new Promise((r) => setTimeout(r, 100))
-        }
-      })(),
-      new Promise((r) => setTimeout(r, 4_000))
-    ])
-    if (segsRef.current.length > 0) {
-      setSaving(true)
-      try {
-        const startedAt = startedAtRef.current
-        const segments = segsRef.current
-        // 會話量化報告:與 session 一起存,供 Dashboard 趨勢使用;
-        // 併入會議期間的 coaching 觸發計數,形成改進閉環
-        const report = buildSessionReport(segments, {
-          durationSec: (Date.now() - startedAt) / 1000
-        })
+    if (stoppingRef.current || saving) return
+    stoppingRef.current = true
+    try {
+      setRecording(false)
+      // 在歸零之前捕捉:下面存檔要用的就是這個值。
+      // (曾把歸零放進場、存檔才讀 ref——每場會議的 startedAt 永遠存成 0,
+      //  時長報告與 Dashboard 累計全部爆表)
+      const startedAt = startedAtRef.current
+      // 歸零讓 elapsed interval 停止寫入(否則每 500ms 空轉 re-render)
+      startedAtRef.current = 0
+      // 最後一段話此刻多半還在 segmenter 的靜音判定窗裡(750ms):
+      // flush 送出的轉錄是 async,不等它就存檔會把使用者的最後一句話丟掉。
+      // 記住停止當下的數量,等所有在飛轉錄完成(或逾時)再收帳。
+      const pendingAtStop = segsRef.current.length
+      stopAll()
+      await Promise.race([
+        (async () => {
+          for (let i = 0; i < 40 && segsRef.current.length === pendingAtStop; i++) {
+            await new Promise((r) => setTimeout(r, 100))
+          }
+          // 再給一小段緩衝,若期間又進帳了段落,同樣等它安定
+          for (let i = 0; i < 30 && Date.now() - lastSegmentAtRef.current < 800; i++) {
+            await new Promise((r) => setTimeout(r, 100))
+          }
+        })(),
+        new Promise((r) => setTimeout(r, 4_000))
+      ])
+      if (segsRef.current.length > 0) {
+        setSaving(true)
         try {
-          report.coachingCounts = await window.api.coachingStats()
-        } catch {
-          // 計數不可得時不影響報告本體
+          const segments = segsRef.current
+          // 會話量化報告:與 session 一起存,供 Dashboard 趨勢使用;
+          // 併入會議期間的 coaching 觸發計數,形成改進閉環
+          const report = buildSessionReport(segments, {
+            durationSec: Math.min((Date.now() - startedAt) / 1000, 24 * 60 * 60)
+          })
+          try {
+            report.coachingCounts = await window.api.coachingStats()
+          } catch {
+            // 計數不可得時不影響報告本體
+          }
+          setLastReport(report)
+          await db.sessions.add({
+            title: titleRef.current.trim() || `會議 ${formatDateTime(startedAt)}`,
+            startedAt,
+            endedAt: Date.now(),
+            segments,
+            report
+          })
+          await refreshSessions()
+        } finally {
+          setSaving(false)
         }
-        setLastReport(report)
-        await db.sessions.add({
-          title: titleRef.current.trim() || `會議 ${formatDateTime(startedAt)}`,
-          startedAt,
-          endedAt: Date.now(),
-          segments,
-          report
-        })
-        await refreshSessions()
-      } finally {
-        setSaving(false)
+      } else {
+        // 0 段落停止:不留「看起來存了但其實什麼都沒有」的沉默,給使用者明確回饋
+        toast.info('這次沒有偵測到語音,未建立會議紀錄')
       }
-    } else {
-      // 0 段落停止:不留「看起來存了但其實什麼都沒有」的沉默,給使用者明確回饋
-      toast.info('這次沒有偵測到語音,未建立會議紀錄')
+    } finally {
+      stoppingRef.current = false
     }
   }
 

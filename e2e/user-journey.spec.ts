@@ -164,6 +164,17 @@ test('第一次使用者的完整流程', async () => {
     await expect(main.locator('button', { hasText: '開始聆聽' })).toBeVisible({ timeout: 10_000 })
     // 會後報告出現且有 coaching chips(搶話:them 段後 me 段接上)
     await expect(main.locator('text=會後報告')).toBeVisible({ timeout: 5_000 })
+    // 時長必須是實錄的幾秒鐘,不是天文數字——曾因 stop() 先歸零 startedAtRef
+    // 才讀取,每場會議的 startedAt 存成 0、時長爆表(回歸鎖)
+    const reportText = await main.evaluate(() => {
+      const el = Array.from(document.querySelectorAll('.card')).find((c) => c.textContent?.includes('會後報告'))
+      return el?.textContent ?? ''
+    })
+    const durMatch = reportText.match(/時長\s*(\d+):(\d{2})/)
+    expect(durMatch).toBeTruthy()
+    const durSec = Number(durMatch![1]) * 60 + Number(durMatch![2])
+    expect(durSec).toBeGreaterThan(0)
+    expect(durSec).toBeLessThanOrEqual(120)
     const chips = await main.evaluate(() => document.body.textContent ?? '')
     if (!chips.includes('搶話')) throw new Error('會後報告沒有搶話 chip: ' + chips.slice(chips.indexOf('會後報告'), chips.indexOf('會後報告') + 400))
     mockSrv.close()

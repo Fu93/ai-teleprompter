@@ -271,7 +271,7 @@ export default function SettingsPage({
         />
         <Switch
           label="即時教練"
-          hint="會議/練習轉錄中偵測語速過快、填充詞過多、損話、冷場、獨白過長，浮層即時提醒（語速基準取自個人化校準）"
+          hint="會議/練習轉錄中偵測語速過快、填充詞過多、搶話、冷場、獨白過長，浮層即時提醒（語速基準取自個人化校準）"
           checked={o.coaching}
           onChange={(v) => patchO({ coaching: v })}
         />
@@ -665,7 +665,7 @@ export default function SettingsPage({
         </div>
       </Section>
 
-      <Section title="疑難排解" desc="遇到問題時，日誌是回報與自障的第一手資料">
+      <Section title="疑難排解" desc="遇到問題時，日誌是回報與自查的第一手資料">
         <button
           className="btn-outline text-xs"
           onClick={() => void window.api.openLogDir()}

@@ -190,7 +190,12 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
               <div className="text-[10px] text-ink-400">會議場數</div>
               <div className="mt-1 text-2xl font-semibold">{sessions.length}</div>
               <div className="text-[10px] text-ink-400">
-                共 {Math.round(sessions.reduce((a, s) => a + (s.report?.durationSec ?? 0), 0) / 60)} 分鐘
+                共 {Math.round(
+                  Math.min(
+                    sessions.reduce((a, s) => a + (s.report?.durationSec ?? 0), 0),
+                    24 * 60 * 60 * 60
+                  ) / 60
+                )} 分鐘
               </div>
             </div>
             <div>

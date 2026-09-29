@@ -2,6 +2,7 @@ import type { JSX } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronRight,
+  Download,
   GraduationCap,
   Loader2,
   Mic,
@@ -44,6 +45,15 @@ export default function Practice(): JSX.Element {
   const startingRef = useRef(false)
   const [level, setLevel] = useState(0)
   const [busy, setBusy] = useState<string | null>(null) // 'questions' | 'feedback' | 'overall'
+  /** 首次載入本地模型時的下載進度(Record/Calibration 都有進度條,唯獨 Practice 缺:
+   *  新使用者按「開始回答」只看到轉圈數分鐘,會以為卡死) */
+  const [modelDL, setModelDL] = useState<{ progress: number; file: string } | null>(null)
+  /** finishAnswer/finishRun 的多步 await(等轉錄落地、AI 呼叫、寫 DB)期間擋再按:
+   *  雙擊會重複送 AI 評分/重複寫入練習紀錄(按鈕 disabled 依賴 re-render,同 tick 內擋不住) */
+  const finishingRef = useRef(false)
+  const finishingRunRef = useRef(false)
+  /** 下一題雙擊會連跳兩題(setQIndex updater 在同 tick 串聯兩次) */
+  const advancingRef = useRef(false)
   const [run, setRun] = useState<PracticeRun | null>(null)
   const [history, setHistory] = useState<PracticeRun[]>([])
 
@@ -80,10 +90,23 @@ export default function Practice(): JSX.Element {
   }, [])
 
   const ensureWhisper = async (): Promise<void> => {
-    if (!whisperRef.current) whisperRef.current = new WhisperClient()
+    if (!whisperRef.current) {
+      const client = new WhisperClient()
+      client.onProgress = (p) => {
+        if (p.status === 'progress' || p.status === 'initiate') {
+          setModelDL((m) => ({ progress: p.progress ?? m?.progress ?? 0, file: p.file ?? m?.file ?? '' }))
+        }
+      }
+      whisperRef.current = client
+    }
     const client = whisperRef.current
     if (!client.isLoaded()) {
-      await client.load(modelKey)
+      setModelDL({ progress: 0, file: '' })
+      try {
+        await client.load(modelKey)
+      } finally {
+        setModelDL(null)
+      }
     }
   }
 
@@ -206,6 +229,16 @@ export default function Practice(): JSX.Element {
   }
 
   const finishAnswer = async (): Promise<void> => {
+    if (finishingRef.current) return
+    finishingRef.current = true
+    try {
+      await finishAnswerInner()
+    } finally {
+      finishingRef.current = false
+    }
+  }
+
+  const finishAnswerInner = async (): Promise<void> => {
     const beforeCount = segsRef.current.length
     stopListening()
     // 連續說話時 VAD 沒有靜音間隙,整段回答的轉錄都在 segmenter.flush()(async)才送出;
@@ -272,6 +305,16 @@ export default function Practice(): JSX.Element {
   }
 
   const finishRun = async (): Promise<void> => {
+    if (finishingRunRef.current) return
+    finishingRunRef.current = true
+    try {
+      await finishRunInner()
+    } finally {
+      finishingRunRef.current = false
+    }
+  }
+
+  const finishRunInner = async (): Promise<void> => {
     stopSpeaking()
     let overall = ''
     if (settings) {
@@ -308,6 +351,11 @@ export default function Practice(): JSX.Element {
   }
 
   const nextQuestion = (): void => {
+    if (advancingRef.current) return
+    advancingRef.current = true
+    setTimeout(() => {
+      advancingRef.current = false
+    }, 300)
     if (qIndex + 1 >= questions.length) {
       void finishRun()
     } else {
@@ -465,6 +513,21 @@ export default function Practice(): JSX.Element {
             結束練習
           </button>
         </div>
+
+        {/* 首次使用:本地模型下載進度(與 Record/Calibration 同款) */}
+        {modelDL && (
+          <div className="card mb-4 p-4">
+            <div className="mb-2 flex items-center gap-2 text-xs text-ink-300">
+              <Download size={13} /> 下載 Whisper {modelKey} 模型（首次需要，之後會快取）
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-ink-800">
+              <div className="h-full bg-accent-500 transition-[width]" style={{ width: `${modelDL.progress}%` }} />
+            </div>
+            <div className="mt-1.5 font-mono text-[10px] text-ink-400">
+              {modelDL.file} {modelDL.progress.toFixed(0)}%
+            </div>
+          </div>
+        )}
 
         {/* 題目與回答 */}
         <div className="card mb-4 min-h-0 flex-1 overflow-y-auto p-6">

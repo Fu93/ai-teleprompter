@@ -15,7 +15,7 @@ export interface OverlaySettings {
   glass: boolean
   /** turn-yield 提示:對方講完問句時浮層顯示「該你說話了」(Phase B) */
   turnYield: boolean
-  /** 即時教練:語速過快/填充詞/損話/冷場/獨白過長時浮層提醒 */
+  /** 即時教練:語速過快/填充詞/搶話/冷場/獨白過長時浮層提醒 */
   coaching: boolean
   fontSize: number
   lineHeight: number

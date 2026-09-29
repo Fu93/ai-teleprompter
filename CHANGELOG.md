@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### 修復（冷啟動/UX 巡檢）
+
+- **每場會議的時長與時間戳爆表**：`stop()` 為了停計時器先歸零 `startedAtRef`，存檔時才讀取——每場會議的 `startedAt` 永遠存成 0（1970/1/1），會後報告「時長」與 Dashboard「共 X 分鐘」累計出天文數字。改為停止當下先捕捉時間戳，歸零與存檔分用捕捉值；Dashboard 累計另加 clamp 防護既有異常資料；user-journey e2e 補時長數值範圍回歸鎖（先前只驗 chips 存在，放過了這個 bug）。
+- **停止/完成按鈕防重入（三頁同族補完）**：上一輪修了「啟動」按鈕家族，這輪補齊「收尾」家族——Record「停止並儲存」雙擊會重複收帳/存檔、Practice「完成回答，取得反饋」與「查看總評」雙擊會重複送 AI 評分/重複寫入紀錄、「下一題」雙擊會連跳兩題；全數補 ref 防重入。
+- **面試練習首次模型下載無進度**：Record/Calibration 都有 Whisper 下載進度條，唯獨 Practice 按「開始回答」後只轉圈數分鐘（~145MB），新使用者會以為卡死；補上同款進度 UI。
+- **錯字**：「損話」→「搶話」（設定頁提示、型別註解 ×2）、「自障」→「自查」（疑難排解區塊說明）。
+
 ### 新增（公開發佈準備）
 
 - **崩潰與錯誤日誌落盤**：main 進程的 uncaughtException/unhandledRejection 與 app 啟動事件寫入 `%APPDATA%/ai-teleprompter/logs/main.log`（1MB 輪替、保留 3 檔），renderer 的 window error/unhandledrejection 經 IPC 落同一份檔案——公開發佈後唯一可診斷的回饋來源。
