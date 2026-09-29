@@ -752,8 +752,8 @@ export default function OverlayApp(): JSX.Element {
         <RescueCard phase={panicPhase} rescue={rescue} errorMsg={errorMsg} onDismiss={dismissRescue} />
       )}
 
-      {/* 進度條 */}
-      <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[3px] bg-white/5">
+      {/* 進度條(軌道用暗色:底部 2px 亮軌在深色內容上讀作白邊)*/}
+      <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[3px] bg-black/30">
         <div
           className="h-full bg-gradient-to-r from-accent-400 to-accent-600 transition-[width] duration-150"
           style={{ width: `${shownProgress * 100}%` }}
