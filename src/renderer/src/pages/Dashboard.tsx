@@ -6,6 +6,7 @@ import type { MeetingSession, PracticeRun, Script } from '@shared/types'
 import { formatDateTime } from '../lib/utils'
 import { useSettings } from '../lib/store'
 import { analyzePracticeRun } from '../lib/session-intelligence'
+import { PreflightCard } from '../components/PreflightCard'
 
 interface Props {
   onNavigate: (page: 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings') => void
@@ -121,6 +122,16 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
       <div className="mb-8">
         <h1 className="text-2xl font-bold">歡迎回來</h1>
         <p className="mt-1 text-sm text-ink-300">三大模式，隨時待命。</p>
+      </div>
+
+      {/* 第一次使用前就把「這台電腦還差什麼」講出來。
+          為什麼在總覽頁而不是入口的強制精靈:`ollama pull qwen2.5:7b` 這句話
+          原本只在**失敗之後**才出現,而這是個桌面 App —— 看到一句要他在終端機
+          打的指令、而前面沒有任何說明,他就再也不會打開了。
+          而擋路的精靈會讓只想看浮層長什麼樣的人永遠進不去,所以這裡是提示、
+          不是關卡。判斷在 lib/preflight.ts。 */}
+      <div className="mb-5">
+        <PreflightCard variant="compact" onNavigate={onNavigate} />
       </div>
 
       <div className="grid grid-cols-3 gap-4">

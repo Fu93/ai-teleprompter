@@ -192,6 +192,8 @@ export interface Api {
   onCloseRequested(cb: (blocker: string) => void): () => void
   /** 在檔案總管中顯示檔案 */
   revealPath(path: string): Promise<void>
+  /** 用系統瀏覽器開外部連結(只准 http/https,見 IPC.OpenExternal 的註解) */
+  openExternal(url: string): Promise<boolean>
   /** renderer 錯誤落盤到 main 日誌(產品化:崩潰回報的最低可行形式) */
   logFromRenderer(level: 'ERROR' | 'WARN' | 'INFO', message: string): Promise<void>
   /** 開啟記錄資料夾(設定頁用) */

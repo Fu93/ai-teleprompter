@@ -17,6 +17,7 @@ import type { AppSettings } from '@shared/types'
 import type { SceneSummary } from '@shared/api'
 import { Segmented } from '../components/Segmented'
 import { BackupSection } from '../components/BackupSection'
+import { PreflightCard } from '../components/PreflightCard'
 
 const SCENE_LABELS_ZH: Record<string, string> = {
   interview: '面試',
@@ -476,6 +477,16 @@ export default function SettingsPage({
             </div>
           </div>
         )}
+      </Section>
+
+      <Section
+        title="開始之前"
+        desc="這台電腦還差什麼。AI 模型與語音辨識都備妥之前,練習與摘要會失敗 —— 在那之前先講清楚。"
+      >
+        {/* 「都準備好了」那句話由 PreflightCard 自己畫(見該檔對 visible.length===0
+            的處理):本地 STT 的下載提示永遠存在,所以讓呼叫端另外判斷「要不要顯示
+            已就緒」會讓兩句互相矛盾的話並排。 */}
+        <PreflightCard variant="full" onNavigate={onNavigate} />
       </Section>
 
       <Section title="AI 助理" desc="面試練習出題與反饋、會議摘要生成">

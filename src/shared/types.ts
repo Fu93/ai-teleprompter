@@ -209,6 +209,17 @@ export const IPC = {
   OverlaySnapCorner: 'overlay:snap-corner',
   OverlayRecenter: 'overlay:recenter',
   RevealPath: 'util:reveal-path',
+  /**
+   * 用系統瀏覽器開一個外部連結。
+   *
+   * 為什麼需要:setWindowOpenHandler 一律 deny(見 windows.ts 的 hardenWebContents),
+   * 所以 renderer 沒有任何方式讓使用者點到一張下載頁。而「第一次使用要裝 Ollama」
+   * 這件事不可能不給連結 —— 沒有連結,使用者只能自己猜網址或放棄。
+   *
+   * 只准 http/https:renderer 傳 file:// 或 javascript: 進來時,
+   * 等於讓 web 內容開啟本機檔案或注入腳本,那不是「開連結」。
+   */
+  OpenExternal: 'util:open-external',
   ExportFile: 'util:export-file',
   /**
    * 讀入一個 JSON 檔(資料備份的還原路徑)。

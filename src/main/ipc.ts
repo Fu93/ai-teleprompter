@@ -441,6 +441,22 @@ export function registerIpc(): void {
     if (path && typeof path === 'string') shell.showItemInFolder(path)
   })
 
+  // ---- 開外部連結(只准 http/https)----
+  ipcMain.handle(IPC.OpenExternal, async (_e, url: string) => {
+    if (typeof url !== 'string') return false
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return false
+    }
+    // 只准 http/https。file:// 等於開本機檔案,javascript: 等於注入腳本,
+    // data: 可以拿來做 phishing 頁面。winston 這裡寧可拒絕得比需要的更嚴。
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+    await shell.openExternal(parsed.toString())
+    return true
+  })
+
   // ---- 崩潰回報基礎:renderer 錯誤落盤 + 開啟記錄資料夾 ----
   ipcMain.handle(IPC.LogFromRenderer, (_e, args: { level: 'ERROR' | 'WARN' | 'INFO'; message: string }) => {
     logFromRenderer(args.level, String(args.message).slice(0, 4000))

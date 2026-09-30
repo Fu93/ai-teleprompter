@@ -87,6 +87,7 @@ const api: Api = {
   cancelClose: () => ipcRenderer.invoke(IPC.AppCancelClose),
   onCloseRequested: (cb) => on<string>(IPC.AppCloseRequested, cb),
   revealPath: (path: string) => ipcRenderer.invoke(IPC.RevealPath, path),
+  openExternal: (url: string) => ipcRenderer.invoke(IPC.OpenExternal, url),
   exportFile: (args) => ipcRenderer.invoke(IPC.ExportFile, args),
   importJsonFile: (args) => ipcRenderer.invoke(IPC.ImportJsonFile, args),
   logFromRenderer: (level, message) => ipcRenderer.invoke(IPC.LogFromRenderer, { level, message }),
