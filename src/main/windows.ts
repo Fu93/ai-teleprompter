@@ -4,6 +4,7 @@ import os from 'os'
 import { IPC } from '@shared/types'
 import { EXPANDED_MIN, overlayShapeDesignSize, overlayShapeMin, overlayShapeOf } from '@shared/overlayShapes'
 import { saveSettings } from './settings'
+import { logMain } from './logging'
 import { broadcastSettings, state } from './state'
 
 const isDev = !app.isPackaged
@@ -15,6 +16,42 @@ export function hardenWebContents(win: BrowserWindow): void {
     const devBase = process.env['ELECTRON_RENDERER_URL']
     const allowed = isDev && devBase ? url.startsWith(devBase) : url.startsWith('file://')
     if (!allowed) e.preventDefault()
+  })
+}
+
+/**
+ * renderer 進程死掉時的處理。**先前完全沒有這個監聽。**
+ *
+ * 為什麼這件事對「明天要給人用」是關鍵的:
+ *   `window.onerror` 與 ErrorBoundary 都只管得到「renderer 活著但畫面壞了」。
+ *   真正會讓整個介面變成一片空白、而且不會自我恢復的,是進程本身死掉:
+ *   GPU 崩潰(reason 'crashed')、被 OOM killer 殺掉('oom')、'killed'。
+ *   在那之前,使用者的體驗是「視窗還在,但畫面卡住/全白,而且按什麼都沒反應」,
+ *   開發者這邊連一行日誌都收不到。
+ *
+ * 處置:一律落盤 reason,然後讓主視窗重新載入。重新載入是對的選擇而不是權宜,
+ *   因為 renderer 的記憶體狀態在這種情況下本來就不可能重用,而已存進
+ *   IndexedDB 的內容不受影響 —— 這是這個 App 的資料模型給的紅利。
+ *
+ * 'clean-exit' 與 'application-exit' 不重載:那是 App 自己在正常關閉。
+ *
+ * 為什麼用 Set 而不是直接比對 reason:Electron 的 RenderProcessGoneReason 聯集
+ * 會隨版本增刪(這個版本就沒有 'application-exit'),寫死比較會在升級後變成
+ * TS2367 而編譯不過。用 Set<string> 則兩邊都在,但「哪些 reason 算正常關閉」
+ * 這件事仍然寫在程式裡、而不是散在型別定義中。
+ */
+const BENIGN_GONE_REASONS = new Set<string>(['clean-exit', 'application-exit'])
+
+function watchRendererHealth(win: BrowserWindow, label: string): void {
+  win.webContents.on('render-process-gone', (_e, details) => {
+    if (BENIGN_GONE_REASONS.has(details.reason)) return
+    logMain('ERROR', `${label} renderer 進程消失:reason=${details.reason} exitCode=${details.exitCode}`)
+    if (win.isDestroyed()) return
+    // 主視窗與浮層用同一個處置。兩者差別只在於誰需要被使用者看見:
+    // 浮層掛掉時主視窗還活著,重載是無感的;主視窗掛掉時使用者只會看到一片空白,
+    // 而 state.closeBlocker 還留在記憶體裡 —— 重新載入後的錯誤邊界讀得到它,
+    // 於是復原畫面能說出「你剛剛正在錄音」而不是一句通用話。
+    win.reload()
   })
 }
 
@@ -170,6 +207,7 @@ export function createMainWindow(): BrowserWindow {
     if (!win.isDestroyed()) win.show()
   })
   hardenWebContents(win)
+  watchRendererHealth(win, 'main')
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -375,6 +413,7 @@ export function createOverlayWindow(): void {
   state.overlayWindow.setAlwaysOnTop(true, 'screen-saver')
   applyOverlayWindowSettings()
   hardenWebContents(state.overlayWindow)
+  watchRendererHealth(state.overlayWindow, 'overlay')
 
   state.overlayWindow.on('hide', () => notifyOverlayVisibility(false))
   state.overlayWindow.on('show', () => notifyOverlayVisibility(true))

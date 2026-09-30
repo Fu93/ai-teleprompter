@@ -36,6 +36,26 @@ function report(): void {
 }
 
 /**
+ * 同步讀取「此刻會丟什麼」。
+ *
+ * 為什麼需要同步版本(而且不能走 IPC):
+ *   ErrorBoundary 的復原畫面要回答「你剛剛正在錄音 / 講稿沒存」。它若在
+ *   `componentDidCatch` 之後才去問 main,拿到的一定是 null —— 因為崩潰時
+ *   useCloseGuard 的 effect cleanup 會跟著跑,而 cleanup 的動作正是
+ *   `report()` 把它清成 null。**這不是猜的:e2e 實測過,走 IPC 讀回來是空的。**
+ *
+ *   而 componentDidCatch 執行的當下,`reported` 還holding著真正的值。所以正確
+ *   的做法是同步取,存在邊界的 state 裡,而不是事後再去查一個已經被清掉的來源。
+ *
+ * 這裡刻意不導出 currentBlocker(會即時問所有守衛):那在 cleanup 跑完之後
+ * 同樣是 null。`reported` 是「上一次回報給 main 的值」,它的語意正好是
+ * 「崩潰發生時,App 認為自己手上有什麼」。
+ */
+export function peekCloseBlocker(): string | null {
+  return reported
+}
+
+/**
  * React 端的註冊方式。blocker 為 null 表示目前沒有阻擋。
  *
  * 用 hook 而不是叫呼叫端自己寫 useEffect,是因為「取消註冊」很容易寫錯
