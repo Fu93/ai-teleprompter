@@ -308,7 +308,12 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
                 {item.severity !== 'blocking' && (
                   <button
                     type="button"
-                    className="text-[11px] text-ink-400 underline-offset-2 hover:text-ink-300 hover:underline"
+                    // 28px 高的命中區。這顆鈕原本只有 17px 高(純文字 + 11px 字級),
+                    // 被 audit:ui 的 small-tap-target 報出來 —— 而且它是在 P0-C
+                    // 提交之後才被量到的,因為那一輪我只跑了 audit:states,
+                    // 漏了另外兩支稽核。可點擊的文字不給 padding 是最容易漏的那種。
+                    // 用 -my-1.5 吸收垂直方向的視覺膨脹,免得整張卡片變高。
+                    className="-my-1.5 flex h-7 items-center px-1.5 text-[11px] text-ink-400 underline-offset-2 hover:text-ink-300 hover:underline"
                     onClick={() => dismiss(item)}
                   >
                     知道了,不用再提醒

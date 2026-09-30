@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import {
   clampPillScale,
   overlayShapeDesignSize,
@@ -6,6 +8,7 @@ import {
   pillFitOf,
   pillMinOf,
   pillSizeOf,
+  PILL_BASE,
   PILL_BUDGET,
   PILL_CORE_W,
   PILL_KEYWORD_CHAR_W,
@@ -214,5 +217,71 @@ describe('overlayShapeMin / overlayShapeDesignSize', () => {
     })
     expect(overlayShapeDesignSize({ compact: false, lensMode: true })).toEqual({ w: 420, h: 170 })
     expect(overlayShapeDesignSize({ compact: false, lensMode: false })).toBeNull()
+  })
+})
+
+
+
+/* ── rim 遮罩的 cap 寬度必須跟著幾何常數走 ──
+   CSS 裡 .dynamic-island-pill.lg-rim::after 用的是一個寫死的百分比
+   (--rim-cap),它決定 rim 只畫在兩端弧上、而上下直邊不畫。遮罩蓋錯範圍
+   的症狀很隱晦:rim 蓋到直邊上,膠囊就讀成「有白邊的圓角長方形」——
+   而那正是這條規則要防的事。
+
+   為什麼是百分比而不是 px:寬與高同時乘上 pillScale,所以 (h/2)/w 在每個倍率
+   下都相同(0.8× → 19.2/256、1.00× → 24/320、1.3× → 31.2/416,全部 7.5%)。
+   所以百分比是唯一正確的表示法 —— 而「唯一正確」正是它需要被釘住的原因。
+   它在 CSS 與這支測試裡各寫一份,漂移時只會安靜地蓋錯範圍。
+   (CSS 沒辦法引用 TS 常數,所以只能靠這條測試。) */
+describe('rim 遮罩的 cap 寬度', () => {
+  // __tests__ → lib → src → renderer → src → repo root
+  const css = readFileSync(join(__dirname, '..', '..', '..', '..', '..', 'src', 'renderer', 'src', 'styles', 'global.css'), 'utf-8')
+
+  const declared = (): number => {
+    const m = css.match(/--rim-cap:\s*([0-9.]+)%/)
+    if (!m) throw new Error('global.css 裡找不到 --rim-cap —— rim 遮罩被刪掉了,藥丸的直邊又會被畫上 rim')
+    return Number(m[1])
+  }
+
+  it('等於 (PILL_BASE.h / 2) / PILL_BASE.w', () => {
+    expect(declared()).toBeCloseTo((PILL_BASE.h / 2 / PILL_BASE.w) * 100, 2)
+  })
+
+  it('每個 pillScale 下,cap 都落在羽化帶內(而不是要求它精確)', () => {
+    // 這條測試抓到過我自己的錯誤。CSS 註解原本宣稱「所有倍率都是 7.5%」——
+    // 那在 1.00× 才精確。pillSizeOf 會把高度 Math.round 到整數,所以:
+    //   0.8×  → 256×38 → (38/2)/256 = 7.42%
+    //   1.00× → 320×48 → 7.50%
+    //   1.3×  → 416×62 → 7.21%
+    // 差最多 0.29%(1.3× 處 1.2px)。
+    //
+    // 為什麼那不重要:羽化帶本身是 2.5% 的寬度(320px 時 8px、416px 時 10.4px),
+    // 比那 1.2px 大一個數量級。cap 只要落在羽化帶裡,rim 的收尾就看不出來。
+    // 所以正確的不變式是「cap ⊂ 羽化範圍」,不是「cap 等於某個百分比」——
+    // 要求後者會逼出一個在某個倍率下明顯歪掉的數字。
+    for (const s of [PILL_SCALE_MIN, 1, PILL_SCALE_MAX]) {
+      const size = pillSizeOf(s)
+      const exact = (size.h / 2 / size.w) * 100
+      const drift = Math.abs(declared() - exact)
+      expect(drift, `${s}x 的 cap 偏離精確半圓 ${drift.toFixed(2)}%,超過羽化帶的 2.5%`).toBeLessThan(2.5)
+    }
+  })
+
+  it('cap 必須小於半個寬度,否則遮罩會把中間全部蓋掉', () => {
+    expect(declared()).toBeLessThan(50)
+  })
+
+  it('遮罩規則存在,選擇器只掛在藥丸上(展開/貼鏡的 rim 不受影響)', () => {
+    expect(css).toContain('.dynamic-island-pill.lg-rim::after')
+    expect(css).toMatch(/-webkit-mask-image:[\s\S]*?mask-image:/)
+  })
+
+  it('藥丸底色是平的 —— 受光只能來自 rim 層,否則直邊會被頂部高光框住', () => {
+    // 深色桌布上,rgba(255,255,255,0.06) 的頂部漸層疊在內部 11 上會變成 25,
+    // lift 2.3:一條橫貫 272px 的亮線,而 272px 是寬度的 85%。
+    const m = css.match(/\.glass-pill\s*\{([\s\S]*?)\}/)
+    expect(m, '找不到 .glass-pill 規則').toBeTruthy()
+    expect(m![1]).toMatch(/background:\s*rgba\(8,\s*10,\s*16,\s*0\.78\)/)
+    expect(m![1]).not.toContain('linear-gradient')
   })
 })

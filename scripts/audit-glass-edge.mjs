@@ -78,13 +78,43 @@ async function edgeProfile(path) {
   }
 }
 
-/** 一條剖面線:外緣 2px、相鄰 2-4px、內部中央 30% */
+/**
+ * 一條剖面線的判定。
+ *
+ * **量測位置改過一次,這是重點。** 舊版只看最外 2px,並把 2~5px 當作「參考基準」
+ * (`hard = edge / near`)。而實際缺陷恰好在那個「基準」裡:.lg-rim::after 是
+ * 「1.5px 暗環 + 上緣輪廓光」兩段相鄰的 inset box-shadow,量出來是
+ * `[40,39,38, 80,78,76]` —— 外緣 2px 是**暗的**(39,過 EDGE_CAP),
+ * 亮帶在 3~5px(80,而 80 **已經超過 EDGE_CAP=70**)。
+ * 舊版於是報「全部通過」:它量的是暗環,而把亮帶當成「邊緣不得超過的基準」。
+ *
+ * 現在改成:取最外 6 device px(在 2x DPI 下正好是暗環 + 亮帶)的**最大值**,
+ * 與內部比較 —— 那就是使用者看到的「白邊」的全部。
+ *
+ * 為什麼 6 而不是 2:2px 落在暗環裡,量不到亮帶。為什麼是 max 而不是 mean:
+ * 缺陷是一條窄帶,取平均會被同一帶裡的暗像素拉回來。
+ *
+ * dip(暗環深度)只記錄不判定 —— 暗環是刻意的,它的職責是壓住白桌布上的外洩
+ * (見 global.css 的 .lg-rim 註解)。把它判成缺陷會逼人移除一個正確的設計。
+ */
+const BAND_PX = 6
+
 function summarize(line) {
-  const n = line.length
   const edge = avg(line.slice(0, 2))
-  const near = avg(line.slice(2, 5))
   const inner = innerOf(line)
-  return { edge, near, inner, hard: edge / near }
+  const band = line.slice(0, BAND_PX)
+  const bmax = Math.max(...band)
+  const bmin = Math.min(...band)
+  return {
+    edge,
+    inner,
+    /** 帶內最亮 vs 內部。這是「白邊」的可斷言量。 */
+    lift: bmax / inner,
+    /** 帶內最暗 vs 內部。只記錄。 */
+    dip: inner / bmin,
+    bandMax: bmax,
+    band: band.map((v) => Math.round(v))
+  }
 }
 
 const avg = (a) => a.reduce((s, v) => s + v, 0) / a.length
@@ -94,12 +124,44 @@ const innerOf = (a) => avg(a.slice(Math.floor(a.length * 0.35), Math.ceil(a.leng
 const results = []
 const BACKDROPS = [
   ['dark', '#0b0d12'],
-  ['white', '#ffffff']
+  ['white', '#ffffff'],
+  // 中灰是**新增**的,而它不是湊數:藥丸的底色是 rgba(8,10,16,0.78),
+  // 深色桌布上內部只有 11,於是 rim 的相對亮度被放大(實測深底 lift 2.87、
+  // 白底只有 1.24)。只測純白桌布會漏掉最嚴重的那一種;純白是白邊的傳統
+  // 測試場,但這個缺陷的嚴重程度取決於底色與桌布的對比,不是桌布本身多白。
+  ['gray', '#808080']
 ]
 /** 邊緣亮度上限(0-255)。真正的白邊是 150+ 的刺眼亮線。 */
 const EDGE_CAP = 70
-/** 硬亮線判定:最外 2px 不得比 2~4px 帶亮超過這個倍數 */
-const HARD_LINE_RATIO = 1.35
+/**
+ * 帶內最亮不得比內部亮超過這個倍數。**分形態兩個門檻。**
+ *
+ * 設計原則(就是這次修改的依據):rim 的強度應該跟著**曲率**走。
+ *   - 膠囊(長寬比 > 6):上下兩條直邊合起來佔輪廓的 85%(272/320),
+ *     沿著它們畫 rim 等於在整個形狀最長的地方畫最重的線 —— 那就是
+ *     「有白邊的圓角長方形」。所以膠囊的直邊必須是平的。
+ *   - 面板:直邊本來就是它的輪廓(大面板的邊就是一條直線),帶一點 rim 是
+ *     正確的材質表現。
+ *
+ * 實測值(全部來自像素量測):
+ *   藥丸 修前 深底 2.87 / 白底 1.24
+ *   藥丸 只改底色、沒加遮罩 深底 1.75  ← 這就是遮罩該抓的東西
+ *   藥丸 修後 三種桌布 1.00,弧上 1.03~1.19
+ *   展開/貼鏡 深底 1.57 / 白底 1.18 / 中灰 1.27
+ *
+ * 1.25 與 1.75 之間有 40% 餘裕,而藥丸弧上實測最高 1.19 也在門檻內 ——
+ * 也就是「弧上可以有 rim、直邊不行」這條規則是被量出來的,不是設定出來的。
+ */
+const RIM_LIFT_CAP_CAPSULE = 1.25
+const RIM_LIFT_CAP_PANEL = 1.8
+/**
+ * 絕對下限:差不到這個亮度級數就不算缺陷。
+ *
+ * 為什麼需要:`lift` 是比值,而內部很暗時(純黑桌布)比值會被雜訊放大 ——
+ * 內部 8、帶內 12 是 1.5 倍,但那 4 級肉眼看不到。沒有這條下限,
+ * 深色桌布上的藥丸弧會因為 1 級雜訊而紅燈。
+ */
+const RIM_LIFT_MIN_ABS = 6
 
 const app = await electron.launch({ args: ['.'], timeout: 60_000 })
 
@@ -205,25 +267,29 @@ for (const [id, toolTitle] of SURFACES) {
       左: summarize(p.left),
       右: summarize(p.right)
     }
-    // 膠囊的左右兩端是半圓,不拿來判斷邊緣(理由見 edgeProfile 註解)
+    // 四邊都判。舊版對膠囊只判上下(「左右兩端是半圓」),那是因為 rim 當時
+    // 對整圈一視同仁,而上下直邊才是缺陷所在。現在 rim 已經被遮罩限制在兩端
+    // 的弧上 —— 弧上的 rim 是**設計**,所以它必須被量,不能被排除。
     const isCapsule = h > 0 && w / h > 6
-    const judged = isCapsule
-      ? { 上: sides['上'], 下: sides['下'] }
-      : sides
-    const worst = Object.values(judged).reduce(
-      (a, s) => (s.edge > a.edge ? s : a),
-      { edge: 0, hard: 0, inner: 0, name: '' }
-    )
-    const hardMax = Math.max(...Object.values(judged).map((s) => s.hard))
-    const pass = worst.edge < EDGE_CAP && hardMax < HARD_LINE_RATIO
+    const cap = isCapsule ? RIM_LIFT_CAP_CAPSULE : RIM_LIFT_CAP_PANEL
+    const judged = sides
+    const worstEdge = Math.max(...Object.values(judged).map((s) => s.edge))
+    // 同時要滿足「比值超過門檻」與「絕對差夠大」才判失敗(理由見 RIM_LIFT_MIN_ABS)
+    const offenders = Object.entries(judged)
+      .filter(([, s]) => s.lift >= cap && s.bandMax - s.inner >= RIM_LIFT_MIN_ABS)
+      .map(([k]) => k)
+    const worstLift = Math.max(...Object.values(judged).map((s) => s.lift))
+    const pass = worstEdge < EDGE_CAP && offenders.length === 0
 
     results.push({
       id,
       bg: bgName,
       status: pass ? 'pass' : 'FAIL',
       shape: isCapsule ? '膠囊' : '圓角矩形',
-      worstEdge: worst.edge,
-      hardMax,
+      cap,
+      worstEdge,
+      worstLift,
+      offenders,
       sides,
       judged,
       size: `${Math.round(w)}x${Math.round(h)}`
@@ -245,8 +311,12 @@ function join2(a, b) {
 
 console.log('')
 console.log(`=== Liquid Glass 邊緣驗證 ===`)
-console.log(`通過條件:邊緣亮度 < ${EDGE_CAP}/255,且無硬 1px 亮線(最外 2px 不超過緊鄰 2-4px 帶的 ${HARD_LINE_RATIO} 倍)`)
-console.log('量測方式:在每條邊的中點取一條垂直於邊界的掃線 —— 膠囊左右兩端是半圓,不列入判斷')
+console.log(
+  `通過條件:最外 2px 亮度 < ${EDGE_CAP}/255,且最外 ${BAND_PX}px 的最大值 < 內部的 ${RIM_LIFT_CAP_CAPSULE}x(膠囊) / ${RIM_LIFT_CAP_PANEL}x(面板),且絕對差 < ${RIM_LIFT_MIN_ABS} 級`
+)
+console.log('量測方式:在每條邊的中點取一條垂直於邊界的掃線,四邊都列入判斷')
+console.log('為什麼量 6px:缺陷是「1.5px 暗環 + 輪廓光」兩段相鄰的 inset 陰影,亮帶落在 3~5px。舊版只量最外 2px 而把 3~5px 當基準,於是把缺陷當成了參考值(見 summarize 的註解)')
+console.log('為什麼分兩個門檻:rim 應該跟著曲率走。膠囊的直邊佔輪廓 85%,在上面畫 rim 就是白邊;面板的邊本來就該有 rim。理由與實測值見 RIM_LIFT_CAP_CAPSULE 的註解')
 console.log('')
 let failed = 0
 for (const r of results) {
@@ -257,16 +327,21 @@ for (const r of results) {
   }
   const mark = r.status === 'pass' ? '✓' : '✗'
   const detail = Object.entries(r.judged)
-    .map(([k, s]) => `${k}邊 ${s.edge.toFixed(1)}(內 ${s.inner.toFixed(1)}, 硬線 ${s.hard.toFixed(2)}x)`)
+    .map(([k, s]) => `${k}邊 lift ${s.lift.toFixed(2)}x [${s.band.join(',')}] 內${Math.round(s.inner)}`)
     .join('  ')
-  const why = r.status === 'pass' ? '' : r.worstEdge >= EDGE_CAP ? ' 超出絕對上限' : ' 有硬亮線'
+  const why =
+    r.status === 'pass'
+      ? ''
+      : r.worstEdge >= EDGE_CAP
+        ? ' 超出絕對上限'
+        : ` 有硬亮帶:${r.offenders.join('')} >${r.cap}x 且差 ${RIM_LIFT_MIN_ABS} 級以上`
   console.log(`[${r.id}/${r.bg}] ${mark} ${r.shape} ${r.size}  ${detail}${why}`)
   if (r.status !== 'pass') failed++
 }
 console.log('')
 console.log(
   failed === 0
-    ? `全部通過:邊緣亮度都在 ${EDGE_CAP} 以下且沒有硬亮線 —— 不是白邊,是材質厚度的輪廓。`
+    ? `全部通過:最外 ${BAND_PX}px 沒有畫出白框 —— 膠囊的 rim 只在弧上,面板的 rim 在閱讀門檻內。`
     : `${failed} 項未通過 —— 我改壞了,必須修到過。`
 )
 writeFileSync(join2(OUT, 'report.json'), JSON.stringify(results, null, 2))

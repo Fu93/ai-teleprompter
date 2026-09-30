@@ -127,13 +127,16 @@ body {
 
 /* 藥丸:材質收斂。
    - 底色比面板再暗一點(Mac 的島在黑底上才有對比),保留玻璃語意但降低「方塊感」。
-   - 頂部一條極淡的垂直漸層是「受光」的來源(液態玻璃的細緻度在這裡,不是靠一條亮邊框)。
+   - **底色是平的**。這是量測之後的結論,不是偷懶:頂部那條
+     `linear-gradient(rgba(255,255,255,.06) → transparent 42%)` 的受光漸層,
+     在深色桌布上會把直邊的 0-5px 帶抬到 lift 2.3(內部只有 11)——
+     一條橫貫 272px 的亮線,而 272px 是寬度的 85%。眼睛沿著它走,
+     於是膠囊讀成「有白邊的圓角長方形」。
+     受光效果改為整個由 .lg-rim::after 負責,那裡可以被限制在兩端的弧上。
    - 陰影從 0 18px 50px 收到 0 10px 30px:48px 高的膠囊配得上的是「有點厚度」,
      不是「浮在半空的暗方塊」—— 陰影太大正是它讀成一片面板的原因之一。 */
 .glass-pill {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 42%),
-    rgba(8, 10, 16, 0.78);
+  background: rgba(8, 10, 16, 0.78);
   -webkit-backdrop-filter: blur(20px) saturate(1.8);
   backdrop-filter: blur(20px) saturate(1.8);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
@@ -167,6 +170,53 @@ body {
     inset 0 -1.5px 2px -1px rgba(255, 255, 255, 0.08),
     /* 上緣輪廓:受光。負 spread 把峰值推離邊界 1px 再糊開 */
     inset 0 1.5px 3px -1px rgba(255, 255, 255, 0.16);
+}
+
+/* ── 藥丸專用:rim 只畫在兩端的弧上,上下直邊不畫 ──
+   為什麼需要:
+     6.67:1 的膠囊,上下兩條邊各有 272px(寬度的 85%)是完全直的。真實的
+     Liquid Glass 之所以讀成膠囊,是因為 rim 的強度跟著**曲率**走 ——
+     彎得厲害的兩端受光,長直邊幾乎不反光。而上面那段 rim 對整圈一視同仁,
+     結果是那 85% 的直邊成了整個形狀上最長、對比最高的特徵。
+     實測:深色桌布下直邊 0-5px 帶的最大值是內部的 2.87 倍(32 vs 11),
+     而展開/貼鏡同一段 CSS 只有 1.57(22 vs 14)—— 差異純粹來自藥丸底色
+     更不透明,讓 rim 的相對亮度被放大。
+
+   為什麼用遮罩而不是改 rim 的參數:
+     rim 是 box-shadow,它的形狀由 border-radius 決定,沒有辦法只作用在弧上。
+     而整個形狀唯一能「指定範圍」的工具就是遮罩。遮罩套在 ::after 上,
+     只影響它自己的box-shadow(暗環 + 輪廓光一起消失),不影響底色與內容。
+
+   --rim-cap = 半徑 / 寬度。1.00× 時精確是 0.5 × 48 / 320 = 7.5%。
+   其他倍率不是精確的 7.5%(這點是被測試抓出來的,原先的註解寫錯了):
+   pillSizeOf 會把高度 Math.round 到整數,所以
+     0.8×  → 19 / 256 = 7.42%;1.00× → 24 / 320 = 7.50%;1.3× → 31 / 416 = 7.45%。
+   差最多 0.08%(0.2px),而羽化帶本身是 2.5% 的寬度(8~10px)——大一個數量級。
+   所以正確的不變式是「cap 落在羽化帶內」,不是「cap 等於 7.5%」。
+   overlayShapes.test.ts 釘住的是前者。
+   遮罩範圍剛好等於兩個半圓端的水平投影(x < h/2 全落在弧內),所以弧上的
+   rim 完整保留。overlayShapes.test.ts 有一條測試釘住這個百分比與幾何常數
+   的關係 —— 它是寫死的百分比,漂移時會安靜地讓 rim 蓋錯範圍。 */
+.dynamic-island-pill.lg-rim::after {
+  --rim-cap: 7.5%;
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    #000 0,
+    #000 calc(var(--rim-cap) - 2.5%),
+    transparent var(--rim-cap),
+    transparent calc(100% - var(--rim-cap)),
+    #000 calc(100% - var(--rim-cap) + 2.5%),
+    #000 100%
+  );
+  mask-image: linear-gradient(
+    90deg,
+    #000 0,
+    #000 calc(var(--rim-cap) - 2.5%),
+    transparent var(--rim-cap),
+    transparent calc(100% - var(--rim-cap)),
+    #000 calc(100% - var(--rim-cap) + 2.5%),
+    #000 100%
+  );
 }
 
 /* ── Liquid Glass 真折射(P2-13)──
