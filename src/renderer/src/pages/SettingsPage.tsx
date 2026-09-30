@@ -16,6 +16,7 @@ import { cn, formatDateTime } from '../lib/utils'
 import type { AppSettings } from '@shared/types'
 import type { SceneSummary } from '@shared/api'
 import { Segmented } from '../components/Segmented'
+import { BackupSection } from '../components/BackupSection'
 
 const SCENE_LABELS_ZH: Record<string, string> = {
   interview: '面試',
@@ -749,6 +750,13 @@ export default function SettingsPage({
         <div className="mt-1.5 text-[11px] text-ink-400">
           語速步進每次 ±0.1×（0.5–3×）；熱鍵在浮層隱藏或滑鼠穿透時也有效。
         </div>
+      </Section>
+
+      <Section
+        title="資料備份"
+        desc="把講稿、會議紀錄與練習紀錄整份帶走。換電腦或重灌前先匯出一次。"
+      >
+        <BackupSection />
       </Section>
 
       <Section title="疑難排解" desc="遇到問題時，日誌是回報與自查的第一手資料">

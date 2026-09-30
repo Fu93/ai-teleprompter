@@ -41,6 +41,33 @@ registerAuditControl('crash.clear', () => {
   return true
 })
 
+// 備份的 audit 探針。與 crash.* 同一個理由:「備份檔真的寫到磁碟、真的讀得
+// 回來、而且不含金鑰」這三件事,沒有任何一條 headless 測試碰得到 —— 它們要
+// 真的呼叫 renderer 裡那組函式,而不是在測試裡重寫一份等價的邏輯。
+// probe=true 會在設定裡塞一把假的金鑰,用來證明它不會跟著備份離開。
+registerAuditControl('backup.probe', async (arg) => {
+  const { BACKUP_VERSION, backupFileName, buildBackup, serializeBackup } = await import('./lib/backup')
+  const info = await window.api.appInfo()
+  const settings = await window.api.getSettings()
+  const poisoned =
+    arg === true
+      ? { ...settings, ai: { ...settings.ai, openaiCompatible: { ...settings.ai.openaiCompatible, apiKey: 'sk-e2e-secret-value' } } }
+      : settings
+  const b = await buildBackup({ appVersion: info.version, settings: poisoned })
+  return { ok: true, text: serializeBackup(b), name: backupFileName(), counts: b.counts, version: BACKUP_VERSION }
+})
+
+registerAuditControl('backup.restore', async (arg) => {
+  const { parseBackup, importBackup, currentCounts } = await import('./lib/backup')
+  const text = typeof arg === 'string' ? arg : ''
+  // 失敗要**丟出來**,不要回傳 { ok: false } —— `ok` 是 auditBridge 的欄位,
+  // 控制項自己帶一個會被外層的 ok 蓋掉(外層看「回傳的不是 false」就當成功)。
+  // 丟出去走的是橋既有的失敗路徑,{ ok:false, error } 才會真的成立。
+  const b = parseBackup(text)
+  const r = await importBackup(b)
+  return { counts: r.counts, after: await currentCounts() }
+})
+
 // toast 橋只掛在 audit 模式(與 __auditForce 同一個開關),正式安裝包不會有。
 void window.api
   ?.appInfo()

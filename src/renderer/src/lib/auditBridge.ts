@@ -17,7 +17,22 @@
  *   - 刻意不掛任何可見 UI:稽核跑的是 DOM 稽核,多一個元件就會被自己的規則報出來。
  */
 
-type AuditControl = (arg: unknown) => boolean
+/**
+ * 控制項可以回傳的結果:
+ *   - boolean / void:「做完了」或「做不了」(現有控制項的用法,全部同步)
+ *   - object:控制項需要把東西帶回測試端時用(例如備份探針要回傳序列化結果)
+ *   - Promise:以上兩者的非同步版本
+ *
+ * 為什麼要擴成這樣而不是要求全部非同步:
+ *   現有的稽核腳本(audit-deep / audit-ui / audit-states)讀的是**同步**的
+ *   `.ok`(例:audit-deep.mjs 的 `.evaluate(([n,a]) => window.__auditForce?.(n,a) ?? {ok:false})`)。
+ *   把整個橋改成 async 會讓那三支全部要改,而且它們目前是好的。
+ *   所以:控制項同步就回傳物件,非同步就回傳 Promise —— 兩種都能被
+ *   `await`(Playwright 的 evaluate 與稽核腳本的 await 都吃這個)。
+ */
+export type AuditControlResult = boolean | void | Record<string, unknown>
+
+type AuditControl = (arg: unknown) => AuditControlResult | Promise<AuditControlResult>
 
 const registry = new Map<string, AuditControl>()
 
@@ -38,21 +53,38 @@ export interface AuditForceResult {
   error?: string
   /** 目前註冊了哪些控制項。找不到名字時最有用的資訊就是這份清單。 */
   names: string[]
+  /** 控制項回傳的內容(僅在控制項有回傳時出現) */
+  result?: unknown
 }
 
 /**
  * 實際的強制入口。回傳值必須是 JSON 可序列化的 —— 它會被
  * executeJavaScript / page.evaluate 傳回 Node 端。
+ *
+ * **注意:控制項是非同步時,這裡回傳的是 Promise。** 呼叫端一律用 await
+ * (稽核腳本與 e2e 都是),所以兩種情況寫法相同。
  */
-export function forceAuditState(name: string, arg: unknown): AuditForceResult {
+export function forceAuditState(name: string, arg: unknown): AuditForceResult | Promise<AuditForceResult> {
   const names = [...registry.keys()]
   const fn = registry.get(name)
   if (!fn) return { ok: false, error: `沒有名為 ${name} 的控制項`, names }
+  let out: AuditControlResult | Promise<AuditControlResult>
   try {
-    return { ok: fn(arg) !== false, names }
+    out = fn(arg)
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err), names }
   }
+  if (out instanceof Promise) {
+    return out.then(
+      (v) => ({ ok: v !== false, names, ...(typeof v === 'object' && v !== null ? { result: v } : {}) }),
+      (err: unknown) => ({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        names
+      })
+    )
+  }
+  return { ok: out !== false, names, ...(typeof out === 'object' && out !== null ? { result: out } : {}) }
 }
 
 /**

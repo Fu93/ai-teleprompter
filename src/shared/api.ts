@@ -141,6 +141,16 @@ export interface Api {
   // 工具
   appInfo(): Promise<AppInfo>
   exportFile(args: { defaultName: string; content: string }): Promise<{ ok: boolean; filePath?: string; error?: string }>
+  /**
+   * 彈檔案選擇框讀入一個 JSON(資料備份的還原路徑)。
+   * 走選擇框而不是由 renderer 傳路徑:後者等於把「讀整台電腦」交給 web 內容。
+   */
+  importJsonFile(args?: { defaultName?: string; maxBytes?: number }): Promise<{
+    ok: boolean
+    filePath?: string
+    text?: string
+    error?: string
+  }>
   /** 錄影存檔:彈出儲存對話框寫入位元組 */
   saveRecording(args: { bytes: Uint8Array; defaultName: string }): Promise<{ ok: boolean; filePath?: string; error?: string }>
   /** 分享前模擬測試:回傳主螢幕擷取縮圖(浮層應為隱形) */

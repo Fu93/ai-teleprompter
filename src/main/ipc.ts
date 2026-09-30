@@ -1,5 +1,5 @@
 import { app, desktopCapturer, dialog, globalShortcut, ipcMain, screen, session, shell } from 'electron'
-import { writeFile } from 'fs/promises'
+import { writeFile, readFile, stat } from 'fs/promises'
 import {
   AppInfo,
   IPC,
@@ -459,6 +459,28 @@ export function registerIpc(): void {
     if (canceled || !filePath) return { ok: false, error: 'canceled' }
     await writeFile(filePath, args.content, 'utf-8')
     return { ok: true, filePath }
+  })
+
+  // ---- 讀入 JSON(資料備份的還原)----
+  ipcMain.handle(IPC.ImportJsonFile, async (_e, args: { defaultName?: string; maxBytes?: number }) => {
+    if (!state.mainWindow) return { ok: false, error: 'no-window' }
+    const { canceled, filePaths } = await dialog.showOpenDialog(state.mainWindow, {
+      properties: ['openFile'],
+      filters: [{ name: 'AI 提詞機備份', extensions: ['json'] }],
+      ...(args?.defaultName ? { defaultPath: args.defaultName } : {})
+    })
+    if (canceled || filePaths.length === 0) return { ok: false, error: 'canceled' }
+    const filePath = filePaths[0]
+    // 大小上限:這是備份檔,正常是幾百 KB。給一個 64MB 的天花板,
+    // 避免使用者誤選一個巨大的 JSON 而把 renderer 的字串處理拖死。
+    // 超出就回人話錯誤,不截斷 —— 截斷出來的 JSON 解析失敗,錯誤訊息更難懂。
+    const max = args?.maxBytes ?? 64 * 1024 * 1024
+    const info = await stat(filePath)
+    if (info.size > max) {
+      return { ok: false, error: `檔案太大（${Math.round(info.size / 1024 / 1024)}MB）,這不像是備份檔。` }
+    }
+    const text = await readFile(filePath, 'utf-8')
+    return { ok: true, filePath, text }
   })
 
   // ---- Phase C:統一 AI / 金鑰 / panic / 場景 ----

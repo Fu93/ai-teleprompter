@@ -210,6 +210,18 @@ export const IPC = {
   OverlayRecenter: 'overlay:recenter',
   RevealPath: 'util:reveal-path',
   ExportFile: 'util:export-file',
+  /**
+   * 讀入一個 JSON 檔(資料備份的還原路徑)。
+   *
+   * 為什麼需要一個新通道:`util:export-file` 有了,但沒有任何一條能讀檔。
+   * 沒有它,使用者只能匯出、不能帶著資料換機 —— 而「能產出資料、卻不給人
+   * 帶走」的工具會定期吃掉自己的產品(見 renderer/src/lib/backup.ts 檔頭)。
+   *
+   * 主動彈檔案選擇框,不接受任意路徑:renderer 傳字串過來讓 main 讀檔,
+   * 等於把「讀整台電腦」的能力交給 web 內容。選擇框讓使用者自己指定檔案,
+   * 這是 Electron 在這種情境下的標準做法。
+   */
+  ImportJsonFile: 'util:import-json-file',
   LogFromRenderer: 'util:log-from-renderer',
   OpenLogDir: 'util:open-log-dir',
   // events (main -> renderer)
