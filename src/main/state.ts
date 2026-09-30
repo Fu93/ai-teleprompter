@@ -21,7 +21,15 @@ const state = {
    * main 無法同步查詢 renderer,所以由 renderer 主動上報,close 事件只讀這裡。
    * null = 沒有阻擋,視窗正常關閉。
    */
-  closeBlocker: null as string | null
+  closeBlocker: null as string | null,
+  /**
+   * 註冊失敗的全域熱鍵(已被其他程式佔用或無效)。
+   *
+   * 為什麼要記:globalShortcut.register() 失敗時回傳 false 而不丟例外,
+   * 所以「熱鍵沒反應」原本是完全靜默的。使用者只能體驗到「按了沒用」,
+   * 而診斷快照裡也不會有任何線索。這份清單是讓它變得可見的唯一地方。
+   */
+  hotkeyConflicts: [] as string[]
 }
 
 /** e2e userData 重導之後、任何模組讀取 settings 之前呼叫(index.ts whenReady 前) */

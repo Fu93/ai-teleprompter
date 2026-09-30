@@ -36,46 +36,71 @@ import {
 export function registerHotkeys(): void {
   globalShortcut.unregisterAll()
   const { toggleOverlay, hideOverlay, panicRescue } = state.settings.hotkeys
-  try {
-    if (toggleOverlay) {
-      globalShortcut.register(toggleOverlay, () => {
-        const visible = state.overlayWindow?.isVisible() ?? false
-        setOverlayVisible(!visible)
-      })
+
+  /**
+   * 為什麼不能只看有沒有丟例外。
+   *
+   * globalShortcut.register() 在 accelerator 已經被別的程式佔住時**回傳 false,
+   * 不丟例外**。所以外面包 try/catch 是接不到的 —— 註冊失敗是完全靜默的。
+   *
+   * 使用者看到的是:按了熱鍵,什麼都沒發生,而且 App 不會說為什麼。
+   * 這正是這個專案要避免的失敗模式(使用者永遠不知道發生了什麼事)。
+   * 而它同時是 e2e flake 的來源:每個測試實例啟動都會註冊 6 個 OS 層級的熱鍵,
+   * 前一個實例還沒完全退出時,後一個就會拿到 false —— 熱鍵從此不觸發。
+   * 本 session 觀察到的 debug-panel「element not found」就是這個形狀。
+   */
+  const taken: string[] = []
+  const bind = (accel: string | undefined | null, fn: () => void): void => {
+    if (!accel) return
+    let ok = false
+    try {
+      ok = globalShortcut.register(accel, fn)
+    } catch (err) {
+      console.error(`熱鍵註冊丟出例外 ${accel}:`, err)
+      taken.push(accel)
+      return
     }
-    if (hideOverlay) {
-      globalShortcut.register(hideOverlay, () => setOverlayVisible(false))
+    if (!ok) {
+      taken.push(accel)
+      console.warn(
+        `熱鍵 ${accel} 註冊失敗 —— 已被其他程式佔用或無效。` +
+          `App 仍可操作,但這個快捷鍵不會有反應。`
+      )
     }
-    if (panicRescue) {
-      globalShortcut.register(panicRescue, () => {
-        void handlePanic()
-      })
+  }
+
+  bind(toggleOverlay, () => {
+    const visible = state.overlayWindow?.isVisible() ?? false
+    setOverlayVisible(!visible)
+  })
+  bind(hideOverlay, () => setOverlayVisible(false))
+  bind(panicRescue, () => {
+    void handlePanic()
+  })
+  // 播放/語速熱鍵:浮層可被滑鼠穿透或失焦,全域熱鍵是唯一可靠入口。
+  // 廣播給浮層;未顯示時忽略(visibility sync 由 setOverlayVisible 管)
+  bind(state.settings.hotkeys.playPause, () => {
+    if (state.overlayWindow && !state.overlayWindow.isDestroyed() && state.overlayWindow.isVisible()) {
+      state.overlayWindow.webContents.send(IPC.OverlayPlayPause)
     }
-    // 播放/語速熱鍵:浮層可被滑鼠穿透或失焦,全域熱鍵是唯一可靠入口。
-    // 廣播給浮層;未顯示時忽略(visibility sync 由 setOverlayVisible 管)
-    if (state.settings.hotkeys.playPause) {
-      globalShortcut.register(state.settings.hotkeys.playPause, () => {
-        if (state.overlayWindow && !state.overlayWindow.isDestroyed() && state.overlayWindow.isVisible()) {
-          state.overlayWindow.webContents.send(IPC.OverlayPlayPause)
-        }
-      })
+  })
+  bind(state.settings.hotkeys.speedUp, () => {
+    if (state.overlayWindow && !state.overlayWindow.isDestroyed() && state.overlayWindow.isVisible()) {
+      state.overlayWindow.webContents.send(IPC.OverlaySpeedStep, 1)
     }
-    if (state.settings.hotkeys.speedUp) {
-      globalShortcut.register(state.settings.hotkeys.speedUp, () => {
-        if (state.overlayWindow && !state.overlayWindow.isDestroyed() && state.overlayWindow.isVisible()) {
-          state.overlayWindow.webContents.send(IPC.OverlaySpeedStep, 1)
-        }
-      })
+  })
+  bind(state.settings.hotkeys.speedDown, () => {
+    if (state.overlayWindow && !state.overlayWindow.isDestroyed() && state.overlayWindow.isVisible()) {
+      state.overlayWindow.webContents.send(IPC.OverlaySpeedStep, -1)
     }
-    if (state.settings.hotkeys.speedDown) {
-      globalShortcut.register(state.settings.hotkeys.speedDown, () => {
-        if (state.overlayWindow && !state.overlayWindow.isDestroyed() && state.overlayWindow.isVisible()) {
-          state.overlayWindow.webContents.send(IPC.OverlaySpeedStep, -1)
-        }
-      })
-    }
-  } catch (err) {
-    console.error('熱鍵註冊失敗', err)
+  })
+
+  if (taken.length) {
+    // 寫進診斷快照,讓 DebugPanel 的「複製診斷 JSON」與使用者的回報裡
+    // 看得到「你的熱鍵根本沒有註冊上去」,而不只是一句「沒反應」。
+    state.hotkeyConflicts = taken
+  } else {
+    state.hotkeyConflicts = []
   }
 }
 
@@ -128,7 +153,7 @@ export function registerIpc(): void {
    *   展開形態才是它唯一的作者。藥丸/貼鏡呼叫這裡是為了把視窗定案到形態尺寸，
    *   如果把藥丸的 320×48 也寫進去，下次啟動的展開視窗就會是一顆藥丸(實際上會被
    *   EXPANDED_MIN 夾成 280×40 的怪尺寸)，而 morph 期間的展開尺寸也失去來源。
-   *   （所以 useMorph 在藥丸/貼鏡定案時會把展開尺寸暂存在 renderer 的 ref；
+   *   （所以 useMorph 在藥丸/貼鏡定案時會把展開尺寸暫存在 renderer 的 ref；
    *    視窗尺寸本身現在由形態決定，見 applyOverlayWindowSettings。）
    */
   ipcMain.handle(IPC.OverlaySetSize, (_e, w: number, h: number) => {
@@ -297,7 +322,7 @@ export function registerIpc(): void {
 
   // ---- 關閉視窗守衛 ----
   // renderer 在「未存講稿 / 錄音中」時上報訊息,main 在 close 事件裡讀它。
-  // main 沒有辦法同步查詢 renderer,所以方向必须是 renderer 主動推。
+  // main 沒有辦法同步查詢 renderer,所以方向必須是 renderer 主動推。
   ipcMain.handle(IPC.AppSetCloseBlocker, (_e, text: string | null) => {
     state.closeBlocker = typeof text === 'string' && text.trim() ? text : null
     return true
@@ -328,7 +353,7 @@ export function registerIpc(): void {
       // AUDIT 也放行:這個 backdoor 是「把 UI 推進到 headless 到不了的狀態」,
       // 而 turn-yield / coaching / panic 三個覆蓋層正是這一類(沒有按鈕可以「到達」
       // 它們,只能等真實事件發生)。離線稽核以前完全沒有量過它們。
-      // AUDIT 只在開發環境以環境變數開啟(src/main/debug.ts),打包版永远是 false。
+      // AUDIT 只在開發環境以環境變數開啟(src/main/debug.ts),打包版永遠是 false。
       if (!DEBUG && !AUDIT) return false
       const win = state.overlayWindow
       if (!win || win.isDestroyed()) return false
