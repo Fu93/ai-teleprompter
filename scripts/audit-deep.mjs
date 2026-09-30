@@ -922,13 +922,15 @@ async function main() {
     report.unreached('overlay', '找不到浮層視窗,浮層未被稽核')
   }
 
-  report.finish(join(OUT, 'report.json'))
+  const problems = report.finish(join(OUT, 'report.json'))
   console.log(`輸出: ${OUT}/`)
   await app.close()
+  return problems
 }
 
 main()
-  .then(() => process.exit(0))
+  // 問題數必須進 exit code,理由同 audit-ui.mjs:稽核不擋人的話就只是報表。
+  .then((problems) => process.exit(problems.length ? 1 : 0))
   .catch((e) => {
     console.error('ABORT:', e.stack || e.message)
     process.exit(1)

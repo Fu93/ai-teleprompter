@@ -601,13 +601,15 @@ async function main_() {
     await phaseData(main, tag)
   }
 
-  report.finish(join(OUT, 'report.json'))
+  const problems = report.finish(join(OUT, 'report.json'))
   console.log(`\n輸出: ${OUT}/`)
   await app.close()
+  return problems
 }
 
 main_()
-  .then(() => process.exit(0))
+  // 問題數必須進 exit code,理由同 audit-ui.mjs:稽核不擋人的話就只是報表。
+  .then((problems) => process.exit(problems.length ? 1 : 0))
   .catch((e) => {
     console.error('ABORT:', e.stack || e.message)
     process.exit(1)

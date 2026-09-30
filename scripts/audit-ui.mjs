@@ -178,13 +178,17 @@ async function main() {
     }
   }
 
-  report.finish(join(OUT, 'report.json'))
+  const problems = report.finish(join(OUT, 'report.json'))
   console.log(`截圖: ${OUT}/`)
   await app.close()
+  return problems
 }
 
 main()
-  .then(() => process.exit(0))
+  // 必須把問題數帶到 exit code。在這之前這裡是無條件 process.exit(0) ——
+  // 意思是 `npm run audit` 抓到 50 筆問題在 CI 裡一樣是綠的。
+  // 稽核的存在理由就是「紅燈要擋住人」,exit 0 等於那個理由不存在。
+  .then((problems) => process.exit(problems.length ? 1 : 0))
   .catch((e) => {
     console.error('ABORT:', e.stack || e.message)
     process.exit(1)
