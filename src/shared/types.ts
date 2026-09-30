@@ -11,6 +11,14 @@ export interface OverlaySettings {
   compact: boolean
   /** 貼鏡模式:窄條浮層貼近攝影機(<5cm),當前行鎖定鏡頭下方 ~2° 視角,眼神自然 */
   lensMode: boolean
+  /**
+   * 藥丸倍率(0.8×–1.3×,1.00× = 320×48)。
+   *
+   * 為什麼是設定而不是常數:島的大小是「螢幕大小 / DPI / 視力 / 桌面留白」的問題，
+   * 不是美感偏好。只縮放膠囊本體，字級與 28px 觸控目標不變(縮小觸控目標是無障礙問題)。
+   * 合法性由 @shared/overlayShapes 的 clampPillScale 把關(設定檔可能被手改)。
+   */
+  pillScale: number
   /** 玻璃質感:Windows 11 嘗試啟用視窗後 acrylic 毛玻璃 */
   glass: boolean
   /** turn-yield 提示:對方講完問句時浮層顯示「該你說話了」(Phase B) */
@@ -109,6 +117,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     displayMode: 'scroll',
     compact: false,
     lensMode: false,
+    pillScale: 1,
     glass: true,
     turnYield: true,
     coaching: true,
@@ -198,6 +207,7 @@ export const IPC = {
   SaveRecording: 'util:save-recording',
   ShareSimulation: 'system:share-simulation',
   OverlaySnapCorner: 'overlay:snap-corner',
+  OverlayRecenter: 'overlay:recenter',
   RevealPath: 'util:reveal-path',
   ExportFile: 'util:export-file',
   LogFromRenderer: 'util:log-from-renderer',
@@ -220,7 +230,25 @@ export const IPC = {
   /** 全域熱鍵:浮層播放/暫停(main → overlay) */
   OverlayPlayPause: 'overlay:play-pause',
   /** 全域熱鍵:語速步進 ±0.1×(main → overlay) */
-  OverlaySpeedStep: 'overlay:speed-step'
+  OverlaySpeedStep: 'overlay:speed-step',
+  // ===== 開發者除錯(UI/UX debug 支援;僅 src/main/debug.ts 的 gate 成立時才有作用)=====
+  /** 開啟指定視窗的 DevTools(浮層是無邊框視窗,無法右鍵檢查) */
+  DebugOpenDevTools: 'debug:open-devtools',
+  /** 直接廣播即時回饋訊號(該你了/教練/救援),便於在沒有真實會議時檢視浮層 UI */
+  DebugEmitSignal: 'debug:emit-signal',
+  /** 讀取浮層 renderer 的狀態快照(window.__debugSnapshot) */
+  DebugOverlaySnapshot: 'debug:overlay-snapshot',
+  /** 對浮層下除錯控制(藥丸/展開/貼鏡/播放),走浮層自己的控制項 */
+  DebugOverlayCall: 'debug:overlay-call',
+  DebugOverlayAudit: 'debug:overlay-audit',
+  /** 浮層視窗層級資訊(幾何/可見/DPI/螢幕) */
+  DebugOverlayInfo: 'debug:overlay-info',
+
+  // 關閉視窗守衛:renderer 主動宣告「現在關掉會丢東西」,main 在 close 事件裡擋下來
+  AppSetCloseBlocker: 'app:set-close-blocker',
+  AppCloseRequested: 'app:close-requested',
+  AppConfirmClose: 'app:confirm-close',
+  AppCancelClose: 'app:cancel-close'
 } as const
 
 // ===== turn-yield 提示(Phase B)=====
@@ -328,6 +356,16 @@ export interface PracticeAnswer {
   answerTranscript: string
   durationSec: number
   feedback?: PracticeFeedback
+  /**
+   * 逐字稿不完整(語音辨識逾時或失敗)。
+   *
+   * 為什麼要存這個旗標:逾時時流程會繼續「用目前收到的逐字稿評分」,而分數、
+   * 逐字稿、語速全部照算 —— 但沒有任何地方記得「這份逐字稿少了一段」。
+   * 事後回看歷史只看得到一個分數,使用者會以為那就是自己的表現,
+   * 而不是「麥克風/模型當時出狀況」。同一場裡不同題的完整度也不一樣,
+   * 所以旗標掛在單題而不是整場。
+   */
+  partial?: boolean
 }
 
 export interface PracticeFeedback {
@@ -348,8 +386,42 @@ export interface PracticeRun {
   overallFeedback?: string
 }
 
+/** 除錯:可直接模擬的即時回饋訊號種類(對應浮層的三種事件 UI) */
+export type DebugSignalKind = 'turn' | 'coaching' | 'panic'
+
+/** 浮層除錯控制的動作(實作為點擊浮層自己的控制項,走真實路徑) */
+export type DebugOverlayAction =
+  | 'compact'
+  | 'expand'
+  | 'lens'
+  | 'exit-lens'
+  | 'play'
+  | 'pause'
+  | 'follow'
+  | 'recenter'
+
+/**
+ * 單筆 DOM 稽核結果的形狀。
+ *
+ * 定義在這裡而不是 src/renderer/src/lib/domAudit.ts 的原因:同一個形狀要跨越
+ * 三個地方 —— renderer 的規則實作、除錯面板的顯示、以及 main 端轉手
+ * executeJavaScript 回傳值時的型別。規則實作以 `import type` 取用,
+ * 型別匯入會被完全抹除,所以不會破壞「DOM 稽核函式必須能序列化」的契約。
+ */
+export interface DomFinding {
+  kind: string
+  text: string
+}
+
 export interface AppInfo {
   version: string
   platform: string
   userDataPath: string
+  /** 除錯能力是否啟用(判斷邏輯見 src/main/debug.ts —— 刻意排除 e2e,避免污染稽核量測) */
+  debug: boolean
+  /**
+   * 稽核能力是否啟用(AI_TP_AUDIT=1 且未打包)。
+   * 只拿來決定要不要掛「狀態強制橋」window.__auditForce,不影響任何可見 UI。
+   */
+  audit: boolean
 }

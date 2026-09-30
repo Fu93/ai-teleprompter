@@ -6,6 +6,7 @@ import {
   Download,
   Loader2,
   Mic,
+  AlertTriangle,
   MonitorSpeaker,
   Play,
   Save,
@@ -19,10 +20,18 @@ import { useSettings } from '../lib/store'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
 import { aiChat, extractJson, resolvedModelName } from '../lib/ai'
 import { toast } from '../lib/toast'
+import { describeError } from '../lib/describeError'
 import { buildSessionReport } from '../lib/session-intelligence'
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, WHISPER_MODELS, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { encodeWav } from '../lib/audio/wav'
+import { registerAuditControl } from '../lib/auditBridge'
+import { createPendingTracker, drainPending, STT_FAILURE_BANNER_THRESHOLD } from '../lib/transcriptionQueue'
+import { confirmDialog } from '../lib/confirm'
+import { useCloseGuard } from '../lib/closeGuard'
+
+// 連續失敗門檻與 Practice 共用同一份(見 lib/transcriptionQueue.ts):
+// 兩頁對「我在白講」的告警時機必須一致,否則使用者只會覺得提示不可靠。
 
 type ModelState = {
   status: 'none' | 'loading' | 'ready' | 'error'
@@ -50,16 +59,44 @@ export default function Record(): JSX.Element {
   /** stop() 的多步 await(等在飛轉錄落地、寫 DB)期間擋再按:
    *  雙擊會重複跑收帳/存檔流程(重複 toast、重複 build report、第二次可能存進空段落) */
   const stoppingRef = useRef(false)
+  const startAttemptRef = useRef(0)
   const [sessions, setSessions] = useState<MeetingSession[]>([])
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [aiBusyId, setAiBusyId] = useState<number | null>(null)
   const [lastReport, setLastReport] = useState<SessionReport | null>(null)
+  /**
+   * 這份會後報告是哪一場的。
+   *
+   * 為什麼需要:報告一旦產生就會一直留在畫面上直到下次「開始聆聽」,而「沒有段落」
+   * 的收場(真的沒說話 / 說了但辨識失敗)不會覆蓋它 —— 使用者看到的是一份沒有
+   * 出處的漂亮報告,很自然會當成「這一場」的結果。加上名稱與時間之後,殘留期間
+   * 也讀得出來它是誰,並且可以直接關掉。
+   */
+  const [lastReportMeta, setLastReportMeta] = useState<{ title: string; endedAt: number } | null>(null)
   const [coachCounts, setCoachCounts] = useState<Partial<Record<CoachingKind, number>>>({})
+
+  /**
+   * 辨識失敗的累積狀態。
+   *
+   * 為什麼要有這個:原本每個失敗的段落都直接 toast.error 一次。持續失敗時
+   * (雲端 401、模型沒下載、斷網)畫面會幾秒一個錯誤跳出來,堆滿並蓋住錄音介面。
+   * 使用者收到的是「一直有東西出錯」的噪音,而不是「你現在講的話不會被儲存,
+   * 請立刻停止」—— 他很可能就這樣把整場會議講完,最後拿到一份空紀錄。
+   * 改成:連續失敗達門檻後只顯示一個持續的橫幅,取代重複的 toast。
+   */
+  const [sttFailed, setSttFailed] = useState(false)
+  const sttFailStreakRef = useRef(0)
+  /** 送出去等結果的段落數。用來分辨「真的沒說話」與「說了但辨識失敗」 */
+  const sttAttemptedRef = useRef(0)
+  const sttNotifiedRef = useRef(false)
 
   const whisperRef = useRef<WhisperClient | null>(null)
   const segsRef = useRef<TranscriptSegment[]>([])
-  /** 最後一段落帳時間:停止時判斷在飛轉錄是否已完成 */
-  const lastSegmentAtRef = useRef(0)
+  /** 保存本場實際起始時間；UI 計時器停止時 startedAtRef 歸零，但在飛轉錄仍要用此值定時間戳 */
+  const sessionStartedAtRef = useRef(0)
+  const sessionIdRef = useRef(0)
+  // 在飛的辨識請求由 lib/transcriptionQueue 追蹤(與 Practice 頁同一份實作)
+  const pendingRef = useRef(createPendingTracker<number>())
   const startedAtRef = useRef(0)
   const streamsRef = useRef<{ mic?: MediaStream; sys?: MediaStream }>({})
   const segmentersRef = useRef<{ mic?: AudioSegmenter; sys?: AudioSegmenter }>({})
@@ -93,9 +130,42 @@ export default function Record(): JSX.Element {
 
   // unmount 清理:錄音中切頁要收掉分段器與音訊 track(麥克風/系統音訊燈滅),
   // 否則擷取會在背景持續運作(Practice 已有同樣模式);
+  /**
+   * 關閉視窗守衛:錄音中關掉等於整場會議沒有逐字稿(離場只做 stopAll,不寫 DB)。
+   *
+   * 刻意不「自動停止並存檔」:stop() 的收尾會等所有在飛的辨識落地(最長 65 秒),
+   * 把那段等待塞進關窗流程會讓 App 看起來像當掉。這裡改成明確告訴使用者
+   * 先按停止,他要硬關仍然可以(對話框上有明確的「放棄並關閉」)。
+   */
+  useCloseGuard(
+    'record-recording',
+    recording
+      ? '正在錄音。請先按「停止並儲存」再關閉,否則這場會議不會留下任何逐字稿。'
+      : saving
+        ? // 收尾中(最長 65 秒等待在飛的辨識):原本這一段也講「請先按停止並儲存」,
+          // 但那時候按鈕已經是 disabled 的「儲存中…」—— 叫使用者去按一顆不存在的按鈕。
+          '正在收尾:還在等最後幾段語音辨識回來。現在關閉會遺失尾段逐字稿。'
+        : null
+  )
+
+  // 稽核用:展開第 N 場會議(會後報告/摘要只有展開後才存在於 DOM,
+  // 是「從來沒被量測過」的其中一個深狀態)。
+  useEffect(
+    () =>
+      registerAuditControl('record.expandSession', (arg) => {
+        const s = sessions[Number(arg)]
+        if (!s) return false
+        setExpandedId(s.id ?? null)
+        return true
+      }),
+    [sessions]
+  )
+
   // Whisper worker 帶著數百 MB 模型,離頁一併釋放(Cache API 快取仍在,重進免重新下載)
   useEffect(() => {
     return () => {
+      startAttemptRef.current += 1
+      sessionIdRef.current += 1
       stopAll()
       whisperRef.current?.dispose()
       whisperRef.current = null
@@ -132,7 +202,14 @@ export default function Record(): JSX.Element {
     }
   }
 
-  const transcribeSegment = async (audio: Float32Array, sr: number, speaker: 'me' | 'them'): Promise<void> => {
+  const transcribeSegment = async (
+    audio: Float32Array,
+    sr: number,
+    speaker: 'me' | 'them',
+    sessionId: number,
+    sessionStartedAt: number,
+    segmentEndedAt: number
+  ): Promise<void> => {
     if (!settings) return
     try {
       let text = ''
@@ -152,8 +229,9 @@ export default function Record(): JSX.Element {
         if (!res.ok) throw new Error(res.error ?? '語音辨識失敗')
         text = res.text ?? ''
       }
-      if (!text.trim()) return
-      const end = (Date.now() - startedAtRef.current) / 1000
+      if (!text.trim() || sessionId !== sessionIdRef.current) return
+      // 時間戳取自音訊分段完成時，不是 ASR 回應時間；雲端延遲不應改寫語音發生時間。
+      const end = Math.max(0, (segmentEndedAt - sessionStartedAt) / 1000)
       const seg: TranscriptSegment = {
         speaker,
         text: text.trim(),
@@ -161,28 +239,69 @@ export default function Record(): JSX.Element {
         end
       }
       segsRef.current = [...segsRef.current, seg]
-      lastSegmentAtRef.current = Date.now()
       setSegments(segsRef.current)
+      // 成功一次就代表 STT 通了:清掉失敗累積,橫幅自動消失
+      sttFailStreakRef.current = 0
+      if (sttNotifiedRef.current) {
+        sttNotifiedRef.current = false
+        setSttFailed(false)
+      }
       // 餵 main 的 liveContext:panic(Alt+P)才有「對方問了什麼」的上下文
       void window.api.pushTranscript({ text: seg.text, speaker })
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
+      if (sessionId === sessionIdRef.current) {
+        // 失敗不每段都跳 toast —— 那會變成風暴並蓋住錄音介面。
+        // 改為累積連續次數,達門檻後顯示一個持續的橫幅;
+        // 單次失敗(例如剛開錄時模型還沒載好)仍然給一次 toast。
+        sttFailStreakRef.current += 1
+        const streak = sttFailStreakRef.current
+        // 本地引擎的失敗(模型、WebGPU)與雲端 API 的失敗(金鑰、網路、逾時)
+        // 需要不同的診斷;不給 ctx 時 describeError 只會回中性訊息,不臆測。
+        const ctx = settings.stt.engine === 'cloud' ? { provider: 'cloud-api' as const } : undefined
+        if (streak >= STT_FAILURE_BANNER_THRESHOLD) {
+          if (!sttNotifiedRef.current) {
+            sttNotifiedRef.current = true
+            toast.error(describeError(err, ctx))
+          }
+          setSttFailed(true)
+        } else {
+          toast.error(describeError(err, ctx))
+        }
+      }
     }
+  }
+
+  /** 精確追蹤每個 VAD flush/segmenter 送出的轉錄 Promise，停止時才不靠段落數猜測是否完成。 */
+  const queueTranscription = (audio: Float32Array, sr: number, speaker: 'me' | 'them'): void => {
+    const sessionId = sessionIdRef.current
+    const sessionStartedAt = sessionStartedAtRef.current
+    const segmentEndedAt = Date.now()
+    const job = transcribeSegment(audio, sr, speaker, sessionId, sessionStartedAt, segmentEndedAt)
+    // 送出就算一次「有偵測到語音」——不管結果成功或失敗。
+    // 停止時靠它分辨「真的沒說話」與「說了但辨識失敗」。
+    sttAttemptedRef.current += 1
+    pendingRef.current.track(sessionId, job)
   }
 
   const start = async (): Promise<void> => {
-    if (startingRef.current || recording) return
+    if (startingRef.current || stoppingRef.current || recording || saving) return
     startingRef.current = true
     setStarting(true)
+    const attempt = ++startAttemptRef.current
+    const abandonStart = (): void => {
+      if (attempt === startAttemptRef.current) {
+        startingRef.current = false
+        setStarting(false)
+      }
+    }
     try {
-      await startInner()
+      await startInner(attempt)
     } finally {
-      startingRef.current = false
-      setStarting(false)
+      abandonStart()
     }
   }
 
-  const startInner = async (): Promise<void> => {
+  const startInner = async (attempt: number): Promise<void> => {
     if (!wantMic && !wantSys) {
       toast.error('請至少選擇一個音訊來源')
       return
@@ -193,23 +312,50 @@ export default function Record(): JSX.Element {
       } catch {
         return
       }
+      if (attempt !== startAttemptRef.current) {
+        startingRef.current = false
+        setStarting(false)
+        return
+      }
     }
     segsRef.current = []
     setSegments([])
+    // 新的一場開始,上一場的報告立刻下架:留著只會誤導(見 lastReportMeta)
+    setLastReport(null)
+    setLastReportMeta(null)
     startedAtRef.current = Date.now()
+    sessionStartedAtRef.current = startedAtRef.current
+    sessionIdRef.current += 1
     setElapsed(0)
     setCoachCounts({})
-    // 會話邊界:清上一場的語音上下文與即時回饋冷卻狀態
-    await window.api.contextReset()
 
     try {
+      // 會話邊界:清上一場的語音上下文與即時回饋冷卻狀態
+      await window.api.contextReset()
+      sttAttemptedRef.current = 0
+      sttFailStreakRef.current = 0
+      sttNotifiedRef.current = false
+      setSttFailed(false)
+      if (attempt !== startAttemptRef.current) {
+        sessionStartedAtRef.current = 0
+        startingRef.current = false
+        setStarting(false)
+        return
+      }
       if (wantMic) {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
         })
+        if (attempt !== startAttemptRef.current) {
+          stream.getTracks().forEach((t) => t.stop())
+          sessionStartedAtRef.current = 0
+          startingRef.current = false
+          setStarting(false)
+          return
+        }
         streamsRef.current.mic = stream
         segmentersRef.current.mic = new AudioSegmenter({
-          onSegment: (a, sr) => void transcribeSegment(a, sr, 'me'),
+          onSegment: (a, sr) => queueTranscription(a, sr, 'me'),
           onLevel: setMicLevel,
           threshold: 0.01
         })
@@ -218,22 +364,43 @@ export default function Record(): JSX.Element {
       if (wantSys) {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
         stream.getVideoTracks().forEach((t) => t.stop()) // 只留音訊
+        if (attempt !== startAttemptRef.current) {
+          stream.getTracks().forEach((t) => t.stop())
+          sessionStartedAtRef.current = 0
+          startingRef.current = false
+          setStarting(false)
+          return
+        }
         if (stream.getAudioTracks().length === 0) {
           stream.getTracks().forEach((t) => t.stop())
           throw new Error('系統音訊擷取被取消或不可用')
         }
         streamsRef.current.sys = stream
         segmentersRef.current.sys = new AudioSegmenter({
-          onSegment: (a, sr) => void transcribeSegment(a, sr, 'them'),
+          onSegment: (a, sr) => queueTranscription(a, sr, 'them'),
           onLevel: setSysLevel,
           threshold: 0.018
         })
         await segmentersRef.current.sys.start(stream)
       }
+      if (attempt !== startAttemptRef.current) {
+        stopAll()
+        sessionStartedAtRef.current = 0
+        startingRef.current = false
+        setStarting(false)
+        return
+      }
       setRecording(true)
     } catch (err) {
       stopAll()
-      toast.error(err instanceof Error ? err.message : String(err))
+      startedAtRef.current = 0
+      sessionStartedAtRef.current = 0
+      sessionIdRef.current += 1
+      if (attempt === startAttemptRef.current) {
+        startingRef.current = false
+        setStarting(false)
+        toast.error(describeError(err))
+      }
     }
   }
 
@@ -251,63 +418,69 @@ export default function Record(): JSX.Element {
   const stop = async (): Promise<void> => {
     if (stoppingRef.current || saving) return
     stoppingRef.current = true
+    setSaving(true)
     try {
       setRecording(false)
-      // 在歸零之前捕捉:下面存檔要用的就是這個值。
-      // (曾把歸零放進場、存檔才讀 ref——每場會議的 startedAt 永遠存成 0,
-      //  時長報告與 Dashboard 累計全部爆表)
-      const startedAt = startedAtRef.current
-      // 歸零讓 elapsed interval 停止寫入(否則每 500ms 空轉 re-render)
+      // 在歸零之前捕捉起始時間；保留 sessionStartedAtRef 供已送出的轉錄回呼使用。
+      const sessionId = sessionIdRef.current
+      const startedAt = sessionStartedAtRef.current || startedAtRef.current
+      const endedAt = Date.now()
       startedAtRef.current = 0
-      // 最後一段話此刻多半還在 segmenter 的靜音判定窗裡(750ms):
-      // flush 送出的轉錄是 async,不等它就存檔會把使用者的最後一句話丟掉。
-      // 記住停止當下的數量,等所有在飛轉錄完成(或逾時)再收帳。
-      const pendingAtStop = segsRef.current.length
-      stopAll()
-      await Promise.race([
-        (async () => {
-          for (let i = 0; i < 40 && segsRef.current.length === pendingAtStop; i++) {
-            await new Promise((r) => setTimeout(r, 100))
-          }
-          // 再給一小段緩衝,若期間又進帳了段落,同樣等它安定
-          for (let i = 0; i < 30 && Date.now() - lastSegmentAtRef.current < 800; i++) {
-            await new Promise((r) => setTimeout(r, 100))
-          }
-        })(),
-        new Promise((r) => setTimeout(r, 4_000))
-      ])
+      stopAll() // stop() 同步 flush 最後音訊，會在此處將它加入本場 pending set
+
+      // 雲端 API 有 60 秒 timeout；等待本場已送出的請求完成，避免 4 秒猜測窗造成尾段逐字稿遺失。
+      // (等待期間的「收尾中…」由 stop() 開頭的 setSaving(true) 提供，見下方按鈕)
+      const drained = await drainPending(pendingRef.current.take(sessionId), 65_000)
+      // timeout 後隔離舊 session，避免晚到結果被寫入下一場會議。
+      sessionIdRef.current += 1
+      sessionStartedAtRef.current = 0
+      if (!drained.drained) toast.error(`部分語音辨識逾時(${drained.outstanding} 段未完成)，已先儲存目前可用的逐字稿`)
+
       if (segsRef.current.length > 0) {
-        setSaving(true)
         try {
           const segments = segsRef.current
           // 會話量化報告:與 session 一起存,供 Dashboard 趨勢使用;
           // 併入會議期間的 coaching 觸發計數,形成改進閉環
           const report = buildSessionReport(segments, {
-            durationSec: Math.min((Date.now() - startedAt) / 1000, 24 * 60 * 60)
+            durationSec: Math.min((endedAt - startedAt) / 1000, 24 * 60 * 60)
           })
           try {
             report.coachingCounts = await window.api.coachingStats()
           } catch {
             // 計數不可得時不影響報告本體
           }
+          const sessionTitle = titleRef.current.trim() || `會議 ${formatDateTime(startedAt)}`
           setLastReport(report)
+          setLastReportMeta({ title: sessionTitle, endedAt })
           await db.sessions.add({
-            title: titleRef.current.trim() || `會議 ${formatDateTime(startedAt)}`,
+            title: sessionTitle,
             startedAt,
-            endedAt: Date.now(),
+            endedAt,
             segments,
             report
           })
           await refreshSessions()
-        } finally {
-          setSaving(false)
+        } catch (err) {
+          toast.error(`會議紀錄儲存失敗。${describeError(err)}`)
         }
       } else {
-        // 0 段落停止:不留「看起來存了但其實什麼都沒有」的沉默,給使用者明確回饋
-        toast.info('這次沒有偵測到語音,未建立會議紀錄')
+        // 「沒有段落」有兩種完全不同的原因,原本用同一句話講,等於給錯診斷:
+        //   a) sttAttempted === 0 → 使用者真的沒說話
+        //   b) sttAttempted  > 0 → 偵測到語音但辨識失敗
+        // (b) 的情況下使用者明明整場都在說話,看到「沒有偵測到語音」會以為
+        // 麥克風壞了、去查硬體 —— 浪費的是他的時間,而且真正的問題被埋掉了。
+        if (sttAttemptedRef.current > 0) {
+          toast.error(
+            '偵測到你的語音,但語音辨識沒有成功——這場會議沒有被儲存。請確認模型已下載或雲端 API 金鑰有效後重新錄音。'
+          )
+        } else {
+          toast.info('這次沒有偵測到語音,未建立會議紀錄')
+        }
       }
     } finally {
+      sessionStartedAtRef.current = 0
       stoppingRef.current = false
+      setSaving(false)
     }
   }
 
@@ -334,13 +507,22 @@ export default function Record(): JSX.Element {
   const removeSession = async (id?: number): Promise<void> => {
     if (id == null) return
     // 永久刪除要有確認:與 Scripts 頁刪除講稿同一標準,誤觸即失去逐字稿+報告無法復原
-    if (!window.confirm('確定刪除這場會議紀錄嗎？逐字稿與報告將一併移除，無法復原。')) return
+    if (
+      !(await confirmDialog({
+        title: '刪除這場會議紀錄？',
+        body: '逐字稿、摘要與量化報告會一併移除，無法復原。',
+        confirmLabel: '刪除紀錄',
+        variant: 'danger'
+      }))
+    )
+      return
     await db.sessions.delete(id)
     await refreshSessions()
   }
 
   const generateSummary = async (s: MeetingSession): Promise<void> => {
     if (!settings || s.id == null) return
+    const aiProvider = settings.ai.provider
     setAiBusyId(s.id)
     try {
       const transcript = s.segments
@@ -371,7 +553,7 @@ export default function Record(): JSX.Element {
       await refreshSessions()
       setExpandedId(s.id)
     } catch (err) {
-      toast.error(`AI 摘要失敗:${err instanceof Error ? err.message : String(err)}`)
+      toast.error(`AI 摘要失敗。${describeError(err, { provider: aiProvider })}`)
     } finally {
       setAiBusyId(null)
     }
@@ -395,6 +577,27 @@ export default function Record(): JSX.Element {
         </div>
       </div>
 
+      {/*
+        辨識失敗橫幅。
+        為什麼需要這個而不是多跳幾個 toast:持續失敗時原本會幾秒一個錯誤跳出來,
+        堆滿並蓋住錄音介面。使用者只會得到「一直有東西出錯」的雜訊,
+        不會知道「我現在講的話不會被儲存」。這個橫幅把該有的那句話講清楚。
+      */}
+      {sttFailed && (
+        <div
+          role="alert"
+          className="mb-4 flex items-start gap-2.5 rounded-xl border border-rose-450/40 bg-rose-450/10 px-4 py-3 text-sm text-rose-300"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <div>
+            <div className="font-medium">語音辨識持續失敗,你現在說的話不會被儲存</div>
+            <div className="mt-0.5 text-xs text-rose-300/80">
+              請先停止錄音,確認本地模型已下載(或雲端 API 金鑰有效)後再重新錄製,否則這場會議不會留下任何逐字稿。
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 控制列 */}
       <div className="card mb-4 flex flex-wrap items-center gap-4 p-4">
         {!recording && (
@@ -409,13 +612,15 @@ export default function Record(): JSX.Element {
             </label>
             <input
               className="input w-52 text-xs"
+              aria-label="會議名稱"
+              title="會議名稱"
               placeholder="會議名稱（可留空）"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
             />
-            <button className="btn-primary ml-auto" onClick={start} disabled={starting}>
-              {starting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-              {starting ? '啟動中…' : '開始聆聽'}
+            <button className="btn-primary ml-auto" onClick={start} disabled={starting || saving}>
+              {starting || saving ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+              {saving ? '收尾中…' : starting ? '啟動中…' : '開始聆聽'}
             </button>
           </>
         )}
@@ -495,7 +700,25 @@ export default function Record(): JSX.Element {
       {/* 會後量化報告 */}
       {!recording && lastReport && lastReport.durationSec > 0 && (
         <div className="card mb-4 p-4">
-          <div className="mb-3 text-sm font-semibold">會後報告</div>
+          <div className="mb-3 flex items-center gap-3">
+            <div className="text-sm font-semibold">會後報告</div>
+            {lastReportMeta && (
+              <div className="min-w-0 flex-1 truncate text-[11px] text-ink-400" title={lastReportMeta.title}>
+                {lastReportMeta.title} · {formatDateTime(lastReportMeta.endedAt)}
+              </div>
+            )}
+            <button
+              className="btn-ghost ml-auto shrink-0 text-[11px]"
+              onClick={() => {
+                setLastReport(null)
+                setLastReportMeta(null)
+              }}
+              title="關閉這份報告"
+              aria-label="關閉這份報告"
+            >
+              關閉
+            </button>
+          </div>
           <div className="grid grid-cols-4 gap-3">
             {[
               { label: '時長', value: formatDuration(lastReport.durationSec) },
@@ -549,7 +772,7 @@ export default function Record(): JSX.Element {
                 <li key={i} className="flex items-start gap-2 text-xs leading-relaxed">
                   <span
                     className={cn(
-                      'mt-0.5 rounded px-1.5 py-0.5 text-[9px] shrink-0',
+                      'mt-0.5 rounded px-1.5 py-0.5 text-[10px] shrink-0',
                       sg.severity === 'high'
                         ? 'bg-rose-450/15 text-rose-450'
                         : sg.severity === 'medium'
@@ -582,7 +805,9 @@ export default function Record(): JSX.Element {
               <div key={s.id} className="card overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-2.5">
                   <button
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
+                    // py-1.5:原本列高只有 17px(等於一行文字),是整頁最小的點擊目標。
+                    // 內容本身不變,只是把可點範圍拉到 29px,對齊其他控制項的下限。
+                    className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left cursor-pointer"
                     onClick={() => setExpandedId(expandedId === s.id ? null : (s.id ?? null))}
                   >
                     {expandedId === s.id ? (
@@ -591,7 +816,15 @@ export default function Record(): JSX.Element {
                       <ChevronRight size={13} className="shrink-0 text-ink-400" />
                     )}
                     <div className="min-w-0">
-                      <div className="truncate text-sm">{s.title}</div>
+                      {/* title 不是裝飾:會議標題可以長到把整列截斷,而沒有一個
+                          可看的全文,使用者只能靠猜。稽核的 truncated-no-label 規則
+                          (由 scripts/audit-states.mjs 的長標題狀態量到)會抓這一類。 */}
+                                            {/* title 不是裝飾:會議標題可以長到把整列截斷,而沒有一個
+                          可看的全文,使用者只能靠猜。稽核的 truncated-no-label 規則
+                          (由 scripts/audit-states.mjs 的長標題狀態量到)會抓這一類。 */}
+                      <div className="truncate text-sm" title={s.title}>
+                        {s.title}
+                      </div>
                       <div className="text-[11px] text-ink-400">
                         {formatDateTime(s.startedAt)} · {s.segments.length} 段 ·{' '}
                         {s.summary ? '已生成摘要' : '未摘要'}
@@ -614,7 +847,12 @@ export default function Record(): JSX.Element {
                     <button className="btn-ghost text-xs" onClick={() => exportSession(s)}>
                       匯出
                     </button>
-                    <button className="btn-ghost text-rose-450" onClick={() => removeSession(s.id)}>
+                    <button
+                      className="btn-ghost text-rose-450"
+                      onClick={() => removeSession(s.id)}
+                      title="刪除這場會議紀錄"
+                      aria-label="刪除這場會議紀錄"
+                    >
                       <Trash2 size={13} />
                     </button>
                   </div>

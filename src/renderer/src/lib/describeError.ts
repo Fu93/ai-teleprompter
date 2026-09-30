@@ -37,7 +37,33 @@ function textOf(err: unknown): string {
  *   2. 我接下來該去哪裡改
  * 只回答第一個的訊息等於沒回答 —— 這正是原本 toast.error(err.message) 的問題。
  */
-const RULES: Array<{ test: RegExp; message: string }> = [
+/**
+ * 「連不上」的診斷必須知道使用者把請求送去哪裡。
+ *
+ * 這是這支檔案最重要的一個情境參數:不論是 Ollama 沒開還是雲端 API 被防火牆擋,
+ * 底層(Node undici / Chromium)給的訊息都是同一句 `fetch failed` —— 連 ECONNREFUSED
+ * 都只藏在 cause 裡,過了 IPC 就沒了。所以「看錯誤訊息猜供應商」在原理上做不到:
+ * 少了這個參數,就只能二選一,而選錯就是把「你的網路不通」說成「去啟動 Ollama」,
+ * 正是這支檔案自己說不可以犯的錯。
+ */
+export type ErrorProvider = 'ollama' | 'openai-compatible' | 'cloud-api'
+
+export interface ErrorContext {
+  /** 這個請求實際的接收端;未提供時一律給中性的網路訊息,不臆測 */
+  provider?: ErrorProvider
+}
+
+const CONNECTION_HINT: Record<ErrorProvider | 'generic', string> = {
+  ollama:
+    '無法連線到 Ollama。請確認已安裝並啟動(終端機執行 ollama serve,或直接開啟 Ollama 應用程式)。',
+  'openai-compatible':
+    '無法連線到設定的 AI API。請確認網路可用,並檢查「設定 → AI 助理」的 Base URL 是否正確。',
+  'cloud-api':
+    '無法連線到雲端語音 API。請確認網路可用,並檢查「設定 → 語音辨識」的 Base URL 是否正確。',
+  generic: '網路連線失敗。請確認網路可用後再試。'
+}
+
+const RULES: Array<{ test: RegExp; message: string | ((ctx: ErrorContext) => string) }> = [
   {
     // 麥克風/攝影機權限被拒 —— 全新使用者最常撞到的第一個牆
     test: /NotAllowedError|Permission denied|permission.*denied|denied.*permission/i,
@@ -58,18 +84,15 @@ const RULES: Array<{ test: RegExp; message: string }> = [
     message: 'API 金鑰無效或過期。請到「設定」頁重新填寫 API Key 後再試。'
   },
   {
-    // Ollama 沒開 —— 本地 AI 最常見的失敗
-    test: /ECONNREFUSED|fetch failed|連線.*(失敗|被拒|拒絕)|無法連線/i,
-    message: '無法連線到 Ollama。請確認已安裝並啟動(終端機執行 ollama serve,或直接開啟 Ollama 應用程式)。'
+    // 連線失敗:訊息本身分不出供應商,靠 ctx.provider 決定要說「啟動 Ollama」
+    // 還是「檢查 Base URL」。沒有 ctx 就不猜(見 ErrorContext 的註解)。
+    test: /ECONNREFUSED|ECONNRESET|fetch failed|Failed to fetch|NetworkError|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|network.*error|連線.*(失敗|被拒|拒絕|中斷)|無法連線|網路/i,
+    message: (ctx) => CONNECTION_HINT[ctx.provider ?? 'generic']
   },
   {
     // 本地模型沒下載 —— 第一次使用 Whisper/Ollama 都會撞到
     test: /model.*not found|404.*model|尚未下載|模型未下載|not found.*model/i,
     message: '找不到對應的本地模型。請先下載模型(或執行 ollama pull qwen2.5:7b)後再試。'
-  },
-  {
-    test: /ENOTFOUND|ETIMEDOUT|EAI_AGAIN|NetworkError|network.*error|網路/i,
-    message: '網路連線失敗。請確認網路可用後再試。'
   }
 ]
 
@@ -78,11 +101,11 @@ const RULES: Array<{ test: RegExp; message: string }> = [
  * 認得的錯誤回傳可行動的中文指引;不認得的回退到原始字串 ——
  * 寧可顯示真實的英文原文,也不要給一個自信但錯誤的診斷。
  */
-export function describeError(err: unknown): string {
+export function describeError(err: unknown, ctx: ErrorContext = {}): string {
   const raw = typeof err === 'string' ? err : err instanceof Error ? err.message : textOf(err)
   const text = textOf(err)
   for (const r of RULES) {
-    if (r.test.test(text)) return r.message
+    if (r.test.test(text)) return typeof r.message === 'function' ? r.message(ctx) : r.message
   }
   return raw || '發生未預期的錯誤'
 }

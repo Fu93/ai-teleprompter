@@ -17,6 +17,11 @@
     "test:e2e": "playwright test e2e/smoke.spec.ts e2e/visual.spec.ts",
     "test:all": "npm run typecheck && vitest run && npm run e2e",
     "e2e": "npm run build && playwright test",
+    "audit:ui": "node --no-warnings scripts/audit-ui.mjs",
+    "audit:deep": "node --no-warnings scripts/audit-deep.mjs",
+    "audit:states": "node scripts/audit-states.mjs",
+    "audit:edge": "node --no-warnings scripts/audit-glass-edge.mjs",
+    "audit": "npm run audit:ui && npm run audit:deep && npm run audit:states",
     "dist": "electron-vite build && electron-builder"
   },
   "dependencies": {

@@ -18,6 +18,11 @@ import SettingsPage from './pages/SettingsPage'
 import Calibration from './pages/Calibration'
 import OverlayApp from './overlay/OverlayApp'
 import { ToastHost } from './components/ToastHost'
+import { DebugRoot } from './components/DebugPanel'
+import { ConfirmHost } from './components/ConfirmDialog'
+import { useDebug } from './lib/debug'
+import { registerAuditControl } from './lib/auditBridge'
+import { confirmDialog } from './lib/confirm'
 
 type PageId = 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings'
 
@@ -35,13 +40,26 @@ function SidebarHotkeyHint(): JSX.Element {
   const toggleKey = useSettings((s) => s.settings?.hotkeys.toggleOverlay)
   const load = useSettings((s) => s.load)
   const loaded = useSettings((s) => s.loaded)
+  // 除錯層由其 root 向 main 問 appInfo().debug 後設起來,這裡只讀結果
+  const debugReady = useDebug((s) => s.enabled)
   // settings 尚未載入時補一次 load(防外部清除 store);正常啟動流程已載
   useEffect(() => {
     if (!loaded) void load()
   }, [loaded, load])
   return (
-    <div className="border-t border-ink-800 px-5 py-3 text-[11px] text-ink-400">
-      {toggleKey ? `${toggleKey.replaceAll('Control', 'Ctrl')} 顯示 / 隱藏浮層` : '熱鍵未設定:到設定頁設定'}
+    <div className="space-y-2 border-t border-ink-800 px-5 py-3 text-[11px] text-ink-400">
+      <div>
+        {toggleKey ? `${toggleKey.replaceAll('Control', 'Ctrl')} 顯示 / 隱藏浮層` : '熱鍵未設定:到設定頁設定'}
+      </div>
+      {/* 除錯面板的入口:快捷鍵是 Ctrl+Shift+D,但沒必要讓人先記住它 */}
+      {debugReady && (
+        <button
+          onClick={() => useDebug.getState().togglePanel()}
+          className="w-full cursor-pointer rounded-md border border-accent-400/40 bg-accent-500/15 px-2 py-1 text-[10px] text-accent-300 transition-colors hover:bg-accent-500/25"
+        >
+          除錯面板 · Ctrl+Shift+D
+        </button>
+      )}
     </div>
   )
 }
@@ -55,8 +73,16 @@ function MainApp(): JSX.Element {
   // 講稿編輯中有未存變更:側欄切頁前要攔下來確認
   const [scriptsDirty, setScriptsDirty] = useState(false)
 
-  const navigate = (target: PageId): void => {
-    if (scriptsDirty && target !== page && !window.confirm('講稿有未儲存的修改，離開將遺失這些變更。確定要離開嗎？')) {
+  const navigate = async (target: PageId): Promise<void> => {
+    if (
+      scriptsDirty &&
+      target !== page &&
+      !(await confirmDialog({
+        title: '講稿有未儲存的修改',
+        body: '離開「提詞講稿」會遺失這些變更。',
+        confirmLabel: '放棄變更並離開'
+      }))
+    ) {
       return
     }
     setScriptsDirty(false)
@@ -66,6 +92,25 @@ function MainApp(): JSX.Element {
   useEffect(() => {
     window.history.replaceState(null, '', `#/${page}`)
   }, [page])
+
+  /**
+   * 稽核用:依頁面 id 導航。
+   *
+   * 離線稽核原本是在側欄上比對按鈕文字再 click,而「找不到元素」與
+   * 「這一頁沒問題」在截圖與報告上無法區分。改成明確的 id 之後,
+   * 找不到就回 false,呼叫端可以當場報 state-unreached。
+   */
+  useEffect(
+    () =>
+      registerAuditControl('app.navigate', (arg) => {
+        const id = String(arg) as PageId
+        const valid: PageId[] = ['dashboard', 'scripts', 'record', 'practice', 'calibration', 'settings']
+        if (!valid.includes(id)) return false
+        setPage(id)
+        return true
+      }),
+    []
+  )
 
   const render = (): JSX.Element => {
     switch (page) {
@@ -78,9 +123,9 @@ function MainApp(): JSX.Element {
       case 'calibration':
         return <Calibration onDone={() => setPage('settings')} />
       case 'settings':
-        return <SettingsPage onNavigate={navigate} />
+        return <SettingsPage onNavigate={(p) => void navigate(p)} />
       default:
-        return <Dashboard onNavigate={navigate} />
+        return <Dashboard onNavigate={(p) => void navigate(p)} />
     }
   }
 
@@ -100,7 +145,7 @@ function MainApp(): JSX.Element {
           {NAV.map((item) => (
             <button
               key={item.id}
-              onClick={() => navigate(item.id)}
+              onClick={() => void navigate(item.id)}
               className={cn(
                 'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors cursor-pointer',
                 page === item.id
@@ -117,6 +162,8 @@ function MainApp(): JSX.Element {
       </aside>
       <main className="flex-1 overflow-y-auto">{render()}</main>
       <ToastHost />
+      <ConfirmHost />
+      <DebugRoot />
     </div>
   )
 }

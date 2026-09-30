@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  AlertTriangle,
   ChevronRight,
   Download,
   GraduationCap,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react'
 import type { PracticeAnswer, PracticeFeedback, PracticeRun } from '@shared/types'
 import { db } from '../lib/db'
+import { describeError } from '../lib/describeError'
 import { useSettings } from '../lib/store'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
 import { aiChat, extractJson } from '../lib/ai'
@@ -21,6 +23,13 @@ import { speak, stopSpeaking, warmUpVoices } from '../lib/tts'
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { encodeWav } from '../lib/audio/wav'
+import {
+  createPendingTracker,
+  drainPending,
+  STT_FAILURE_BANNER_THRESHOLD,
+  type DrainResult
+} from '../lib/transcriptionQueue'
+import { confirmDialog } from '../lib/confirm'
 import { toast } from '../lib/toast'
 import { analyzePracticeRun } from '../lib/session-intelligence'
 
@@ -45,6 +54,20 @@ export default function Practice(): JSX.Element {
   const startingRef = useRef(false)
   const [level, setLevel] = useState(0)
   const [busy, setBusy] = useState<string | null>(null) // 'questions' | 'feedback' | 'overall'
+  /**
+   * 「完成回答」按下後、評分開始前的等待。
+   *
+   * 為什麼需要一個獨立的 state 而不靠 busy:
+   *   finishAnswerInner 先 stopListening(),那會立刻把 recording 設成 false,
+   *   於是主要按鈕在 drain 期間就換回「開始回答」而且還是可點的
+   *   (disabled 只看 busy,而 busy 要等 drain 完才設 'feedback')。
+   *   但 finishingRef.current 還是 true,點下去 startListening 的守衛直接 return
+   *   —— 使用者看到一顆可按、按了沒反應、也沒有任何進度的按鈕,最長 65 秒
+   *   (雲端 ASR 的 timeout)。
+   *   Record 頁同一個 65 秒等待做對了(setSaving(true) → 「收尾中…」+ disabled),
+   *   這裡漏了。
+   */
+  const [draining, setDraining] = useState(false)
   /** 首次載入本地模型時的下載進度(Record/Calibration 都有進度條,唯獨 Practice 缺:
    *  新使用者按「開始回答」只看到轉圈數分鐘,會以為卡死) */
   const [modelDL, setModelDL] = useState<{ progress: number; file: string } | null>(null)
@@ -52,10 +75,30 @@ export default function Practice(): JSX.Element {
    *  雙擊會重複送 AI 評分/重複寫入練習紀錄(按鈕 disabled 依賴 re-render,同 tick 內擋不住) */
   const finishingRef = useRef(false)
   const finishingRunRef = useRef(false)
+  const startAttemptRef = useRef(0)
+  const answerIdRef = useRef(0)
+  // 在飛的辨識請求由 lib/transcriptionQueue 追蹤(與 Record 頁同一份實作)。
+  // 型別標在 useRef 上,而非 new Map<...>() 的泛型位置 ——
+  // 原寫法少了 Map 的收尾 >,esbuild 解析失敗後把它當成比較運算式,
+  // 產出 new Map() < number, Set() —— 執行期 ReferenceError: number is not defined。
+  // tsc 與 build 都不報錯,只有頁面真正跑起來才炸,所以用明確的泛型引數寫法。
+  const pendingRef = useRef(createPendingTracker<number>())
   /** 下一題雙擊會連跳兩題(setQIndex updater 在同 tick 串聯兩次) */
   const advancingRef = useRef(false)
   const [run, setRun] = useState<PracticeRun | null>(null)
   const [history, setHistory] = useState<PracticeRun[]>([])
+  /**
+   * 辨識持續失敗的持續提醒。
+   *
+   * 為什麼 Practice 也需要(而不只是 Record):這裡的失敗同樣會讓整段回答變成
+   * 空白,但使用者看到的只是一個品質不好的分數 —— 他不會知道那是「你講的話
+   * 根本沒進到系統」,只會以為自己剛才表現得很差。門檻與 Record 共用同一份。
+   */
+  const [sttFailed, setSttFailed] = useState(false)
+  const sttFailStreakRef = useRef(0)
+  const sttNotifiedRef = useRef(false)
+  /** 本題是否有段落辨識失敗 → 這份逐字稿不完整(隨答案一起存,見 PracticeAnswer.partial) */
+  const segFailRef = useRef(false)
 
   const whisperRef = useRef<WhisperClient | null>(null)
   const segmenterRef = useRef<AudioSegmenter | null>(null)
@@ -75,11 +118,10 @@ export default function Practice(): JSX.Element {
     warmUpVoices()
   }, [refreshHistory])
 
-  /** 最後一段落帳時間:finishAnswer 等待在飛轉錄用 */
-  const lastSegAtRef = useRef(0)
-
   useEffect(() => {
     return () => {
+      startAttemptRef.current += 1
+      answerIdRef.current += 1
       segmenterRef.current?.stop()
       streamRef.current?.getTracks().forEach((t) => t.stop())
       stopSpeaking()
@@ -110,8 +152,11 @@ export default function Practice(): JSX.Element {
     }
   }
 
-  const onSegment = async (audio: Float32Array, sr: number): Promise<void> => {
+  const onSegment = async (audio: Float32Array, sr: number, answerId: number): Promise<void> => {
     if (!settings) return
+    // 先取出來再進 try:catch 看不到 try 之前的窄化,而且「連不上」要說 Ollama
+    // 還是雲端 API 完全取決於這一個值(見 describeError 的 ErrorContext)
+    const sttEngine = settings.stt.engine
     try {
       let text = ''
       if (settings.stt.engine === 'local') {
@@ -130,38 +175,71 @@ export default function Practice(): JSX.Element {
         text = res.text ?? ''
       }
       if (text.trim()) {
+        if (answerId !== answerIdRef.current) return
         segsRef.current = [...segsRef.current, text.trim()]
-        lastSegAtRef.current = Date.now()
         setCurTranscript(segsRef.current.join(''))
         // 餵 main:panic(Alt+P)有作答上下文、coaching 教練提示來源
         void window.api.pushTranscript({ text: text.trim(), speaker: 'me' })
+        // 成功一次就代表辨識通了:清掉失敗累積,橫幅自動消失
+        sttFailStreakRef.current = 0
+        if (sttNotifiedRef.current) {
+          sttNotifiedRef.current = false
+          setSttFailed(false)
+        }
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
+      if (answerId === answerIdRef.current) {
+        segFailRef.current = true
+        sttFailStreakRef.current += 1
+        const ctx = sttEngine === 'cloud' ? { provider: 'cloud-api' as const } : undefined
+        if (sttFailStreakRef.current >= STT_FAILURE_BANNER_THRESHOLD) {
+          if (!sttNotifiedRef.current) {
+            sttNotifiedRef.current = true
+            toast.error(describeError(err, ctx))
+          }
+          setSttFailed(true)
+        } else {
+          toast.error(describeError(err, ctx))
+        }
+      }
     }
+  }
+
+  const queueAnswerTranscription = (audio: Float32Array, sr: number, answerId: number): void => {
+    pendingRef.current.track(answerId, onSegment(audio, sr, answerId))
   }
 
   const startListening = async (): Promise<void> => {
-    if (startingRef.current || recording) return
+    if (startingRef.current || recording || finishingRef.current) return
     startingRef.current = true
     setStarting(true)
+    const attempt = ++startAttemptRef.current
     try {
-      await startListeningInner()
+      await startListeningInner(attempt)
     } finally {
-      startingRef.current = false
-      setStarting(false)
+      if (attempt === startAttemptRef.current) {
+        startingRef.current = false
+        setStarting(false)
+      }
     }
   }
 
-  const startListeningInner = async (): Promise<void> => {
+  const startListeningInner = async (attempt: number): Promise<void> => {
+    let stream: MediaStream | null = null
+    let segmenter: AudioSegmenter | null = null
     try {
       if (settings?.stt.engine === 'local') await ensureWhisper()
+      if (attempt !== startAttemptRef.current) return
+      const answerId = ++answerIdRef.current
       segsRef.current = []
+      segFailRef.current = false
       setCurTranscript('')
-      setCurStart(Date.now())
-      // 會話邊界:清上一題/上一場的語音上下文與即時回饋冷卻
-      void window.api.contextReset()
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const startedAt = Date.now()
+      setCurStart(startedAt)
+      // 會話邊界必須先清完 main 端上下文，避免清理晚於第一筆新逐字稿。
+      await window.api.contextReset()
+      if (attempt !== startAttemptRef.current) return
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
           echoCancellation: true,
@@ -169,16 +247,33 @@ export default function Practice(): JSX.Element {
           autoGainControl: true
         }
       })
+      if (attempt !== startAttemptRef.current) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
       streamRef.current = stream
-      segmenterRef.current = new AudioSegmenter({
-        onSegment: (audio, sr) => void onSegment(audio, sr),
+      segmenter = new AudioSegmenter({
+        onSegment: (audio, sr) => queueAnswerTranscription(audio, sr, answerId),
         onLevel: setLevel,
         threshold: 0.01
       })
-      await segmenterRef.current.start(stream)
+      segmenterRef.current = segmenter
+      await segmenter.start(stream)
+      if (attempt !== startAttemptRef.current) {
+        segmenter.stop()
+        stream.getTracks().forEach((t) => t.stop())
+        if (segmenterRef.current === segmenter) segmenterRef.current = null
+        if (streamRef.current === stream) streamRef.current = null
+        return
+      }
       setRecording(true)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
+      segmenter?.stop()
+      stream?.getTracks().forEach((t) => t.stop())
+      if (attempt !== startAttemptRef.current) return
+      segmenterRef.current = null
+      streamRef.current = null
+      toast.error(describeError(err))
     }
   }
 
@@ -198,8 +293,9 @@ export default function Practice(): JSX.Element {
       return
     }
     setBusy('questions')
+    const aiProvider = settings.ai.provider
     try {
-      if (settings.ai.provider === 'ollama') {
+      if (aiProvider === 'ollama') {
         const res = await window.api.ollamaListModels(settings.ai.ollama.baseUrl)
         if (!res.installed) {
           throw new Error('無法連線到 Ollama——請確認已安裝並啟動（詳見設定頁）')
@@ -220,9 +316,13 @@ export default function Practice(): JSX.Element {
       setQuestions(qs)
       setQIndex(0)
       setAnswers([])
+      // 新的一輪從乾淨的失敗計數開始(上一輪的紅色橫幅不該跟著進來)
+      sttFailStreakRef.current = 0
+      sttNotifiedRef.current = false
+      setSttFailed(false)
       setPhase('run')
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
+      toast.error(describeError(err, { provider: aiProvider }))
     } finally {
       setBusy(null)
     }
@@ -239,20 +339,27 @@ export default function Practice(): JSX.Element {
   }
 
   const finishAnswerInner = async (): Promise<void> => {
-    const beforeCount = segsRef.current.length
-    stopListening()
-    // 連續說話時 VAD 沒有靜音間隙,整段回答的轉錄都在 segmenter.flush()(async)才送出;
-    // 不等它就讀逐字稿會把整份回答判成「沒有聽到回答內容」(真機實測重現)。
-    // 等在飛轉錄落地:數量增加或歸於安靜(800ms 無新帳),上限 4 秒。
-    await Promise.race([
-      (async () => {
-        for (let i = 0; i < 40; i++) {
-          if (segsRef.current.length > beforeCount && Date.now() - lastSegAtRef.current >= 800) break
-          await new Promise((r) => setTimeout(r, 100))
-        }
-      })(),
-      new Promise((r) => setTimeout(r, 4_000))
-    ])
+    const answerId = answerIdRef.current
+    const answerStart = curStart
+    const answerEndedAt = Date.now()
+    stopListening() // flush 同步呼叫 VAD callback，隨後可讀取完整 pending 集合
+    const pending = pendingRef.current.take(answerId)
+    // 等待期間一定要讓 UI 看得出在忙:stopListening 已把 recording 設成 false,
+    // 主要按鈕會換回「開始回答」,而 finishingRef 會讓點擊靜默失效。
+    // 少了這一段就是「可按、按了沒反應、最長 65 秒」。
+    setDraining(true)
+    let result: DrainResult
+    try {
+      result = await drainPending(pending, 65_000)
+    } finally {
+      setDraining(false)
+    }
+    // 逾時或有段落失敗 ⇒ 這份逐字稿不完整。分數照算(否則整題白費),
+    // 但旗標必須跟答案一起存下去,否則事後只看得到一個分數。
+    const partial = !result.drained || segFailRef.current
+    if (!result.drained) {
+      toast.error('語音辨識逾時，先用目前收到的逐字稿評分——這次的逐字稿可能少了結尾')
+    }
     const q = questions[qIndex]
     const transcript = segsRef.current.join('')
     if (!transcript.trim()) {
@@ -260,12 +367,12 @@ export default function Practice(): JSX.Element {
       return
     }
     if (!settings) return
+    const aiProvider = settings.ai.provider
     setBusy('feedback')
     stopSpeaking()
-    const answerStart = curStart
     // 個人語速基準（若有校準）：實際語速 vs 個人基準，供表達面反饋對照
     const baselineCpm = settings.personal.profile?.charsPerMin
-    const answerSecs = (Date.now() - answerStart) / 1000
+    const answerSecs = Math.max(0, (answerEndedAt - answerStart) / 1000)
     const actualChars = countReadableChars(transcript)
     const actualCpm = answerSecs > 0 ? Math.round((actualChars / answerSecs) * 60) : null
     const rateLine =
@@ -284,19 +391,21 @@ export default function Practice(): JSX.Element {
       const answer: PracticeAnswer = {
         question: q,
         answerTranscript: transcript,
-        durationSec: (Date.now() - answerStart) / 1000,
-        feedback: fb
+        durationSec: Math.max(0, (answerEndedAt - answerStart) / 1000),
+        feedback: fb,
+        partial: partial || undefined
       }
       setAnswers((a) => [...a, answer])
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
+      toast.error(describeError(err, { provider: aiProvider }))
       // 反饋失敗仍保留回答文字
       setAnswers((a) => [
         ...a,
         {
           question: q,
           answerTranscript: transcript,
-          durationSec: (Date.now() - answerStart) / 1000
+          durationSec: Math.max(0, (answerEndedAt - answerStart) / 1000),
+          partial: partial || undefined
         }
       ])
     } finally {
@@ -376,7 +485,15 @@ export default function Practice(): JSX.Element {
   const removeHistory = async (id?: number): Promise<void> => {
     if (id == null) return
     // 永久刪除要有確認:與 Record 會議歷史、Scripts 講稿刪除同一標準
-    if (!window.confirm('確定刪除這次練習紀錄嗎？反饋與總評將一併移除，無法復原。')) return
+    if (
+      !(await confirmDialog({
+        title: '刪除這次練習紀錄？',
+        body: '逐題反饋與總評會一併移除，無法復原。',
+        confirmLabel: '刪除紀錄',
+        variant: 'danger'
+      }))
+    )
+      return
     await db.practiceRuns.delete(id)
     await refreshHistory()
     toast.info('練習紀錄已刪除')
@@ -393,6 +510,11 @@ export default function Practice(): JSX.Element {
   }
 
   const reset = (): void => {
+    startAttemptRef.current += 1
+    answerIdRef.current += 1
+    sttFailStreakRef.current = 0
+    sttNotifiedRef.current = false
+    setSttFailed(false)
     stopSpeaking()
     stopListening()
     setPhase('setup')
@@ -411,7 +533,7 @@ export default function Practice(): JSX.Element {
           <div>
             <div className="label">職位或情境</div>
             <input
-              className="input"
+              aria-label="職位或情境" className="input"
               placeholder="例如：產品經理、後端工程師、研究所口試"
               value={position}
               onChange={(e) => setPosition(e.target.value)}
@@ -481,14 +603,21 @@ export default function Practice(): JSX.Element {
                     className="min-w-0 flex-1 text-left cursor-pointer"
                     onClick={() => loadHistory(r)}
                   >
-                    <div className="truncate text-sm">
+                    {/* 職稱欄可以長到把整列截斷(position 是使用者自己輸入的,
+                        稽核的長標題狀態量到 756 > 533)。沒有 title 就只剩半個字。 */}
+                    <div className="truncate text-sm" title={`${r.position} · ${r.type}`}>
                       {r.position} · {r.type}
                     </div>
                     <div className="text-[11px] text-ink-400">
                       {formatDateTime(r.createdAt)} · {r.answers.length} 題
                     </div>
                   </button>
-                  <button className="btn-ghost text-rose-450" onClick={() => removeHistory(r.id)}>
+                  <button
+                    className="btn-ghost text-rose-450"
+                    onClick={() => removeHistory(r.id)}
+                    title="刪除這次練習紀錄"
+                    aria-label="刪除這次練習紀錄"
+                  >
                     <Trash2 size={13} />
                   </button>
                 </div>
@@ -513,6 +642,24 @@ export default function Practice(): JSX.Element {
             結束練習
           </button>
         </div>
+
+        {/* 辨識持續失敗橫幅(與 Record 同一個門檻與措辭思路):
+            沒有它,使用者拿到的是一個偏低的分數,而他永遠不會知道
+            原因是「你講的話根本沒進系統」。 */}
+        {sttFailed && (
+          <div
+            role="alert"
+            className="mb-4 flex items-start gap-2.5 rounded-xl border border-rose-450/40 bg-rose-450/10 px-4 py-3 text-sm text-rose-300"
+          >
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <div>
+              <div className="font-medium">語音辨識持續失敗,你這段回答不會被完整記錄</div>
+              <div className="mt-0.5 text-xs text-rose-300/80">
+                請確認本地模型已下載(或雲端 API 金鑰有效)後重新回答,否則評分只會看到零碎的逐字稿。
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 首次使用:本地模型下載進度(與 Record/Calibration 同款) */}
         {modelDL && (
@@ -544,8 +691,16 @@ export default function Practice(): JSX.Element {
           {curAnswer ? (
             <div className="space-y-4">
               <div className="rounded-lg bg-ink-850 p-4 text-sm leading-relaxed">
-                <div className="mb-1 text-[11px] text-ink-400">
+                <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-ink-400">
                   你的回答（{formatDuration(curAnswer.durationSec)}）
+                  {curAnswer.partial && (
+                    <span
+                      className="rounded bg-amber-450/15 px-1.5 py-0.5 text-[10px] text-amber-450"
+                      title="語音辨識逾時或有段落失敗,這份逐字稿可能少了結尾"
+                    >
+                      逐字稿可能不完整
+                    </span>
+                  )}
                 </div>
                 {curAnswer.answerTranscript}
               </div>
@@ -624,11 +779,15 @@ export default function Practice(): JSX.Element {
                 <button
                   className="btn-primary w-full"
                   onClick={finishAnswer}
-                  disabled={busy !== null}
+                  disabled={busy !== null || draining}
                 >
                   {busy === 'feedback' ? (
                     <>
                       <Loader2 size={14} className="animate-spin" /> AI 評分中…
+                    </>
+                  ) : draining ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" /> 整理最後一句…
                     </>
                   ) : (
                     <>
@@ -640,10 +799,14 @@ export default function Practice(): JSX.Element {
                 <button
                   className="btn-primary w-full"
                   onClick={startListening}
-                  disabled={busy !== null || starting}
+                  disabled={busy !== null || starting || draining}
                 >
-                  {starting ? <Loader2 size={14} className="animate-spin" /> : <Mic size={14} />}
-                  {starting ? '啟動中…' : '開始回答'}
+                  {starting || draining ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Mic size={14} />
+                  )}
+                  {draining ? '整理最後一句…' : starting ? '啟動中…' : '開始回答'}
                 </button>
               )}
             </div>
@@ -774,6 +937,11 @@ export default function Practice(): JSX.Element {
               )}
             </div>
             <div className="text-xs leading-relaxed text-ink-300">{a.answerTranscript}</div>
+            {a.partial && (
+              <div className="mt-1.5 text-[10px] text-amber-450">
+                逐字稿可能不完整（當時語音辨識逾時或有段落失敗）
+              </div>
+            )}
           </div>
         ))}
       </div>

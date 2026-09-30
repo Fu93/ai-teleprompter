@@ -39,6 +39,61 @@ export function rayDisplacement(distanceFromEdge01: number): number {
   return magnitude * falloff
 }
 
+/** 形狀內縮距離與內向法線 */
+export interface ShapeInset {
+  /** 由邊界往內的距離(px)。負值 = 在形狀外 */
+  depth: number
+  /** 內向法線(單位向量,指向形狀內部) */
+  nx: number
+  ny: number
+}
+
+/**
+ * 圓角矩形(含膠囊)的 signed distance 與內向法線。
+ *
+ * 為什麼不是「到四條直邊的最近距離」:那是上一版的模型,它在圓端與直邊的交界
+ * 有接縫(靠一個 bezel*0.5 的 lerp 硬補),而膠囊整個輪廓都是圓弧 —— 接縫會讓
+ * 折射在上下兩條直邊上堆出一段亮帶,外觀就是「一個有白邊的長方形框」而不是
+ * 橢圓環。SDF 用同一個式子描述直邊與圓端,法線沿周長連續,膠囊的兩端
+ * (radius = height/2)會自動得到徑向對稱的環。
+ *
+ * 座標以像素中心為準(px+0.5);radius 會被夾在 [0, min(w,h)/2]。
+ */
+export function shapeInset(
+  px: number,
+  py: number,
+  width: number,
+  height: number,
+  radius: number
+): ShapeInset {
+  const r = Math.max(0, Math.min(radius, width / 2, height / 2))
+  const cx = width / 2
+  const cy = height / 2
+  const dx = px + 0.5 - cx
+  const dy = py + 0.5 - cy
+  // 圓角矩形 SDF:q = |p-c| - (half - r),d = |max(q,0)| + min(max(q),0) - r
+  const qx = Math.abs(dx) - (width / 2 - r)
+  const qy = Math.abs(dy) - (height / 2 - r)
+  const ax = Math.max(qx, 0)
+  const ay = Math.max(qy, 0)
+  const outside = Math.hypot(ax, ay)
+  const sdf = outside + Math.min(Math.max(qx, qy), 0) - r
+
+  // 外向法線(梯度);outside > 0 = 在圓角區,方向由兩個軸合成
+  let gx = 0
+  let gy = 0
+  if (outside > 1e-6) {
+    gx = Math.sign(dx) * (ax / outside)
+    gy = Math.sign(dy) * (ay / outside)
+  } else if (qx > qy) {
+    gx = Math.sign(dx)
+  } else {
+    gy = Math.sign(dy)
+  }
+  const len = Math.hypot(gx, gy) || 1
+  return { depth: -sdf, nx: -gx / len, ny: -gy / len }
+}
+
 export interface DisplacementMapResult {
   /** PNG data URL,交給 <feImage href> */
   dataUrl: string
@@ -49,9 +104,14 @@ export interface DisplacementMapResult {
 }
 
 /**
- * 產生圓角矩形容器的位移圖。
- * 邊框中每個像素的位移向量 = 從邊緣指向內部,量值由 rayDisplacement 決定。
- * 圓角矩形:對「到最近邊的距離」與「到圓角中心的距離」取較小者作為滲透深度。
+ * 產生容器的位移圖。
+ * 邊框中每個像素的位移向量 = 該點 SDF 的內向法線(見 shapeInset),量值由
+ * rayDisplacement 決定。法線來自真實的形狀距離場,所以膠囊的折射環是連續的
+ * 橢圓環,而不是「直邊一段 + 圓端一段」拼起來的框。
+ *
+ * bezelPx / maxDisplacementPx 應隨形狀半徑縮放(呼叫端:bezel ≈ radius*0.55);
+ * 對 48px 高的藥丸而言固定 18/14 等於把位移推到整條直邊上,那是「長方形感」
+ * 的另一半來源。
  */
 export function buildDisplacementMap(
   width: number,
@@ -69,68 +129,19 @@ export function buildDisplacementMap(
 
   const img = ctx.createImageData(width, height)
   const data = img.data
-  const r = Math.min(radius, width / 2, height / 2)
 
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       const idx = (py * width + px) * 4
-      // 到四邊的滲透深度(px)
-      const depthL = px
-      const depthR = width - 1 - px
-      const depthT = py
-      const depthB = height - 1 - py
-      // 圓角:超出半徑的角落,改算到圓角中心的距離
-      const cx = Math.min(Math.max(px, r), width - r)
-      const cy = Math.min(Math.max(py, r), height - r)
-      const inCorner = cx !== px || cy !== py
-      const cornerDist = inCorner ? Math.hypot(px - cx, py - cy) : Infinity
-      const cornerDepth = r - cornerDist // 負值=在圓角外,位移 0
-
-      // 主導邊 = 滲透最淺的方向;向量由該邊指向內部
-      const depths = [
-        { d: depthL, vx: 1, vy: 0 },
-        { d: depthR, vx: -1, vy: 0 },
-        { d: depthT, vx: 0, vy: 1 },
-        { d: depthB, vx: 0, vy: -1 }
-      ].sort((a, b) => a.d - b.d)
-
-      let vx: number
-      let vy: number
-      let depth: number
-      if (inCorner && cornerDepth < depths[0].d) {
-        // 圓角區:向量從角落圓心指向外(位移把背景往內拉)
-        const len = Math.hypot(px - cx, py - cy) || 1
-        vx = (px - cx) / len
-        vy = (py - cy) / len
-        depth = cornerDepth
-      } else {
-        vx = depths[0].vx
-        vy = depths[0].vy
-        depth = depths[0].d
-      }
+      const { depth, nx, ny } = shapeInset(px, py, width, height, radius)
 
       let mag = 0
       if (depth >= 0 && depth <= bezel) {
         mag = rayDisplacement(depth / bezel)
       }
 
-      // 0.71 的中央邊界處理:相鄰兩邊深度接近時混合向量,避免對角接縫
-      let rx = 128
-      let gy = 128
-      if (mag > 0) {
-        if (depths[1].d - depths[0].d < bezel * 0.5) {
-          // 過渡:向次主導邊向量 lerp
-          const t = 1 - (depths[1].d - depths[0].d) / (bezel * 0.5)
-          const sx = vx * (1 - t) + depths[1].vx * t
-          const sy = vy * (1 - t) + depths[1].vy * t
-          const sl = Math.hypot(sx, sy) || 1
-          rx = Math.round(128 + (sx / sl) * mag * 127)
-          gy = Math.round(128 + (sy / sl) * mag * 127)
-        } else {
-          rx = Math.round(128 + vx * mag * 127)
-          gy = Math.round(128 + vy * mag * 127)
-        }
-      }
+      const rx = mag > 0 ? Math.round(128 + nx * mag * 127) : 128
+      const gy = mag > 0 ? Math.round(128 + ny * mag * 127) : 128
       data[idx] = rx
       data[idx + 1] = gy
       data[idx + 2] = 128 // B 不用

@@ -5,7 +5,11 @@ import { db } from '../lib/db'
 import type { Script } from '@shared/types'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
 import { toast } from '../lib/toast'
+import { describeError } from '../lib/describeError'
 import { useSettings } from '../lib/store'
+import { registerAuditControl } from '../lib/auditBridge'
+import { confirmDialog } from '../lib/confirm'
+import { useCloseGuard } from '../lib/closeGuard'
 
 function estimateMinutes(content: string, charsPerMin: number): string {
   const chars = content.replace(/\s/g, '').length
@@ -26,6 +30,26 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     onDirtyChange?.(dirty)
     return () => onDirtyChange?.(false)
   }, [dirty, onDirtyChange])
+
+  // 關閉視窗時的守衛。側欄切頁有阻擋,關窗沒有,而關窗損失更徹底。
+  useCloseGuard(
+    'scripts-dirty',
+    dirty ? `「${draft.title || '未命名講稿'}」有未儲存的修改。` : null
+  )
+
+  // 稽核用:直接選取第 N 篇講稿。不經 UI 點擊,因為「選取後畫面沒變」
+  // 無法區分「狀態沒到達」與「狀態本來就長這樣」(第一份稿會被自動選取)。
+  useEffect(
+    () =>
+      registerAuditControl('scripts.selectIndex', (arg) => {
+        const i = Number(arg)
+        const target = scripts[i]
+        if (!target) return false
+        setSelectedId(target.id ?? null)
+        return true
+      }),
+    [scripts]
+  )
 
   // unmount 清理:錄影中切頁要收掉計時器、錄音器與攝影機/麥克風 track;
   // recorder.onstop 會在離頁後觸發,此時 mainWindow 還在所以 saveRecording 對話框仍會跳出——
@@ -60,15 +84,35 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const select = (s: Script): void => {
-    if (dirty && !window.confirm('目前講稿有未儲存的修改，確定要切換嗎？')) return
+  /** 未存變更的共用確認:稿子有三個入口會把它丢掉,文案要一致 */
+  const confirmDiscard = (body: string, confirmLabel: string): Promise<boolean> =>
+    confirmDialog({ title: '講稿有未儲存的修改', body, confirmLabel })
+
+  /**
+   * 確保「目前有一份正在編輯的講稿」,沒有就建立一份並選取它。
+   *
+   * 為什麼匯入需要這個:編輯器只在 selectedId != null 時渲染。全新使用者
+   * (或剛刪光講稿的人)沒有任何選取,而原本的 importFile 只 setDraft + setDirty ——
+   * 內容被寫進一個永遠不會顯示的 state:使用者選了檔案、畫面毫無變化,內容其實
+   * 已經丢了;更糟的是 dirty 變成 true,之後切頁或關窗會為一份他根本看不到的
+   * 內容跳「有未儲存的修改」。先讓內容有地方落腳,守衛才不會守一個幽靈。
+   */
+  const ensureTarget = async (title: string): Promise<void> => {
+    if (selectedId != null) return
+    const now = Date.now()
+    const id = await db.scripts.add({ title, content: '', createdAt: now, updatedAt: now })
+    await refresh(id)
+  }
+
+  const select = async (s: Script): Promise<void> => {
+    if (dirty && !(await confirmDiscard('切換到其他講稿會遺失目前的修改。', '放棄變更並切換'))) return
     setSelectedId(s.id ?? null)
     setDraft({ title: s.title, content: s.content })
     setDirty(false)
   }
 
   const newScript = async (): Promise<void> => {
-    if (dirty && !window.confirm('目前講稿有未儲存的修改，確定要捨棄嗎？')) return
+    if (dirty && !(await confirmDiscard('建立新講稿會遺失目前的修改。', '放棄變更並新增'))) return
     const now = Date.now()
     const id = await db.scripts.add({
       title: '未命名講稿',
@@ -91,7 +135,7 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
       })
     } catch (err) {
       // 寫入失敗(磁碟滿/隱私模式等)要有聲:保持 dirty 讓使用者重試,而不是看著「已儲存」以為存好了
-      toast.error(`儲存失敗:${err instanceof Error ? err.message : String(err)}`)
+      toast.error(`儲存失敗。${describeError(err)}`)
       return false
     }
     setDirty(false)
@@ -101,7 +145,15 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
 
   const remove = async (): Promise<void> => {
     if (selectedId == null) return
-    if (!window.confirm(`確定刪除「${draft.title}」嗎？此操作無法復原。`)) return
+    if (
+      !(await confirmDialog({
+        title: `刪除「${draft.title || '未命名講稿'}」？`,
+        body: '這份講稿的內容會一併移除，無法復原。',
+        confirmLabel: '刪除講稿',
+        variant: 'danger'
+      }))
+    )
+      return
     await db.scripts.delete(selectedId)
     setSelectedId(null)
     setDraft({ title: '', content: '' })
@@ -112,8 +164,11 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
 
   const importFile = async (file: File): Promise<void> => {
     const text = await file.text()
-    if (dirty && !window.confirm('目前講稿有未儲存的修改，匯入會覆蓋，確定嗎？')) return
-    setDraft({ title: file.name.replace(/\.(txt|md|markdown)$/i, ''), content: text })
+    if (dirty && !(await confirmDiscard('匯入的內容會覆蓋目前的修改。', '放棄變更並匯入'))) return
+    const title = file.name.replace(/\.(txt|md|markdown)$/i, '') || '未命名講稿'
+    // 先確定有編輯目標,否則下面的 setDraft 會被寫進不渲染的 state(見 ensureTarget)
+    await ensureTarget(title)
+    setDraft({ title, content: text })
     setDirty(true)
   }
 
@@ -199,7 +254,7 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     } catch (err) {
       recStreamRef.current?.getTracks().forEach((t) => t.stop())
       recStreamRef.current = null
-      toast.error(`無法開啟攝影機:${err instanceof Error ? err.message : String(err)}`)
+      toast.error(`無法開啟攝影機。${describeError(err)}`)
     }
   }
 
@@ -253,7 +308,7 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
       <div className="flex w-72 shrink-0 flex-col border-r border-ink-800 bg-ink-900/60">
         <div className="space-y-2.5 p-4">
           <div className="flex gap-2">
-            <button className="btn-outline flex-1 text-xs" onClick={newScript}>
+            <button className="btn-outline flex-1 text-xs" onClick={() => void newScript()}>
               <FilePlus2 size={14} /> 新講稿
             </button>
             <button
@@ -279,6 +334,7 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
             <Search size={13} className="absolute left-2.5 top-2.5 text-ink-400" />
             <input
               className="input pl-8 text-xs"
+              aria-label="搜尋講稿"
               placeholder="搜尋講稿…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -294,14 +350,21 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
           {filtered.map((s) => (
             <button
               key={s.id}
-              onClick={() => select(s)}
+              onClick={() => void select(s)}
               className={cn(
                 'mb-1 w-full rounded-lg px-3 py-2.5 text-left transition-colors cursor-pointer',
                 s.id === selectedId ? 'bg-ink-800' : 'hover:bg-ink-850'
               )}
             >
-              <div className="truncate text-sm font-medium">{s.title}</div>
-              <div className="mt-0.5 truncate text-[11px] text-ink-400">
+              {/* 列表欄位只有 247px 寬,長標題一定會被 truncate 截斷。
+                  給 title 讓滑鼠停留能看到全文,否則使用者只會看到半句話。*/}
+              <div className="truncate text-sm font-medium" title={s.title}>
+                {s.title}
+              </div>
+              <div
+                className="mt-0.5 truncate text-[11px] text-ink-400"
+                title={s.content ? s.content.slice(0, 40) : '（空白）'}
+              >
                 {s.content ? s.content.slice(0, 40) : '（空白）'} ·{' '}
                 {formatDateTime(s.updatedAt)}
               </div>
@@ -375,9 +438,15 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-2 border-b border-ink-800 px-6 py-3.5">
+            {/* 標題列。視窗最小寬度 960px 時,編輯區只剩 464px,這個列同時要
+                裝下標題輸入 + 預估時長 + 刪除 + 儲存 + 開始提詞 + 錄影提詞。
+                原本是單行不換行,而且每個子項都是 flex-shrink:1 / min-width:auto:
+                flex-1 的輸入框不肯縮到比內容更小,於是所有按鈕被壓成逐字換行的
+                直條(「開始提詞」變成 64x96),最後一顆還整顆溢出容器 46px 而點不到。
+                flex-wrap 讓窄視窗時整組按鈕落到第二行,shrink-0 讓按鈕維持應有大小。*/}
+            <div className="flex flex-wrap items-center gap-2 border-b border-ink-800 px-6 py-3.5">
               <input
-                className="flex-1 bg-transparent text-lg font-semibold outline-none placeholder:text-ink-400"
+                className="min-w-[12rem] flex-1 bg-transparent text-lg font-semibold outline-none placeholder:text-ink-400"
                 placeholder="講稿標題"
                 value={draft.title}
                 onChange={(e) => {
@@ -385,17 +454,17 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
                   setDirty(true)
                 }}
               />
-              <span className="text-[11px] text-ink-400">
+              <span className="shrink-0 whitespace-nowrap text-[11px] text-ink-400">
                 {estimateMinutes(draft.content, settings?.personal.profile?.charsPerMin ?? 240)}
               </span>
-              <button className="btn-ghost text-rose-450 hover:text-rose-450" onClick={remove}>
+              <button className="btn-ghost shrink-0 text-rose-450 hover:text-rose-450" onClick={remove} title="刪除這份講稿">
                 <Trash2 size={15} />
               </button>
-              <button className="btn-outline text-xs" onClick={save} disabled={!dirty}>
+              <button className="btn-outline shrink-0 text-xs" onClick={save} disabled={!dirty}>
                 <Save size={14} /> {dirty ? '儲存' : '已儲存'}
               </button>
               <button
-                className="btn-primary text-xs"
+                className="btn-primary shrink-0 text-xs"
                 onClick={launch}
                 disabled={!draft.content.trim()}
                 title={draft.content.trim() ? undefined : '先輸入講稿內容再開始提詞'}
@@ -405,20 +474,20 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
               {recording ? (
                 <>
                   <button
-                    className="btn-outline text-xs"
+                    className="btn-outline shrink-0 text-xs"
                     onClick={toggleRecPause}
                     title={recPaused ? '續錄' : '暫停(計時凍結)'}
                   >
                     {recPaused ? <Play size={14} /> : <Pause size={14} />}
                   </button>
-                  <button className="btn-outline text-xs text-rose-450" onClick={stopRec}>
+                  <button className="btn-outline shrink-0 text-xs text-rose-450" onClick={stopRec}>
                     <span className="h-2 w-2 animate-pulse rounded-full bg-rose-450" />
                     {recPaused ? '已暫停' : '停止錄影'} {formatDuration(recSec)}
                   </button>
                 </>
               ) : (
                 <button
-                  className="btn-outline text-xs"
+                  className="btn-outline shrink-0 text-xs"
                   title="開啟攝影機錄下你的演出;浮層對錄影隱形,建議搭配浮層的貼鏡模式"
                   onClick={() => void startRecLaunch()}
                   disabled={!draft.content.trim()}
@@ -428,6 +497,10 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
               )}
             </div>
             <textarea
+              // 這是編輯講稿的主要控制項,沒有無障礙名稱時螢幕閱讀器只會報「文字區塊」。
+              // placeholder 會隨內容消失,不能當名稱用(這也是 no-accessible-name
+              // 判定 placeholder 不足的原因);title 才有機會在內容非空時仍然可讀。
+              aria-label={`講稿內容${draft.title ? `：${draft.title}` : ''}`}
               className="flex-1 resize-none bg-transparent px-6 py-5 text-[15px] leading-relaxed text-ink-100 outline-none"
               placeholder={'在這裡貼上或輸入講稿…\n\n支援從 .txt / .md 匯入。空行會作為段落分隔。'}
               value={draft.content}

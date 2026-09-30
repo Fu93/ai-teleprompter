@@ -22,6 +22,7 @@ const CACHE_TTL_MS = 5000
 
 interface SecureKeys {
   apiKey?: string
+  sttApiKey?: string
   [provider: string]: unknown
 }
 
@@ -63,6 +64,26 @@ export function setUserKeys(keys: SecureKeys): boolean {
   } catch {
     return false
   }
+}
+
+/** 將舊版 settings.json 的明文金鑰遷移至 safeStorage；只有加密寫入成功才清除明文。 */
+export function migrateLegacyKeys(settings: AppSettings): boolean {
+  const legacyAiKey = settings.ai.openaiCompatible.apiKey
+  const legacySttKey = settings.stt.cloud.apiKey
+  if (!legacyAiKey && !legacySttKey) return false
+
+  const keys = readSecureKeys() ?? {}
+  const encryptedAiKey = keys.apiKey || legacyAiKey
+  const encryptedSttKey = keys.sttApiKey || legacySttKey
+  if (!encryptedAiKey && !encryptedSttKey) return false
+  keys.apiKey = encryptedAiKey
+  keys.sttApiKey = encryptedSttKey
+
+  // safeStorage 不可用或落盤失敗時保留舊設定以維持功能，不要丟失金鑰。
+  if (!setUserKeys(keys)) return false
+  if (legacyAiKey && encryptedAiKey) settings.ai.openaiCompatible.apiKey = ''
+  if (legacySttKey && encryptedSttKey) settings.stt.cloud.apiKey = ''
+  return Boolean((legacyAiKey && encryptedAiKey) || (legacySttKey && encryptedSttKey))
 }
 
 interface ResolvedProvider {

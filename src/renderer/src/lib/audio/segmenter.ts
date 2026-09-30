@@ -29,6 +29,7 @@ export class AudioSegmenter {
   private inSpeech = false
   private current: Float32Array[] = []
   private currentLen = 0
+  private speechSamples = 0
   private silenceRun = 0
   private preroll: Float32Array[] = []
   private prerollLen = 0
@@ -76,42 +77,42 @@ export class AudioSegmenter {
         this.prerollLen = 0
       }
       this.silenceRun = 0
-      this.push(this.current, frame, (l) => (this.currentLen = l))
+      this.current.push(frame.slice())
+      this.currentLen += frame.length
+      this.speechSamples += frame.length
     } else if (this.inSpeech) {
       this.silenceRun += frame.length
-      this.push(this.current, frame, (l) => (this.currentLen = l))
+      this.current.push(frame.slice())
+      this.currentLen += frame.length
       if (this.silenceRun >= this.minSilenceSamples) {
         this.finishSegment()
       }
     } else {
-      // 靜音中：維護 preroll 環
-      this.push(this.preroll, frame, (l) => {
-        while (this.prerollLen > this.prerollSamples) {
-          const first = this.preroll[0]
-          const drop = Math.min(first.length, this.prerollLen - this.prerollSamples)
-          if (drop >= first.length) {
-            this.preroll.shift()
-            this.prerollLen -= first.length
-          } else {
-            this.preroll[0] = first.subarray(drop)
-            this.prerollLen -= drop
-          }
+      // 靜音中：維護有界 preroll 環。先累加長度再裁切；舊實作沒有更新
+      // prerollLen，導致持續靜音時每個 AudioFrame 永久留在陣列並耗盡記憶體。
+      this.preroll.push(frame.slice())
+      this.prerollLen += frame.length
+      while (this.prerollLen > this.prerollSamples && this.preroll.length > 0) {
+        const first = this.preroll[0]
+        const drop = Math.min(first.length, this.prerollLen - this.prerollSamples)
+        if (drop >= first.length) {
+          this.preroll.shift()
+          this.prerollLen -= first.length
+        } else {
+          this.preroll[0] = first.subarray(drop)
+          this.prerollLen -= drop
         }
-        void l
-      })
+      }
     }
-  }
-
-  private push(buf: Float32Array[], frame: Float32Array, setLen: (l: number) => void): void {
-    buf.push(frame.slice())
-    setLen(buf.reduce((a, b) => a + b.length, 0))
   }
 
   private finishSegment(): void {
     this.inSpeech = false
     this.silenceRun = 0
     const total = this.currentLen
-    if (total >= this.minSpeechSamples) {
+    // 判斷最短語音只計高於 VAD 門檻的 samples；尾端靜音與 preroll 不能
+    // 把短促噪音墊成「有效語音」。
+    if (this.speechSamples >= this.minSpeechSamples && total > 0) {
       const merged = new Float32Array(total)
       let off = 0
       for (const chunk of this.current) {
@@ -122,6 +123,7 @@ export class AudioSegmenter {
     }
     this.current = []
     this.currentLen = 0
+    this.speechSamples = 0
   }
 
   /** 強制結束當前段（停止前呼叫） */
@@ -129,9 +131,20 @@ export class AudioSegmenter {
     if (this.inSpeech) this.finishSegment()
   }
 
-  stop(): void {
+  stop(flush = true): void {
     this.stopped = true
-    this.flush()
+    if (flush) {
+      this.flush()
+    } else {
+      // 離頁、重設或啟動失敗時放棄未完成片段，避免取消操作又送出轉錄。
+      this.inSpeech = false
+      this.current = []
+      this.currentLen = 0
+      this.speechSamples = 0
+      this.silenceRun = 0
+      this.preroll = []
+      this.prerollLen = 0
+    }
     this.processor?.disconnect()
     this.source?.disconnect()
     void this.ctx?.close()

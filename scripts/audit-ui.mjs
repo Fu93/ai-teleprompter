@@ -1,7 +1,7 @@
 /**
  * audit-ui.mjs — UI 稽核:逐頁截圖 + 收集執行期問題。
  *
- * 執行:AI_TP_E2E=1 node scripts/audit-ui.mjs(需先 npm run build)
+ * 執行:npm run audit:ui   (需要先 npm run build)
  * 輸出:docs/audit/<page>.png、docs/audit/report.json
  *
  * 為什麼需要這支:
@@ -10,23 +10,36 @@
  *   不如把每頁能客觀判定的問題一次抓齊:console 錯誤、未捕獲例外、
  *   未處理 Promise、失敗請求、版面溢出、對比度、觸控目標、裁切、文字截斷。
  *
- * 兩條檢查寫過一版後產生大量誤報,教訓記在各自的註解裡 —— 稽核工具本身
- * 的雜訊會淹掉真問題,寧可少抓也不要讓人開始懷疑整份報告。
+ * 環境變數由腳本自己設定(npm script 因此不必依賴 shell 的 `VAR=x cmd` 語法,
+ * Windows 的 cmd 不支援那個寫法):
+ *   AI_TP_E2E=1   userData 重導到暫存目錄(見 src/main/index.ts),
+ *                 不會動到使用者的真實資料,也不會與已開啟的實例搶單一實例鎖。
+ *   AI_TP_AUDIT=1 開啟「狀態強制橋」window.__auditForce(見 src/main/debug.ts)。
+ *   AI_TP_DEBUG   明確刪除:若開發者的 shell 匯出過它,除錯面板會掛進 DOM,
+ *                 而 DOM 稽核會把面板自己的小按鈕當成缺陷報出來。
  *
- * 隔離:以 AI_TP_E2E=1 啟動,userData 會被重導到暫存目錄
- * (見 src/main/index.ts),不會動到使用者的真實資料,也不會與
- * 已經在跑的實例搶單一實例鎖。
+ * 頁面切換不再比對側欄文字:改用 __auditForce('app.navigate', id)。
+ * 文字比對的失敗模式是靜默 no-op —— 找不到按鈕時畫面不變,而「這一頁沒問題」
+ * 與「這一頁沒被量到」在截圖與報告上長得一模一樣。現在切換失敗會回報,
+ * 而且六頁的截圖必須兩兩不同(同一個 hash 出現兩次 = 其中一次根本沒切過去)。
  */
 import { _electron as electron } from 'playwright-core'
-import { mkdirSync, writeFileSync } from 'fs'
+import { mkdirSync } from 'fs'
 import { join } from 'path'
-import { domAudit } from './lib/dom-checks.mjs'
+import { domAudit } from '../src/renderer/src/lib/domAudit.ts'
+import { createReport, fileHash, guardSerializable } from './lib/audit-report.mjs'
+
+// 稽核環境必須乾淨:見檔頭說明。
+process.env.AI_TP_E2E = '1'
+process.env.AI_TP_AUDIT = '1'
+delete process.env.AI_TP_DEBUG
 
 const OUT = 'docs/audit'
 mkdirSync(OUT, { recursive: true })
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/** 頁面 id 對應 app.navigate 的參數,label 只用在報告裡 */
 const PAGES = [
   ['dashboard', '總覽'],
   ['scripts', '提詞講稿'],
@@ -39,7 +52,14 @@ const PAGES = [
 /** 主視窗尺寸固定,否則各頁截圖尺寸不一,難以比較排版 */
 const VIEWPORT = { width: 1180, height: 780 }
 
+const report = createReport('audit-ui')
+
 async function main() {
+  // 序列化契約:domAudit 會被 page.evaluate 送進頁面,函式內不能有型別標註
+  // 或模組層級識別字。讓它在啟動第一行就爆,而不是某一頁莫名 audit-failed。
+  const srcLen = guardSerializable(domAudit, 'domAudit')
+  console.log(`domAudit 序列化檢查通過(${srcLen} 字元)`)
+
   const app = await electron.launch({ args: ['.'], timeout: 60_000 })
 
   // 視窗載入順序隨機,以 DOM 特徵辨識:主視窗有 <aside>
@@ -58,7 +78,6 @@ async function main() {
   await main.setViewportSize(VIEWPORT).catch(() => {})
   await sleep(1200)
 
-  const problems = []
   let current = 'boot'
 
   // 在頁面腳本裡裝攔截器,補抓 render process 內的未處理 rejection ——
@@ -74,7 +93,7 @@ async function main() {
   main.on('console', (m) => {
     const t = m.type()
     if (t === 'error' || t === 'warning') {
-      problems.push({ kind: `console.${t}`, page: current, text: m.text().slice(0, 300) })
+      report.add(`console.${t}`, current, m.text().slice(0, 300))
     }
   })
   main.on('pageerror', (e) => {
@@ -85,30 +104,36 @@ async function main() {
       .slice(0, 4)
       .join(' | ')
       .slice(0, 400)
-    problems.push({ kind: 'pageerror', page: current, text: stack })
+    report.add('pageerror', current, stack)
   })
   main.on('requestfailed', (r) => {
     const f = r.failure()
     if (f && !/net::ERR_ABORTED/.test(f.errorText)) {
-      problems.push({
-        kind: 'requestfailed',
-        page: current,
-        text: `${r.url().slice(0, 140)} ${f.errorText}`
-      })
+      report.add('requestfailed', current, `${r.url().slice(0, 140)} ${f.errorText}`)
     }
   })
 
+  // 強制橋沒掛起來的話,後面每一個狀態都會失敗 —— 先講清楚,否則只會看到
+  // 六頁「都一樣」而不知道原因。
+  const bridge = await main
+    .evaluate(() => typeof window.__auditForce === 'function')
+    .catch(() => false)
+  if (!bridge) report.unreached('boot', 'window.__auditForce 不存在(AI_TP_AUDIT 沒有生效?)')
+
+  const hashes = new Map()
+
   for (const [id, label] of PAGES) {
     current = id
-    const before = problems.length
-    await main.evaluate((l) => {
-      const nav = Array.from(document.querySelectorAll('button')).find((b) =>
-        b.textContent?.includes(l)
-      )
-      nav?.click()
-    }, label)
+    const forced = await main
+      .evaluate((pageId) => window.__auditForce?.('app.navigate', pageId) ?? { ok: false, names: [] }, id)
+      .catch((e) => ({ ok: false, error: String(e) }))
+    if (!forced.ok) {
+      report.unreached(`${id}(${label})`, `導航沒有生效:${forced.error ?? '控制項未註冊'} 可用=${(forced.names || []).join(',')}`)
+      continue
+    }
     await sleep(1500)
-    await main.screenshot({ path: join(OUT, `${id}.png`) })
+    const shot = join(OUT, `${id}.png`)
+    await main.screenshot({ path: shot }).catch(() => {})
 
     // 未處理 rejection:取出後清空,避免同一筆在每頁重複計數
     const rejections = await main.evaluate(() => {
@@ -116,7 +141,7 @@ async function main() {
       window.__auditRejections = []
       return r
     })
-    for (const r of rejections) problems.push({ kind: 'unhandledrejection', page: current, text: r })
+    for (const r of rejections) report.add('unhandledrejection', current, r)
 
     // 版面跑版的直接徵兆
     const m = await main.evaluate(() => ({
@@ -126,49 +151,41 @@ async function main() {
       ch: document.documentElement.clientHeight
     }))
     if (m.sw > m.cw + 1) {
-      problems.push({
-        kind: 'overflow-x',
-        page: current,
-        text: `scrollWidth=${m.sw} > clientWidth=${m.cw}`
-      })
+      report.add('overflow-x', current, `scrollWidth=${m.sw} > clientWidth=${m.cw}`)
     }
     if (m.sh > m.ch + 1) {
-      problems.push({
-        kind: 'overflow-y',
-        page: current,
-        text: `scrollHeight=${m.sh} > clientHeight=${m.ch}`
-      })
+      report.add('overflow-y', current, `scrollHeight=${m.sh} > clientHeight=${m.ch}`)
     }
 
     // DOM 層的 UI/UX 檢查:比截圖可靠且能量化。
-    // 規則實作放在 scripts/lib/dom-checks.mjs,與 audit-deep.mjs 共用同一份。
+    // 規則實作是 src/renderer/src/lib/domAudit.ts,與 audit-deep.mjs 及
+    // App 內建除錯面板的「稽核」分頁共用同一份。
     const dom = await main.evaluate(domAudit)
-    for (const d of dom) problems.push({ kind: d.kind, page: current, text: d.text })
+    for (const d of dom) report.add(d.kind, current, d.text)
 
-    if (problems.length === before) {
-      problems.push({ kind: 'ok', page: current, text: '' })
+    // 六頁必須各自不同。相同 hash 代表有兩次導航其實停在同一頁。
+    const hash = fileHash(shot)
+    if (hash) {
+      const prev = hashes.get(hash)
+      if (prev) {
+        report.unreached(`${id}(${label})`, `截圖與「${prev}」完全相同:導航沒有真的切換頁面`)
+      } else {
+        hashes.set(hash, `${id}(${label})`)
+        report.measured(`${id}(${label})`)
+      }
+    } else {
+      report.unreached(`${id}(${label})`, '截圖沒有產生,無法判定是否量測成功')
     }
   }
 
-  const real = problems.filter((p) => p.kind !== 'ok')
-  const byKind = real.reduce((m, p) => ((m[p.kind] = (m[p.kind] || 0) + 1), m), {})
-  console.log('=== UI 稽核結果 ===')
-  console.log(`頁面 ${PAGES.length} 個,問題 ${real.length} 筆`)
-  console.log('分類: ' + Object.entries(byKind).map(([k, v]) => `${k}×${v}`).join(', '))
-  console.log('')
-  for (const p of real) {
-    console.log(`[${p.page}] ${p.kind}`)
-    console.log(`    ${p.text}`)
-  }
-  writeFileSync(join(OUT, 'report.json'), JSON.stringify(real, null, 2))
-  console.log('')
-  console.log(`截圖與報告: ${OUT}/`)
+  report.finish(join(OUT, 'report.json'))
+  console.log(`截圖: ${OUT}/`)
   await app.close()
 }
 
 main()
   .then(() => process.exit(0))
   .catch((e) => {
-    console.error('ABORT:', e.message)
+    console.error('ABORT:', e.stack || e.message)
     process.exit(1)
   })

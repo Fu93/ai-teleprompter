@@ -150,6 +150,39 @@ describe('scroll 模式', () => {
     expect(engine.getState().scrollPos).toBe(840)
     expect(engine.getState().status).toBe('completed')
   })
+
+  it('尚未量測捲動容器時不完成也不推進(藥丸形態換稿的實測症狀)', () => {
+    // 藥丸(收合)沒有捲動容器 → opts 缺 totalH/wrapH。舊行為:maxScroll 退化成
+    // 40px,播放約 600ms 就被標成 completed,展開後也永遠回不來。
+    const engine = new TeleprompterEngine(
+      makeModel(),
+      { rate: 1, scrollSpeed: 60, maxTickDtMs: 60_000 },
+      'scroll'
+    )
+    engine.play()
+    engine.tick(0)
+    expect(engine.tick(30_000)).toBe('continuous')
+    expect(engine.getState().status).toBe('playing')
+    expect(engine.getState().scrollPos).toBe(0)
+    // 時鐘照常累計:不是整段靜止,只是捲到哪無從得知
+    expect(engine.getState().elapsedMs).toBeGreaterThan(0)
+  })
+
+  it('量測到容器後,播放中的捲動立刻接上', () => {
+    const engine = new TeleprompterEngine(
+      makeModel(),
+      { rate: 1, scrollSpeed: 60, maxTickDtMs: 60_000 },
+      'scroll'
+    )
+    engine.play()
+    engine.tick(0)
+    engine.tick(1000)
+    expect(engine.getState().scrollPos).toBe(0)
+    engine.setOptions({ totalH: 1000, wrapH: 200 })
+    engine.tick(2000)
+    expect(engine.getState().scrollPos).toBeCloseTo(60, 5)
+    expect(engine.getState().status).toBe('playing')
+  })
 })
 
 describe('bullet 模式(手動)', () => {

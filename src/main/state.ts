@@ -15,7 +15,13 @@ const state = {
   mainWindow: null as BrowserWindow | null,
   overlayWindow: null as BrowserWindow | null,
   /** 最近一次 OverlayShow 的內容;panic 無語音上下文時退用講稿結尾 */
-  lastOverlayPayload: { title: undefined, content: undefined } as { title?: string; content?: string }
+  lastOverlayPayload: { title: undefined, content: undefined } as { title?: string; content?: string },
+  /**
+   * renderer 宣告的「現在關掉會丢東西」訊息(未存講稿 / 錄音中)。
+   * main 無法同步查詢 renderer,所以由 renderer 主動上報,close 事件只讀這裡。
+   * null = 沒有阻擋,視窗正常關閉。
+   */
+  closeBlocker: null as string | null
 }
 
 /** e2e userData 重導之後、任何模組讀取 settings 之前呼叫(index.ts whenReady 前) */

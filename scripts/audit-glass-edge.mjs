@@ -22,11 +22,20 @@
  *      亮桌布才是白邊真正會現形的地方 —— 深色桌布上什麼都看不出來。
  *      純白背景用把 html 背景設成 #fff 模擬(浮層視窗本來是透明的)。
  *
- * 執行:AI_TP_E2E=1 node scripts/audit-glass-edge.mjs(需先 npm run build)
+ * 執行:npm run audit:edge(需先 npm run build)
+ *
+ * 環境變數由腳本自己設定:AI_TP_E2E=1 讓 userData 重導到暫存目錄
+ * (原本寫成 `AI_TP_E2E=1 node ...`,那個語法在 Windows 的 cmd 不會動,
+ *  而這個專案是 Windows 優先)。AI_TP_DEBUG 明確刪除,避免開發者 shell
+ * 匯出的除錯 UI 混進像素量測。
  */
 import { _electron as electron } from 'playwright-core'
 import { mkdirSync, writeFileSync } from 'fs'
 import sharp from 'sharp'
+
+process.env.AI_TP_E2E = '1'
+process.env.AI_TP_AUDIT = '1'
+delete process.env.AI_TP_DEBUG
 
 const OUT = 'docs/audit/edge'
 mkdirSync(OUT, { recursive: true })

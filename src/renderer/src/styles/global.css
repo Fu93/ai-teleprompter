@@ -125,11 +125,18 @@ body {
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
 }
 
+/* 藥丸:材質收斂。
+   - 底色比面板再暗一點(Mac 的島在黑底上才有對比),保留玻璃語意但降低「方塊感」。
+   - 頂部一條極淡的垂直漸層是「受光」的來源(液態玻璃的細緻度在這裡,不是靠一條亮邊框)。
+   - 陰影從 0 18px 50px 收到 0 10px 30px:48px 高的膠囊配得上的是「有點厚度」,
+     不是「浮在半空的暗方塊」—— 陰影太大正是它讀成一片面板的原因之一。 */
 .glass-pill {
-  background: rgba(12, 14, 20, 0.66);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 42%),
+    rgba(8, 10, 16, 0.78);
   -webkit-backdrop-filter: blur(20px) saturate(1.8);
   backdrop-filter: blur(20px) saturate(1.8);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
 }
 
 /* ── 方向性輪廓光(Liquid Glass 的靈魂)──
@@ -152,13 +159,14 @@ body {
   pointer-events: none;
   box-shadow:
     /* 暗環:壓住最外 2px。純白桌布下量測時發現藥丸左右兩端(膠囊曲率最大處)
-       會被折射把外側的白色擠進來,噴到 190/255。暗環加寬加深是對症的,
-       因為它直接作用在「最外圈像素」這個問題根源上。*/
-    inset 0 0 0 2px rgba(4, 6, 11, 0.72),
+       會被折射把外側的白色擠進來。折射幾何改成 SDF 之後(見 glassRefraction.ts)
+       外洩大幅降低,所以暗環從 2px/0.72 收窄到 1.5px/0.6 —— 它的職責是壓住
+       最外圈像素,不是畫一圈框;框太寬會讓輪廓讀成「圓角長方形」。*/
+    inset 0 0 0 1.5px rgba(4, 6, 11, 0.6),
     /* 下緣輪廓:背光,只有很弱的一點 */
-    inset 0 -1.5px 2px -1px rgba(255, 255, 255, 0.1),
+    inset 0 -1.5px 2px -1px rgba(255, 255, 255, 0.08),
     /* 上緣輪廓:受光。負 spread 把峰值推離邊界 1px 再糊開 */
-    inset 0 1.5px 3px -1px rgba(255, 255, 255, 0.22);
+    inset 0 1.5px 3px -1px rgba(255, 255, 255, 0.16);
 }
 
 /* ── Liquid Glass 真折射(P2-13)──
@@ -181,7 +189,8 @@ body {
 .btn,
 .btn-primary,
 .btn-ghost,
-.btn-outline {
+.btn-outline,
+.btn-danger {
   @apply inline-flex items-center justify-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium
     transition-all duration-200 cursor-pointer select-none disabled:opacity-40 disabled:cursor-not-allowed;
 }
@@ -193,6 +202,18 @@ body {
     0 4px 14px rgba(109, 106, 248, 0.35);
 }
 .btn-primary:hover {
+  filter: brightness(1.08);
+}
+/* 破壞性動作的確認鍵。原生 window.confirm 沒有任何方式表達「這個按下去就沒了」,
+   這是換成 App 內對話框的理由之一。 */
+.btn-danger {
+  background: linear-gradient(180deg, var(--color-rose-450), #d8486a);
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 4px 14px rgba(245, 106, 138, 0.32);
+}
+.btn-danger:hover {
   filter: brightness(1.08);
 }
 .btn-ghost {
@@ -331,21 +352,28 @@ h2 {
   animation: rise-in 0.35s var(--ease-spring) both;
 }
 
-/* Island 內容 morph:新內容延遲 120ms、從 1.04 縮回(Island 解剖:舊內容即刻淡出、
-   新內容延遲入場,避免新舊同時可見的閃爍;reduced-motion 時全域已折為 1ms) */
-@keyframes content-morph-in {
+/* Island 內容 morph:新內容從 0.96 放大進場。
+
+   這條規則換過一次形狀,教訓值得留在原地:舊版是「delay 120ms + fill both、從 1.04
+   縮回」而且掛在**藥丸 root** 上 —— `both` 讓動畫在 delay 期間就套用 from(scale 1.04,
+   opacity 0),所以 morph 的前 120ms 整顆膠囊是空白的:視窗已經縮到 320×48,內容還沒
+   出現。使用者看到的就是那個「閃一下、東西才冒出來」。
+   修法兩件事:(1) 動畫掛在**內容層**而不是材質層(材質永遠不動畫、永遠可見),
+   (2) 零延遲(舊內容在切換那一帧已卸載,沒有「新舊同時可見」的問題),
+   並把 from 的縮放從 1.04 改成 0.96(由小放大比由大縮回更像「內容被島吸進去」)。
+   reduced-motion 時全域已折為 1ms。 */
+@keyframes di-content-in {
   from {
     opacity: 0;
-    transform: scale(1.04);
+    transform: scale(0.96);
   }
   to {
     opacity: 1;
     transform: scale(1);
   }
 }
-.content-morph-in {
-  animation: content-morph-in var(--dur-overlay) var(--ease-morph-open) both;
-  animation-delay: 120ms;
+.di-content-in {
+  animation: di-content-in 200ms var(--ease-morph-open) both;
 }
 
 /* eyebrow label(11px/600/uppercase/+0.5px)—— 區塊小標題 */
@@ -408,9 +436,11 @@ h2 {
  * 而那層光暈是本專案白邊問題的最終元凶:inset 光暈的亮度峰值就落在形狀
  * 最外圈,而藥丸就是視窗本身,超出部分被裁掉後只剩一圈貼邊亮線。
  * 拆掉之後狀態資訊沒有損失(圖示更清楚),而整類邊緣問題直接從源頭消失。 */
+/* 事件彈入:過衝從 1.08 收到 1.02。1.08 是「誇張的彈跳」,在 4s 就換一次內容的
+   小島上會讀成廉價的卡通感;靈動島的彈性來自**尺寸**的彈簧,不是內容的縮放。 */
 @keyframes di-pop-in {
-  0% { transform: scale(0.6); opacity: 0; }
-  60% { transform: scale(1.08); opacity: 1; }
+  0% { transform: scale(0.94); opacity: 0; }
+  60% { transform: scale(1.02); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
 }
 
@@ -424,13 +454,28 @@ h2 {
   50% { transform: scaleY(1); }
 }
 
+/* 藥丸 root:**只**負責材質與形狀,不播任何動畫。
+   先前這裡掛著 `di-pop-in`(整顆膠囊 0.6→1.08→1 的彈入)與 content-morph-in ——
+   前者讓「材質」跟著縮放(島收合時應該只有形狀變化,材質是連續的),
+   後者是那個 120ms 黑洞。兩者都已移除;內容的入場交給 .di-content-in。 */
 .dynamic-island-pill {
   position: relative;
 }
 
+/* 輪廓半徑插值:切換藥丸/展開/貼鏡時,兩邊是**不同的元素**(React 直接換掉整個子樹),
+   所以「進入的那一邊」必須自己從對方形態的半徑起步,否則 morph 的頭一帧就是
+   半徑瞬間跳一格(28 → 16 / 16 → 28),看起來像兩個形狀疊了一下。
+    --morph-p:0 = 圓角矩形、1 = 膠囊(由 useMorph 的形狀彈簧逐幀寫入)
+    --pill-r:藥丸的設計半徑(∅ = PILL_SIZE.h / 2)
+   未套用這個 class 時,藥丸用 rounded-full(真正的 h/2 膠囊)、展開/貼鏡用 rounded-2xl;
+   定案後 --morph-p 剛好是 0/1,與那兩個值完全一致,所以不會有跳動。 */
+.is-shape-morphing {
+  border-radius: calc(16px + (var(--pill-r, 24px) - 16px) * var(--morph-p, 0));
+}
+
 /* 事件視窗:靈動島的內容交換——事件以大字升為主角,4s 後縮回 */
 .di-event {
-  animation: di-pop-in 420ms var(--ease-morph-open, cubic-bezier(0.34, 1.4, 0.64, 1)) both;
+  animation: di-pop-in 300ms var(--ease-morph-open, cubic-bezier(0.34, 1.4, 0.64, 1)) both;
 }
 .di-event-leaving {
   animation: di-fade-out 260ms ease-in both forwards;

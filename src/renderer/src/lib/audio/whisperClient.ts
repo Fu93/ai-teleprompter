@@ -43,10 +43,23 @@ export class WhisperClient {
     const worker = new Worker(new URL('./whisper.worker.ts', import.meta.url), { type: 'module' })
     worker.addEventListener('message', (e: MessageEvent<OutMsg>) => this.handle(e.data))
     worker.addEventListener('error', (e) => {
+      if (e instanceof ErrorEvent) e.preventDefault()
+      // terminate() 後舊 worker 仍可能送出排隊中的 error event；不可讓它
+      // 清掉新 worker 的 pending jobs 或 reject 新一輪模型載入。
+      if (this.worker !== worker) return
       const err = new Error(e.message || 'Whisper worker 錯誤')
       for (const p of this.pending.values()) p.reject(err)
       this.pending.clear()
+      // worker error 不會發出 { type: 'error' } message;若不 reject 在飛的
+      // load(),呼叫端會永久卡在 await,且後續 load() 還可能重用已壞的 worker。
+      this.rejectActiveLoad?.(err)
+      this.rejectActiveLoad = null
       this.loadPromise = null
+      this.loadedKey = ''
+      if (this.worker === worker) {
+        this.worker = null
+        worker.terminate()
+      }
       this.onStatus?.(err.message)
     })
     this.worker = worker

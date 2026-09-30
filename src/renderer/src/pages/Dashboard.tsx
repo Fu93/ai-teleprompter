@@ -11,6 +11,19 @@ interface Props {
   onNavigate: (page: 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings') => void
 }
 
+/**
+ * 累計統計的掃描上限。
+ *
+ * 為什麼不能直接用「最近 10 場」那一份算:整頁原本只查 limit(10),場數、總分鐘、
+ * 練習次數全部從它推導 —— 於是第 11 場之後「會議場數」就固定在 10,「共 N 分鐘」
+ * 只算最近 10 場,「共 N 次練習」永遠顯示 10,趨勢圖也靜默地丟掉更早的紀錄。
+ * 這是儀表板平靜地顯示錯誤歷史的那一種 bug:數字看起來很正常,只是不再變了。
+ *
+  * 個人使用的量級十年也到不了 500,所以用「精確 count() + 有上限的掃描」就足夠,
+ * 不必為此新增索引欄位;真的超過時文案會自己改成「最近 500 場」而不是說謊。
+ */
+const HISTORY_CAP = 500
+
 const MODES = [
   {
     id: 'scripts' as const,
@@ -55,14 +68,45 @@ function Sparkline({ values, stroke }: { values: number[]; stroke: string }): JS
 
 export default function Dashboard({ onNavigate }: Props): JSX.Element {
   const [recent, setRecent] = useState<Script[]>([])
+  /** 最近的會議紀錄(趨勢圖用) */
   const [sessions, setSessions] = useState<MeetingSession[]>([])
+  /** 最近的練習紀錄(趨勢圖用) */
   const [runs, setRuns] = useState<PracticeRun[]>([])
+  /** 累計統計:與上面的「最近 N 筆」分開,見 HISTORY_CAP 的説明 */
+  const [totals, setTotals] = useState({
+    sessions: 0,
+    runs: 0,
+    minutes: 0,
+    minutesCapped: false,
+    avgTalkRatio: null as number | null
+  })
   const { settings, overlayVisible } = useSettings()
 
   useEffect(() => {
-    db.scripts.orderBy('updatedAt').reverse().limit(4).toArray().then(setRecent)
-    db.sessions.orderBy('startedAt').reverse().limit(10).toArray().then(setSessions)
-    db.practiceRuns.orderBy('createdAt').reverse().limit(10).toArray().then(setRuns)
+    void (async () => {
+      const [recentScripts, recentSessions, recentRuns, sessionCount, runCount] = await Promise.all([
+        db.scripts.orderBy('updatedAt').reverse().limit(4).toArray(),
+        db.sessions.orderBy('startedAt').reverse().limit(10).toArray(),
+        db.practiceRuns.orderBy('createdAt').reverse().limit(10).toArray(),
+        db.sessions.count(),
+        db.practiceRuns.count()
+      ])
+      setRecent(recentScripts)
+      setSessions(recentSessions)
+      setRuns(recentRuns)
+      const scanned = await db.sessions.orderBy('startedAt').reverse().limit(HISTORY_CAP).toArray()
+      const withReport = scanned.filter((s) => s.report)
+      setTotals({
+        sessions: sessionCount,
+        runs: runCount,
+        minutes: Math.round(scanned.reduce((a, s) => a + (s.report?.durationSec ?? 0), 0) / 60),
+        minutesCapped: sessionCount > scanned.length,
+        avgTalkRatio:
+          withReport.length > 0
+            ? Math.round((withReport.reduce((a, s) => a + (s.report?.talkRatio ?? 0), 0) / withReport.length) * 100)
+            : null
+      })
+    })()
   }, [])
 
   const launchLatest = async (): Promise<void> => {
@@ -114,7 +158,9 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
         {recent.length > 0 ? (
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <div className="truncate text-sm">{recent[0].title}</div>
+              <div className="truncate text-sm" title={recent[0].title}>
+                {recent[0].title}
+              </div>
               <div className="text-[11px] text-ink-400">
                 最近編輯 {formatDateTime(recent[0].updatedAt)}
               </div>
@@ -140,7 +186,7 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
       {(() => {
         const hasScript = recent.length > 0
         const hasProfile = !!settings?.personal?.profile
-        const hasRun = sessions.length > 0 || runs.length > 0
+        const hasRun = totals.sessions > 0 || totals.runs > 0
         if (hasScript && hasProfile && hasRun) return null
         const steps = [
           { done: hasScript, icon: ScrollText, label: '建立第一份講稿', target: 'scripts' as const },
@@ -188,28 +234,16 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
           <div className="grid grid-cols-2 gap-6 md:grid-cols-4">
             <div>
               <div className="text-[10px] text-ink-400">會議場數</div>
-              <div className="mt-1 text-2xl font-semibold">{sessions.length}</div>
+              <div className="mt-1 text-2xl font-semibold">{totals.sessions}</div>
               <div className="text-[10px] text-ink-400">
-                共 {Math.round(
-                  Math.min(
-                    sessions.reduce((a, s) => a + (s.report?.durationSec ?? 0), 0),
-                    24 * 60 * 60 * 60
-                  ) / 60
-                )} 分鐘
+                共 {totals.minutes} 分鐘{totals.minutesCapped ? `（最近 ${HISTORY_CAP} 場）` : ''}
               </div>
             </div>
             <div>
               <div className="text-[10px] text-ink-400">平均發言佔比</div>
-              {(() => {
-                const withRatio = sessions.filter((s) => s.report)
-                const avg =
-                  withRatio.length > 0
-                    ? Math.round(
-                        (withRatio.reduce((a, s) => a + (s.report?.talkRatio ?? 0), 0) / withRatio.length) * 100
-                      )
-                    : null
-                return <div className="mt-1 text-2xl font-semibold">{avg != null ? `${avg}%` : '—'}</div>
-              })()}
+              <div className="mt-1 text-2xl font-semibold">
+                {totals.avgTalkRatio != null ? `${totals.avgTalkRatio}%` : '—'}
+              </div>
               <div className="text-[10px] text-ink-400">目標約 4–6 成</div>
             </div>
             <div>
@@ -238,7 +272,7 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
                   </div>
                 )
               })()}
-              <div className="text-[10px] text-ink-400">共 {runs.length} 次練習</div>
+              <div className="text-[10px] text-ink-400">共 {totals.runs} 次練習</div>
             </div>
           </div>
         </div>
@@ -254,7 +288,9 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
                 className="card flex items-center justify-between px-4 py-3 hover:bg-ink-850"
               >
                 <div className="min-w-0">
-                  <div className="truncate text-sm">{s.title}</div>
+                  <div className="truncate text-sm" title={s.title}>
+                    {s.title}
+                  </div>
                   <div className="text-[11px] text-ink-400">{formatDateTime(s.updatedAt)}</div>
                 </div>
                 <button

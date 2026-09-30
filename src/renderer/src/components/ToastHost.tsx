@@ -46,7 +46,12 @@ export function ToastHost(): JSX.Element | null {
 
   return (
     <div
-      className="pointer-events-none fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 flex-col-reverse items-center gap-2"
+      // z-[90] 而不是 z-50:必須高於 ConfirmDialog 的 z-[80]。
+      // 那個確認對話框的遮罩是 bg-black/55 的滿版 fixed 元素,任何在它「開著的時候」
+      // 發出的 toast(尤其是停留 12 秒的錯誤提示)都會被壓到陰影裡 —— 而「錯誤不能被
+      // 錯過」正是把錯誤 toast 拉長停留的理由,被自己家的對話框蓋掉就白留了。
+      // toastHostZClass 與 confirmDialogZClass 的關係由 toast-layering.test.ts 釘住。
+      className="pointer-events-none fixed bottom-5 left-1/2 z-[90] flex -translate-x-1/2 flex-col-reverse items-center gap-2"
       role="status"
       aria-live="polite"
     >
@@ -56,6 +61,14 @@ export function ToastHost(): JSX.Element | null {
         return (
           <div
             key={t.id}
+            // data-overlay-card:宣告「這個覆蓋是設計要的」。
+            // 960×640(主視窗下限)時 bottom-center 的 toast 會壓住底下兩列列表的
+            // 標題與日期,domAudit 的 text-covered 因此會報出來。判斷:這是
+            // **暫時**且可關閉的(4 秒 / 錯誤 12 秒、hover 暫停、有 ✕),
+            // 而且容器的 pointer-events-none 讓點擊直接穿透 —— 與模態遮罩同一類。
+            // 若之後改成「toast 永久停駐」或「壓住的是使用者正在操作的東西」,
+            // 這個宣告就該拿掉,而不是靠它把問題藏起來。
+            data-overlay-card="1"
             className="toast-item glass pointer-events-auto flex w-[380px] max-w-[86vw] items-start gap-2.5 rounded-xl px-3.5 py-2.5"
             style={{ transform: `scale(${1 - i * 0.05})` }}
             onMouseEnter={() => setPaused(t.id, true)}
@@ -64,9 +77,14 @@ export function ToastHost(): JSX.Element | null {
             <Icon size={15} className={cn('mt-0.5 shrink-0', meta.className)} />
             <span className="min-w-0 flex-1 break-words text-xs leading-relaxed text-ink-100">{t.message}</span>
             <button
-              className="shrink-0 cursor-pointer rounded p-0.5 text-ink-400 transition-colors hover:bg-white/10 hover:text-white"
+              // 28×28 命中區:原本是 `p-0.5` + 13px 圖示 = 17×17,遠低於 28px 的下限
+              // (稽核的 small-tap-target 在每一個 toast 狀態都報到它)。
+              // 圖示維持 13px 不變,只把命中區放大 —— 放大的視覺影響用 -mr 吸收,
+              // 否則 toast 會整個變寬 11px,那是在改一個不是問題的版面。
+              className="-mr-1.5 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-ink-400 transition-colors hover:bg-white/10 hover:text-white"
               onClick={() => dismiss(t.id)}
               title="關閉"
+              aria-label="關閉通知"
             >
               <X size={13} />
             </button>

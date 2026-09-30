@@ -103,7 +103,10 @@ test('第一次使用者的完整流程', async () => {
     expect(iconColor).not.toBe('rgb(255, 255, 255)')
     // 事件淡出後縮回常規內容(6s 顯示 + 0.28s 退場 + 餘裕;常規內容的標題是講稿標題)
     await expect(ev).toHaveCount(0, { timeout: 10_000 })
-    await expect(pill.locator('span.font-mono')).toBeVisible({ timeout: 3_000 })
+    // 常規內容回來的鎖點:狀態點(只有非事件狀態才渲染)。
+    // 原本鎖的是藥丸裡的計時器(span.font-mono),但計時器已移回展開面板的工具列 ——
+    // 島上只留「狀態點 · 標題 · 下一個關鍵詞 · 三顆控制」,島的留白本身就是設計。
+    await expect(pill.locator('[data-pill-dot]')).toBeVisible({ timeout: 3_000 })
 
     // 7) 穿透單向門:展開 → 開穿透 → 隱藏 → 再顯示 → 穿透自動解除
     await pill.locator('[title="展開完整面板"]').click()

@@ -71,6 +71,16 @@ export function initLogging(): void {
   write('INFO', `--- app start v${app.getVersion()} (${process.platform}) ---`)
 }
 
+/** main 進程的一般訊息(啟動宣告、模式切換)——renderer 前綴留給 logFromRenderer */
+export function logMain(level: 'INFO' | 'WARN' | 'ERROR', message: string): void {
+  try {
+    rotateIfLarge()
+    appendFileSync(logFile(), `[${new Date().toISOString()}] [${level}] ${message}\n`, 'utf-8')
+  } catch {
+    /* 忽略 */
+  }
+}
+
 /** renderer 經 IPC 落同一份檔案(前端錯誤也要能看到) */
 export function logFromRenderer(level: 'ERROR' | 'WARN' | 'INFO', message: string): void {
   try {

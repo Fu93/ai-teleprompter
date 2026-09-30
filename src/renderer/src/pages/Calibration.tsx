@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import type { PersonalProfile } from '@shared/types'
 import { useSettings } from '../lib/store'
+import { describeError } from '../lib/describeError'
 import { cn } from '../lib/utils'
 import {
   DEFAULT_HFOV_DEG,
@@ -31,6 +32,8 @@ import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { toast } from '../lib/toast'
 import { encodeWav } from '../lib/audio/wav'
+import { registerAuditControl } from '../lib/auditBridge'
+import { useEscape } from '../lib/useEscape'
 
 const CALIBRATION_PASSAGE =
   '大家好，很高興今天有機會在這裡分享。接下來我想談三個重點，第一是我們目前的進度，第二是過程中遇到的挑戰，第三是接下來的計畫。這段文字是用來測量你的自然說話速度，請用平常講話的節奏把它完整唸完，不用刻意加快或放慢。'
@@ -40,6 +43,22 @@ type Step = 0 | 1 | 2
 export default function Calibration({ onDone }: { onDone: () => void }): JSX.Element {
   const { settings, update } = useSettings()
   const [step, setStep] = useState<Step>(0)
+
+  /**
+   * 稽核用:直接指定步驟。
+   *
+   * 為什麼不能只靠腳本點「下一步」:step 0 的前進按鈕要有相機或手動距離才會渲染,
+   * step 1 的前進按鈕要等麥克風量出語速 —— 稽核環境兩者都沒有。
+   * 上一輪的腳本用文字 regex 找不到就靜默 no-op,於是 step1/step2 兩張截圖
+   * 與原始頁面 sha256 完全相同,而報告看起來「全清」。
+   */
+  useEffect(() =>
+    registerAuditControl('calibration.step', (arg) => {
+      const v = Number(arg)
+      if (v !== 0 && v !== 1 && v !== 2) return false
+      setStep(v as Step)
+      return true
+    }), [])
 
   // Step 1: IPD + 視距
   const [ipdMm, setIpdMm] = useState(63)
@@ -54,6 +73,13 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
   const rafRef = useRef(0)
   const emaRef = useRef(new Ema(0.12))
   const historyRef = useRef<number[]>([])
+  /**
+   * 每一次 startCamera 的世代編號。取消(或離頁)之後,晚到的 await 必須自己發現
+   * 「我已經不是當前的這一代」—— 否則在 `await getFaceLandmarker()` 預熱期間按 Esc
+   * 會留下一個永遠沒有 stream 的 rAF 迴圈(每秒 60 次 detectIris 掃一個空的 video),
+   * 指示燈雖滅但 CPU 一路燒到離頁。與 Record/Practice 的 startAttemptRef 同一套。
+   */
+  const camAttemptRef = useRef(0)
 
   // Step 2: 語速
   const [recording, setRecording] = useState(false)
@@ -88,11 +114,17 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
   // ---------- Step 1: 攝影機 ----------
   const startCamera = useCallback(async (): Promise<void> => {
     setCameraError(null)
+    const attempt = ++camAttemptRef.current
+    const isCurrent = (): boolean => attempt === camAttemptRef.current
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 640, height: 480, facingMode: 'user' },
         audio: false
       })
+      if (!isCurrent()) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
       streamRef.current = stream
       const video = videoRef.current
       if (video) {
@@ -101,23 +133,63 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       }
       setCameraOn(true)
       await getFaceLandmarker() // 預熱模型
-      loop()
+      // 預熱是最久的一段 await:使用者很可能就在這裡按 Esc 或直接切到下一步
+      if (!isCurrent()) return
+      loop(attempt)
     } catch (err) {
-      setCameraError(err instanceof Error ? err.message : String(err))
+      if (!isCurrent()) return
+      setCameraError(describeError(err))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const stopCamera = (): void => {
+    camAttemptRef.current += 1 // 讓所有在飛的 await 與 rAF 迴圈自我作廢
     cancelAnimationFrame(rafRef.current)
+    if (videoRef.current) videoRef.current.srcObject = null
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
+    historyRef.current = []
+    emaRef.current = new Ema(0.12)
+    setDistanceCm(null)
+    setStable(false)
     setCameraOn(false)
   }
 
-  const loop = (): void => {
+  /**
+   * 步驟切換的唯一入口。
+   *
+   * 為什麼不是各自 setStep:離開步驟 0 時必須關掉相機。原本兩顆「下一步」按鈕
+   * (相機距離確認、手動距離繼續)都只呼叫 setStep(1),於是相機、rAF 迴圈與
+   * 攝影機指示燈會一路亮到步驟 2 結束或離頁 —— 沒有人在步驟 1/2 看得到它,
+   * 使用者只知道「鏡頭燈一直亮著」。
+   */
+  const goToStep = (next: Step): void => {
+    if (next !== 0 && camAttemptRef.current > 0) stopCamera()
+    setStep(next)
+  }
+
+  /**
+   * Esc 的行為必須跟著「這個步驟看得到什麼」:
+   *   步驟 0 有相機 → 關相機(佔用裝置 + 亮燈的狀態要有鍵盤退出路徑)
+   *   步驟 1 有錄音 → 停止朗讀(不然麥克風與指示燈留著)
+   *   步驟 2 沒有佔用裝置 → 不攔 Esc
+   * 原本寫成 `if (cameraOn) stopCamera(); else if (recording) stopReading()`,
+   * 而相機在進入步驟 1 後仍是開的,所以在錄音中按 Esc 會去關一個「這一頁根本
+   * 看不到的」相機,錄音照跑、畫面毫無變化 —— 使用者只會覺得 Esc 壞了。
+   */
+  useEscape(() => {
+    if (step === 0) {
+      if (cameraOn) stopCamera()
+    } else if (step === 1 && recording) {
+      void stopReading()
+    }
+  }, step === 0 ? cameraOn : step === 1 && recording)
+
+  const loop = (attempt: number): void => {
     let lastUiUpdate = 0
     const tick = (): void => {
+      if (attempt !== camAttemptRef.current) return
       rafRef.current = requestAnimationFrame(tick)
       const video = videoRef.current
       const canvas = canvasRef.current
@@ -241,7 +313,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       setRecording(true)
       setTranscribing(false)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
+      toast.error(describeError(err))
       setTranscribing(false)
     }
   }
@@ -289,7 +361,11 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       if (chars < 20) throw new Error(`只聽到 ${chars} 個字，請確認麥克風與音量後再試一次`)
       setRateResult({ charsPerMin: cpm, chars, secs: Math.round(secs) })
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
+      // 雲端引擎的失敗多半是連不上/金鑰;本地引擎的失敗多半是模型或音量,
+      // 兩種要給的下一步完全不同。
+      toast.error(
+        describeError(err, settings?.stt.engine === 'cloud' ? { provider: 'cloud-api' } : undefined)
+      )
     } finally {
       setTranscribing(false)
       setModelProgress(null)
@@ -362,6 +438,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
           <div className="flex items-center gap-3">
             <input
               type="number"
+              aria-label="瞳距(IPD),單位毫米"
               min={50}
               max={80}
               value={ipdMm}
@@ -406,7 +483,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
                 <button
                   className="btn-primary text-xs"
                   disabled={!stable}
-                  onClick={() => setStep(1)}
+                  onClick={() => goToStep(1)}
                 >
                   {stable ? (
                     <>
@@ -430,7 +507,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
             <div className="label">沒有攝影機？直接填你平常的觀看距離</div>
             <div className="flex items-center gap-2">
               <input
-                type="number"
+                aria-label="沒有攝影機？直接填你平常的觀看距離" type="number"
                 min={25}
                 max={150}
                 placeholder="例如 60"
@@ -439,7 +516,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
                 className="input w-28"
               />
               <span className="text-xs text-ink-400">cm</span>
-              <button className="btn-outline ml-auto text-xs" disabled={manualDistance == null} onClick={() => setStep(1)}>
+              <button className="btn-outline ml-auto text-xs" disabled={manualDistance == null} onClick={() => goToStep(1)}>
                 <Ruler size={13} /> 用手動距離繼續
               </button>
             </div>
@@ -506,7 +583,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
                 <Square size={14} /> 唸完了
               </button>
             )}
-            <button className="btn-outline text-xs" disabled={rateResult == null} onClick={() => setStep(2)}>
+            <button className="btn-outline text-xs" disabled={rateResult == null} onClick={() => goToStep(2)}>
               下一步 <ChevronRight size={13} />
             </button>
           </div>
@@ -577,7 +654,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       )}
 
       {step > 0 && (
-        <button className="btn-ghost mt-4 text-xs" onClick={() => setStep((s) => (s - 1) as Step)}>
+        <button className="btn-ghost mt-4 text-xs" onClick={() => goToStep((step - 1) as Step)}>
           回上一步
         </button>
       )}

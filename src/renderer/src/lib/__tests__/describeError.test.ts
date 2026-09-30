@@ -25,9 +25,28 @@ describe('describeError', () => {
   })
 
   it('Ollama 沒開時說明怎麼啟動', () => {
-    const m = describeError('fetch failed')
+    const m = describeError('fetch failed', { provider: 'ollama' })
     expect(m).toContain('Ollama')
     expect(m).toContain('ollama serve')
+  })
+
+  it('用雲端 API 時連線失敗不得叫人去啟動 Ollama', () => {
+    // 回帰:這條規則原本只看訊息,而 Ollama 沒開與雲端被防火牆擋掉丟出的
+    // 都是同一句 `fetch failed`(ECONNREFUSED 藏在 cause,過了 IPC 就沒了)。
+    // 少了 provider,唯一的出路就是猜 —— 而猜錯等於把使用者的網路問題
+    // 說成「去開 Ollama」,正是這支檔案自己說不可以犯的錯。
+    const ai = describeError('fetch failed', { provider: 'openai-compatible' })
+    expect(ai).not.toContain('Ollama')
+    expect(ai).toContain('AI API')
+    const stt = describeError('fetch failed', { provider: 'cloud-api' })
+    expect(stt).not.toContain('Ollama')
+    expect(stt).toContain('雲端語音 API')
+  })
+
+  it('沒有情境時只給中性的網路訊息,不臆測供應商', () => {
+    const m = describeError('fetch failed')
+    expect(m).toContain('網路')
+    expect(m).not.toContain('Ollama')
   })
 
   it('找不到麥克風與麥克風被占用是不同問題', () => {

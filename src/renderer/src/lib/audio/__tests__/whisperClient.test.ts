@@ -24,4 +24,45 @@ describe('WhisperClient dispose', () => {
     await expectation
     vi.useRealTimers()
   })
+
+  it('Worker error 時 reject 在飛的 load 並清理壞掉的 worker', async () => {
+    const listeners = new Map<string, (event: ErrorEvent) => void>()
+    const fakeWorker = {
+      addEventListener: vi.fn((type: string, listener: (event: ErrorEvent) => void) => {
+        listeners.set(type, listener)
+      }),
+      removeEventListener: vi.fn((type: string) => {
+        listeners.delete(type)
+      }),
+      postMessage: vi.fn(),
+      terminate: vi.fn()
+    } as unknown as Worker
+    // WhisperClient 以 new Worker(...) 建構;箭頭函式不可被 new 建構,
+    // 這裡若用 vi.fn(() => fakeWorker) 會丟 "is not a constructor"。
+    // 必須用一般 function——constructor 回傳物件時,new 的結果即為該物件。
+    vi.stubGlobal('Worker', vi.fn(function () { return fakeWorker }))
+    // whisperClient 的 error handler 會做 instanceof ErrorEvent 判斷;node 測試環境
+    // (vitest environment: 'node') 沒有這個全域,會在處理錯誤前先拋 ReferenceError,
+    // 後面的 reject/清理根本走不到。這裡補上瀏覽器才有的全域。
+    class FakeErrorEvent {
+      message: string
+      preventDefault = vi.fn()
+      constructor(message: string) { this.message = message }
+    }
+    vi.stubGlobal('ErrorEvent', FakeErrorEvent)
+    try {
+      const client = new WhisperClient()
+      const loadPromise = client.load('base')
+      const expectation = expect(loadPromise).rejects.toThrow('worker crashed')
+      // FakeErrorEvent 只實作了 error handler 真正會讀的欄位(message);
+      // listener 的簽章宣告成 ErrorEvent,故轉型過去。
+      listeners.get('error')?.(new FakeErrorEvent('worker crashed') as unknown as ErrorEvent)
+
+      await expectation
+      expect(client.isLoaded()).toBe(false)
+      expect(fakeWorker.terminate).toHaveBeenCalledOnce()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

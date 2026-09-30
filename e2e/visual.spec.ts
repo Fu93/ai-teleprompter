@@ -141,6 +141,28 @@ test('藥丸折射 + 輪廓光截圖', async () => {
     expect(removed.spec).toBe(false)
     expect(removed.glow).not.toContain('""') // 舊的呼吸光暈 ::before 已不存在
 
+    // 靈動島改版的兩條反向錨定:
+    //  1. 藥丸必須是「真膠囊」:radius ≥ 高的一半(rounded-full 的 9999px 由引擎
+    //     繪製時夾到 h/2,所以比對的是「不小於」;半徑較小就是圓角長方形,
+    //     也就是「看起來像有白邊的長方形」那個症狀)。
+    //  2. 藥丸 root **不能**有任何動畫:舊版的 content-morph-in(delay 120ms +
+    //     fill both)讓 morph 的前 120ms 整顆膠囊是空白的,那是量得到的缺陷。
+    const island = await overlay.evaluate(() => {
+      const el = document.querySelector('.dynamic-island-pill')
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return {
+        radius: parseFloat(getComputedStyle(el).borderTopLeftRadius),
+        h: r.height,
+        w: r.width,
+        animations: el.getAnimations().length
+      }
+    })
+    expect(island).not.toBeNull()
+    expect(island!.radius).toBeGreaterThanOrEqual(island!.h / 2 - 1)
+    expect(island!.w / island!.h).toBeLessThan(7) // 比例:不再是 8:1 的狀態列
+    expect(island!.animations).toBe(0)
+
     await overlay.waitForTimeout(400)
     await overlay.screenshot({ path: 'docs/screenshots/14-pill-refraction.png' })
   } finally {

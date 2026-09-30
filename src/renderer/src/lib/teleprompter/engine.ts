@@ -221,6 +221,20 @@ export class TeleprompterEngine {
   }
 
   private tickScroll(dt: number): TickChange {
+    // 尚未量測捲動容器時不推進、也不完成。
+    //
+    // 為什麼需要這道防線:藥丸(收合)與貼鏡形態沒有捲動容器,量測管線拿不到
+    // scrollHeight,opts 裡的 totalH/wrapH 一直是 undefined,而 maxScroll() 對
+    // 未量測的退化值是 40px(只看 SCROLL_TAIL_PADDING_PX)。
+    // 使用者視角試用發現的實際症狀:收合成藥丸後在主視窗換一份講稿,藥丸的狀態點
+    // 600ms 就從「播放中」跳成「已播畢」,進度細線只閃一下就永遠消失;接著把藥丸
+    // 展開,講稿仍停在頂端、狀態仍是 completed —— 提詞機看起來完全壞掉,而畫面上
+    // 沒有任何錯誤訊息告訴使用者發生什麼事。
+    //
+    // 展開後會重新量測(measureKey 帶上形態,見 useTeleprompterEngine),那時再從
+    // 頭捲;收合期間時鐘照常累計(elapsedMs 在 tick() 就加了),不是整段靜止。
+    if (this.opts.totalH === undefined || this.opts.wrapH === undefined) return 'continuous'
+
     const maxScroll = this.maxScroll()
     const next = this.scrollPos + (this.opts.scrollSpeed * dt) / 1000
     if (next >= maxScroll) {
@@ -318,6 +332,15 @@ export class TeleprompterEngine {
   }
 
   // ── 查詢 ──
+
+  /**
+   * scroll 模式的捲動範圍是否已知(容器量測過)。
+   * 藥丸/貼鏡形態沒有捲動容器,所以這裡會是 false —— 呼叫端據此決定
+   * 「現在能不能顯示一條有意義的進度」,而不是畫一條永遠 0% 的線。
+   */
+  get measured(): boolean {
+    return this.opts.totalH !== undefined && this.opts.wrapH !== undefined
+  }
 
   getState(): EngineState {
     return {

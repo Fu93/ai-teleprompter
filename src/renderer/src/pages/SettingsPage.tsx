@@ -1,7 +1,16 @@
-import type { JSX } from "react"
-import { useEffect, useState } from 'react'
+import type { JSX } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, Loader2, RefreshCw, Ruler, ScanEye } from 'lucide-react'
 import { useSettings } from '../lib/store'
+import { describeError } from '../lib/describeError'
+import {
+  clampPillScale,
+  PILL_SCALE_MAX,
+  PILL_SCALE_MIN,
+  PILL_SCALE_STEP,
+  pillKeywordCharsOf,
+  pillSizeOf
+} from '@shared/overlayShapes'
 import { toast } from '../lib/toast'
 import { cn, formatDateTime } from '../lib/utils'
 import type { AppSettings } from '@shared/types'
@@ -68,7 +77,13 @@ function Switch({
   return (
     <button
       onClick={() => onChange(!checked)}
-      className="flex w-full items-center justify-between text-left cursor-pointer"
+      // 這是開關不是一般按鈕:螢幕閱讀器預設會報「按鈕」而完全不報狀態,
+      // 使用者不知道現在是開還是關。role/aria-checked 是 toggle 的必要條件。
+      role="switch"
+      aria-checked={checked}
+      // py-2 讓列高從 24px 拉到 40px。原本沒有任何內距,按鈕高度剛好等於
+      // 視覺開關本身,文字與開關完全貼在一起,點目標也偏小。
+      className="flex w-full items-center justify-between gap-4 py-2 text-left cursor-pointer"
     >
       <div>
         <div className="text-sm">{label}</div>
@@ -98,6 +113,7 @@ function Slider({
   max,
   step,
   unit,
+  format,
   onChange
 }: {
   label: string
@@ -106,6 +122,8 @@ function Slider({
   max: number
   step: number
   unit?: string
+  /** 覆寫右側數值的顯示方式(例如倍率固定兩位小數:1.00× / 0.80×) */
+  format?: (v: number) => string
   onChange: (v: number) => void
 }): JSX.Element {
   return (
@@ -113,8 +131,7 @@ function Slider({
       <div className="mb-2 flex justify-between text-sm">
         <span>{label}</span>
         <span className="font-mono text-xs text-ink-300">
-          {value}
-          {unit}
+          {format ? format(value) : `${value}${unit ?? ''}`}
         </span>
       </div>
       <input
@@ -124,6 +141,8 @@ function Slider({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
+        // 上方的 label 是視覺文字,不會自動成為表單控制的無障礙名稱
+        aria-label={label}
         className="w-full cursor-pointer accent-accent-500"
       />
     </div>
@@ -137,6 +156,10 @@ export default function SettingsPage({
 }): JSX.Element {
   const { settings, update } = useSettings()
   const [testing, setTesting] = useState(false)
+  const [aiApiKey, setAiApiKey] = useState('')
+  const [sttApiKey, setSttApiKey] = useState('')
+  const [secureKeysLoaded, setSecureKeysLoaded] = useState(false)
+  const secureKeysRef = useRef<Record<string, unknown>>({})
   const [models, setModels] = useState<string[] | null>(null)
   const [ollamaVersion, setOllamaVersion] = useState<string | null>(null)
   const [scenes, setScenes] = useState<SceneSummary[] | null>(null)
@@ -146,7 +169,35 @@ export default function SettingsPage({
   useEffect(() => {
     void window.api.sceneList().then(setScenes).catch(() => setScenes([]))
   }, [])
+
+  useEffect(() => {
+    if (!settings) return
+    let mounted = true
+    void window.api.keysGet().then((keys) => {
+      if (!mounted) return
+      const stored = keys ?? {}
+      secureKeysRef.current = stored
+      setAiApiKey(typeof stored.apiKey === 'string' ? stored.apiKey : settings.ai.openaiCompatible.apiKey)
+      setSttApiKey(typeof stored.sttApiKey === 'string' ? stored.sttApiKey : settings.stt.cloud.apiKey)
+      setSecureKeysLoaded(true)
+    }).catch((err) => {
+      if (!mounted) return
+      setSecureKeysLoaded(true)
+      toast.error(`讀取安全金鑰失敗。${describeError(err)}`)
+    })
+    return () => {
+      mounted = false
+    }
+  }, [settings?.ai.openaiCompatible.apiKey, settings?.stt.cloud.apiKey])
   const [testError, setTestError] = useState<string | null>(null)
+
+  const saveSecureKey = (name: 'apiKey' | 'sttApiKey', value: string): void => {
+    const next = { ...secureKeysRef.current, [name]: value }
+    secureKeysRef.current = next
+    void window.api.keysSet(next).then((ok) => {
+      if (!ok) toast.error('作業系統安全儲存不可用，API 金鑰未儲存')
+    }).catch((err) => toast.error(`金鑰儲存失敗。${describeError(err)}`))
+  }
 
   if (!settings) return <div className="p-8 text-sm text-ink-400">載入中…</div>
 
@@ -168,7 +219,8 @@ export default function SettingsPage({
         if (res.models.length === 0) setTestError('已連線，但還沒有任何模型——請執行 ollama pull qwen2.5:7b')
       }
     } catch (err) {
-      setTestError(err instanceof Error ? err.message : String(err))
+      // 這裡測的就是 Ollama:連線失敗就是 Ollama 沒開,不要給中性的網路訊息
+      setTestError(describeError(err, { provider: 'ollama' }))
     } finally {
       setTesting(false)
     }
@@ -236,6 +288,7 @@ export default function SettingsPage({
         <div>
           <div className="label">顯示模式</div>
           <Segmented
+            ariaLabel="顯示模式"
             options={[
               { id: 'scroll', label: '連續捲動' },
               { id: 'phrase', label: '逐句短語' },
@@ -249,6 +302,29 @@ export default function SettingsPage({
             {settings.personal.profile
               ? `逐句/逐詞以你的個人語速 ${settings.personal.profile.charsPerMin} 字/分為基準推進（倍率 1×＝你自己的語速）;重點要點自動切出 Markdown 大綱或段落,手動(← →)翻頁。`
               : '逐句/逐詞以 120 WPM 為基準推進（完成個人化校準後改以你的語速為基準）;重點要點自動切出 Markdown 大綱或段落,手動(← →)翻頁。'}
+          </div>
+        </div>
+        <div>
+          <Slider
+            label="藥丸大小"
+            value={o.pillScale}
+            min={PILL_SCALE_MIN}
+            max={PILL_SCALE_MAX}
+            step={PILL_SCALE_STEP}
+            // 固定兩位小數:滑桿的步進是 0.05,顯示 1× / 1.2× / 0.8× 會讓
+            // 「1」看不出是 1.00× 還是被夾住的 1.3×(使用者視角試用發現的不一致)
+            format={(v) => `${v.toFixed(2)}×`}
+            onChange={(v) => patchO({ pillScale: clampPillScale(v) })}
+          />
+          {/* 倍率是抽象的數字:把它換算成使用者眼前真正會看到的尺寸。
+              這裡的數字與實際視窗是同一個值 —— 藥丸/貼鏡的視窗被設成不可調整大小
+              (只有展開形態能拖,見 windows.ts 的 applyOverlayWindowSettings),
+              所以「倍率 = 你會看到的尺寸」是精確的,不需要寫「約」。
+              順帶把「下一個關鍵詞」會縮到幾字一起講:那是這個寬度下唯一會變的東西。 */}
+          <div className="mt-1.5 text-[11px] text-ink-400">
+            收合成藥丸（靈動島）時的尺寸:{pillSizeOf(o.pillScale).w}×{pillSizeOf(o.pillScale).h}（不會再更大或更小）;
+            只縮放膠囊本體，字級與 28px 的按鈕（觸控目標）不變。
+            「下一個關鍵詞」在這個寬度下顯示 {pillKeywordCharsOf(pillSizeOf(o.pillScale).w)} 字。
           </div>
         </div>
         <Slider label="字體大小" value={o.fontSize} min={16} max={72} step={2} unit="px" onChange={(v) => patchO({ fontSize: v })} />
@@ -340,11 +416,11 @@ export default function SettingsPage({
           <div>
             <div className="label">本地模型</div>
             <select
+              aria-label="本地模型"
               className="input"
               value={settings.stt.localModel}
               onChange={(e) => update({ stt: { localModel: e.target.value as AppSettings['stt']['localModel'] } })}
             >
-              <option value="tiny">tiny — 最快（~75MB）</option>
               <option value="base">base — 均衡（~145MB）</option>
               <option value="small">small — 最準（~500MB）</option>
             </select>
@@ -352,11 +428,11 @@ export default function SettingsPage({
           <div>
             <div className="label">語言</div>
             <select
+              aria-label="語言"
               className="input"
               value={settings.stt.language}
               onChange={(e) => update({ stt: { language: e.target.value } })}
             >
-              <option value="zh">中文</option>
               <option value="en">English</option>
               <option value="auto">自動偵測</option>
             </select>
@@ -370,7 +446,7 @@ export default function SettingsPage({
             <div>
               <div className="label">API Base URL</div>
               <input
-                className="input"
+                aria-label="API Base URL" className="input"
                 value={settings.stt.cloud.baseUrl}
                 onChange={(e) => update({ stt: { cloud: { baseUrl: e.target.value } } })}
                 placeholder="https://api.groq.com/openai/v1"
@@ -379,17 +455,19 @@ export default function SettingsPage({
             <div>
               <div className="label">API Key</div>
               <input
-                className="input"
+                aria-label="API Key" className="input"
                 type="password"
-                value={settings.stt.cloud.apiKey}
-                onChange={(e) => update({ stt: { cloud: { apiKey: e.target.value } } })}
+                value={sttApiKey}
+                disabled={!secureKeysLoaded}
+                onChange={(e) => setSttApiKey(e.target.value)}
+                onBlur={(e) => saveSecureKey('sttApiKey', e.target.value)}
                 placeholder="gsk_..."
               />
             </div>
             <div>
               <div className="label">模型</div>
               <input
-                className="input"
+                aria-label="模型" className="input"
                 value={settings.stt.cloud.model}
                 onChange={(e) => update({ stt: { cloud: { model: e.target.value } } })}
                 placeholder="whisper-large-v3"
@@ -431,7 +509,7 @@ export default function SettingsPage({
               <div className="label">Ollama 位址</div>
               <div className="flex gap-2">
                 <input
-                  className="input flex-1"
+                  aria-label="Ollama 位址" className="input flex-1"
                   value={settings.ai.ollama.baseUrl}
                   onChange={(e) => update({ ai: { ollama: { baseUrl: e.target.value } } })}
                   placeholder="http://localhost:11434"
@@ -467,7 +545,7 @@ export default function SettingsPage({
             <div>
               <div className="label">API Base URL</div>
               <input
-                className="input"
+                aria-label="API Base URL" className="input"
                 value={settings.ai.openaiCompatible.baseUrl}
                 onChange={(e) => update({ ai: { openaiCompatible: { baseUrl: e.target.value } } })}
                 placeholder="https://api.openai.com/v1"
@@ -476,16 +554,18 @@ export default function SettingsPage({
             <div>
               <div className="label">API Key</div>
               <input
-                className="input"
+                aria-label="API Key" className="input"
                 type="password"
-                value={settings.ai.openaiCompatible.apiKey}
-                onChange={(e) => update({ ai: { openaiCompatible: { apiKey: e.target.value } } })}
+                value={aiApiKey}
+                disabled={!secureKeysLoaded}
+                onChange={(e) => setAiApiKey(e.target.value)}
+                onBlur={(e) => saveSecureKey('apiKey', e.target.value)}
               />
             </div>
             <div>
               <div className="label">模型</div>
               <input
-                className="input"
+                aria-label="模型" className="input"
                 value={settings.ai.openaiCompatible.model}
                 onChange={(e) => update({ ai: { openaiCompatible: { model: e.target.value } } })}
                 placeholder="gpt-4o-mini"
@@ -559,6 +639,7 @@ export default function SettingsPage({
             <select
               className="input"
               value={settings.hotkeys.toggleOverlay}
+              aria-label="顯示 / 隱藏浮層"
               onChange={(e) => update({ hotkeys: { toggleOverlay: e.target.value } })}
             >
               {['Control+Alt+T', 'Control+Alt+P', 'Control+Shift+Space', 'Control+Alt+0'].map(
@@ -575,6 +656,7 @@ export default function SettingsPage({
             <select
               className="input"
               value={settings.hotkeys.hideOverlay}
+              aria-label="隱藏浮層"
               onChange={(e) => update({ hotkeys: { hideOverlay: e.target.value } })}
             >
               {['Control+Alt+H', 'Control+Shift+H', 'Control+Alt+9'].map((k) => (
@@ -589,6 +671,7 @@ export default function SettingsPage({
             <select
               className="input"
               value={settings.hotkeys.panicRescue}
+              aria-label="Panic 救援"
               onChange={(e) => update({ hotkeys: { panicRescue: e.target.value } })}
             >
               {['Alt+P', 'Alt+/', 'F9'].map((k) => (
@@ -605,6 +688,7 @@ export default function SettingsPage({
             <select
               className="input"
               value={settings.hotkeys.playPause}
+              aria-label="播放 / 暫停"
               onChange={(e) => update({ hotkeys: { playPause: e.target.value } })}
             >
               {['Alt+K', 'Alt+Space', 'Control+Alt+S'].map((k) => (
@@ -620,6 +704,7 @@ export default function SettingsPage({
               <select
                 className="input"
                 value={settings.hotkeys.speedUp}
+                aria-label="加快語速"
                 onChange={(e) => update({ hotkeys: { speedUp: e.target.value } })}
               >
                 {['Alt+Up', 'Control+Alt+Up'].map((k) => (
@@ -631,6 +716,7 @@ export default function SettingsPage({
               <select
                 className="input"
                 value={settings.hotkeys.speedDown}
+                aria-label="減慢語速"
                 onChange={(e) => update({ hotkeys: { speedDown: e.target.value } })}
               >
                 {['Alt+Down', 'Control+Alt+Down'].map((k) => (

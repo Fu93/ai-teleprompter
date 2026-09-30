@@ -23,19 +23,27 @@ export function deepMerge<T>(base: T, patch: unknown): T {
 
 const settingsFile = () => join(app.getPath('userData'), 'settings.json')
 
-/** 這些旗標描述「上一次關閉前的暫態 UI 狀態」,不應跨啟動還原 */
-const VOLATILE_OVERLAY_KEYS = ['compact', 'lensMode'] as const
-
-function stripVolatileOverlay(s: AppSettings): AppSettings {
-  const overlay = { ...s.overlay } as unknown as Record<string, unknown>
-  for (const k of VOLATILE_OVERLAY_KEYS) delete overlay[k]
-  return { ...s, overlay: overlay as unknown as AppSettings['overlay'] }
+/**
+ * 把落盤的 JSON 疊到預設值上。
+ *
+ * 抽成純函式是為了可以在 node 環境單元測試「哪些欄位必須存活」:
+ * 原本這裡有一個 stripVolatileOverlay(),會把 `compact` / `lensMode` 刪掉
+ * (理由是「那只是上次關閉前的暫態 UI 狀態」),結果是使用者每天都要重按一次
+ * 「收合成藥丸」。形態是使用者刻意選的顯示方式,不是暫態 —— 現在會跨啟動保留,
+ * 測試(settings.test.ts)就是防止它被「清理」回來。
+ *
+ * 連動:形態決定浮層視窗尺寸。視窗在 renderer 掛載前就建好了(用 width/height,
+ * 那存的是展開尺寸),所以浮層啟動時會自己把視窗對齊還原的形態
+ * (見 overlay/OverlayApp.tsx 的 restoredShapeRef),否則會出現「藥丸的內容、
+ * 展開的視窗」。
+ */
+export function mergeLoadedSettings(raw: string): AppSettings {
+  return deepMerge(structuredClone(DEFAULT_SETTINGS), JSON.parse(raw))
 }
 
 export function loadSettings(): AppSettings {
   try {
-    const raw = readFileSync(settingsFile(), 'utf-8')
-    return stripVolatileOverlay(deepMerge(structuredClone(DEFAULT_SETTINGS), JSON.parse(raw)))
+    return mergeLoadedSettings(readFileSync(settingsFile(), 'utf-8'))
   } catch {
     return structuredClone(DEFAULT_SETTINGS)
   }

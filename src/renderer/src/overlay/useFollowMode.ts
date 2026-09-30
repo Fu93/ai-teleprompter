@@ -9,6 +9,7 @@ import {
 } from '../lib/follow'
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
+import { debugLog } from '../lib/debug'
 import type { TeleprompterControls } from './useTeleprompterEngine'
 
 export type FollowStatus = 'idle' | 'loading' | 'listening' | 'error'
@@ -76,13 +77,31 @@ export function useFollowMode(params: UseFollowModeParams): UseFollowModeResult 
   // 跟隨模式的手動滾輪偏移:使用者滾動後,自動對位仍以此偏移為基準(不回彈)
   const followOffsetRef = useRef(0)
   const followLevelRef = useRef(0)
+  /** 取消模型載入或麥克風授權中的啟動;晚到的 getUserMedia 必須立即停軌 */
+  const startAttemptRef = useRef(0)
+
+  // 除錯事件流:跟讀狀態轉換(idle → loading → listening / error)是追「跟讀為什麼沒動」
+  // 的第一手線索,而它偏偏最難人工重現(要麥克風 + 下載模型 + 開口唸稿)。
+  const lastFollowStatusRef = useRef<FollowStatus>('idle')
+  useEffect(() => {
+    if (lastFollowStatusRef.current === followStatus) return
+    debugLog('follow', `狀態 ${lastFollowStatusRef.current} → ${followStatus}`, {
+      msg: followMsg,
+      lastHeard: lastHeard.slice(0, 40)
+    })
+    lastFollowStatusRef.current = followStatus
+  }, [followStatus, followMsg, lastHeard])
 
   useEffect(() => {
     return () => {
+      startAttemptRef.current += 1
       // 視窗關閉時清理音訊
-      segmenterRef.current?.stop()
+      segmenterRef.current?.stop(false)
+      segmenterRef.current = null
       streamRef.current?.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
       whisperRef.current?.dispose()
+      whisperRef.current = null
     }
   }, [])
 
@@ -136,6 +155,7 @@ export function useFollowMode(params: UseFollowModeParams): UseFollowModeResult 
         setActiveChunk(idx)
         scrollToChunk(idx)
         setLastHeard(text.slice(0, 60))
+        debugLog('follow', `對位 chunk ${idx}`, { heard: text.slice(0, 40), pos: f.pos })
       }
     },
     [scrollToChunk, onMeSpeech]
@@ -151,22 +171,30 @@ export function useFollowMode(params: UseFollowModeParams): UseFollowModeResult 
   )
 
   const startFollow = useCallback(async (): Promise<void> => {
-    if (!settings) return
+    if (!settings || followStatusRef.current === 'loading' || followStatusRef.current === 'listening') return
+    const attempt = ++startAttemptRef.current
+    const isCurrentAttempt = (): boolean => attempt === startAttemptRef.current
     // 跟讀時暫停自動捲動,讓位給語音對齊
     controlsRef.current?.pause()
     followOffsetRef.current = 0
     setFollowMsg('')
+    followStatusRef.current = 'loading'
     setFollowStatus('loading')
+    let stream: MediaStream | null = null
+    let segmenter: AudioSegmenter | null = null
     try {
       if (!whisperRef.current) whisperRef.current = new WhisperClient()
       const client = whisperRef.current
       client.onProgress = (p) => {
-        if (p.status === 'progress') setFollowMsg(`載入模型 ${p.progress?.toFixed(0) ?? 0}%`)
+        if (isCurrentAttempt() && p.status === 'progress') setFollowMsg(`載入模型 ${p.progress?.toFixed(0) ?? 0}%`)
       }
-      client.onStatus = (m) => setFollowMsg(m)
+      client.onStatus = (m) => {
+        if (isCurrentAttempt()) setFollowMsg(m)
+      }
       await client.load((settings.stt.localModel ?? 'base') as WhisperModelKey)
+      if (!isCurrentAttempt()) return
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
           echoCancellation: true,
@@ -174,12 +202,18 @@ export function useFollowMode(params: UseFollowModeParams): UseFollowModeResult 
           autoGainControl: true
         }
       })
+      if (!isCurrentAttempt()) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
       streamRef.current = stream
-      segmenterRef.current = new AudioSegmenter({
+      segmenter = new AudioSegmenter({
         onSegment: (audio, sr) => {
           void client
             .transcribe(audio, settings.stt.language)
-            .then(handleFollowTranscript)
+            .then((text) => {
+              if (isCurrentAttempt()) handleFollowTranscript(text)
+            })
             .catch(() => undefined)
         },
         onLevel: (r) => {
@@ -187,21 +221,44 @@ export function useFollowMode(params: UseFollowModeParams): UseFollowModeResult 
         },
         threshold: 0.01
       })
-      await segmenterRef.current.start(stream)
+      segmenterRef.current = segmenter
+      await segmenter.start(stream)
+      if (!isCurrentAttempt()) {
+        segmenter.stop(false)
+        stream.getTracks().forEach((t) => t.stop())
+        if (segmenterRef.current === segmenter) segmenterRef.current = null
+        if (streamRef.current === stream) streamRef.current = null
+        return
+      }
+      followStatusRef.current = 'listening'
       setFollowStatus('listening')
       setFollowMsg('')
     } catch (err) {
+      segmenter?.stop(false)
+      stream?.getTracks().forEach((t) => t.stop())
+      if (!isCurrentAttempt()) return
+      segmenterRef.current = null
+      streamRef.current = null
+      followStatusRef.current = 'error'
       setFollowStatus('error')
       setFollowMsg(err instanceof Error ? err.message : String(err))
     }
   }, [settings, handleFollowTranscript, controlsRef])
 
   const stopFollow = useCallback((): void => {
+    startAttemptRef.current += 1
+    const wasLoading = followStatusRef.current === 'loading'
     segmenterRef.current?.stop()
     segmenterRef.current = null
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
+    // 使用者在模型下載/初始化中取消時中止 worker,避免背景繼續下載大型模型。
+    if (wasLoading) {
+      whisperRef.current?.dispose()
+      whisperRef.current = null
+    }
     followOffsetRef.current = 0
+    followStatusRef.current = 'idle'
     setFollowStatus('idle')
     setFollowMsg('')
     setActiveChunk(-1)

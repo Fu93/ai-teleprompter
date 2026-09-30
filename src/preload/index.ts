@@ -15,6 +15,7 @@ import type {
   CloudTranscribeArgs,
   ChatCompletionApiRequest
 } from '../shared/api'
+import type { DebugOverlayAction, DebugSignalKind, CoachingKind } from '../shared/types'
 
 function on<T>(channel: string, cb: (payload: T) => void): () => void {
   const handler = (_e: IpcRendererEvent, payload: T): void => cb(payload)
@@ -69,6 +70,22 @@ const api: Api = {
     ipcRenderer.invoke(IPC.SaveRecording, args),
   shareSimulation: () => ipcRenderer.invoke(IPC.ShareSimulation),
   snapOverlayCorner: (corner: 'tl' | 'tc' | 'tr') => ipcRenderer.invoke(IPC.OverlaySnapCorner, corner),
+  recenterOverlay: () => ipcRenderer.invoke(IPC.OverlayRecenter),
+
+  // 開發者除錯(見 src/main/debug.ts;未啟用時 main 端一律回 null/false)
+  debugOpenDevTools: (target: 'main' | 'overlay') => ipcRenderer.invoke(IPC.DebugOpenDevTools, target),
+  debugEmitSignal: (args: { kind: DebugSignalKind; text?: string; coachingKind?: CoachingKind }) =>
+    ipcRenderer.invoke(IPC.DebugEmitSignal, args),
+  debugOverlaySnapshot: () => ipcRenderer.invoke(IPC.DebugOverlaySnapshot),
+  debugOverlayCall: (action: DebugOverlayAction) => ipcRenderer.invoke(IPC.DebugOverlayCall, action),
+  debugOverlayInfo: () => ipcRenderer.invoke(IPC.DebugOverlayInfo),
+  debugOverlayAudit: () => ipcRenderer.invoke(IPC.DebugOverlayAudit),
+
+  // 關閉視窗守衛(見 src/main/windows.ts 的 close 事件處理)
+  setCloseBlocker: (text) => ipcRenderer.invoke(IPC.AppSetCloseBlocker, text),
+  confirmClose: () => ipcRenderer.invoke(IPC.AppConfirmClose),
+  cancelClose: () => ipcRenderer.invoke(IPC.AppCancelClose),
+  onCloseRequested: (cb) => on<string>(IPC.AppCloseRequested, cb),
   revealPath: (path: string) => ipcRenderer.invoke(IPC.RevealPath, path),
   exportFile: (args) => ipcRenderer.invoke(IPC.ExportFile, args),
   logFromRenderer: (level, message) => ipcRenderer.invoke(IPC.LogFromRenderer, { level, message }),
