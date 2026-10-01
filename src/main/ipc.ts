@@ -111,11 +111,16 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.SettingsGet, () => settings())
 
   ipcMain.handle(IPC.SettingsSet, (_e, patch: unknown) => {
+    const hotkeysBefore = JSON.stringify(state.settings.hotkeys)
     state.settings = deepMerge(state.settings, patch)
     saveSettings(state.settings)
     applyOverlayWindowSettings()
     broadcastSettings()
-    registerHotkeys()
+    // 熱鍵只有在真的變了才重新註冊:設定頁的字體/速度滑桿拖一格就是一次
+    // SettingsSet,每 tick 都 unregisterAll + 註冊 6 顆 OS 層熱鍵是純浪費,
+    // 也放大「前一個實例還沒退乾淨就 register 失敗」的 flake 面積
+    // (見 registerHotkeys 對 globalShortcut.register 回傳 false 的說明)。
+    if (JSON.stringify(state.settings.hotkeys) !== hotkeysBefore) registerHotkeys()
     syncCoachingTimer()
     return state.settings
   })

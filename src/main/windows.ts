@@ -9,6 +9,17 @@ import { broadcastSettings, state } from './state'
 
 const isDev = !app.isPackaged
 
+/**
+ * Windows 11 22H2(build ≥22621)才支援 setBackgroundMaterial('acrylic')。
+ * 原本這段解析在 applyOverlayWindowSettings 與 syncOverlayMaterial 各寫一份 ——
+ * 兩份要改只能一起改,抽成一處。
+ */
+function isWin11_22H2(): boolean {
+  if (process.platform !== 'win32') return false
+  const [major = 0, , build = 0] = os.release().split('.').map(Number)
+  return major >= 10 && build >= 22621
+}
+
 /** 視窗安全:禁新視窗;僅允許 dev server 或本地檔案內部導航 */
 export function hardenWebContents(win: BrowserWindow): void {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -64,17 +75,10 @@ export function applyOverlayWindowSettings(): void {
   // 玻璃質感:Win11 22H2+ 嘗試視窗後 acrylic 毛玻璃;不支援或失敗則靜默降級(CSS 玻璃仍生效)
   // **acrylic 只在展開形態開啟** —— 見 syncOverlayMaterial 的註解(藥丸/貼鏡的
   // 四個角在頁面層是透明的,acrylic 會在整個視窗矩形鋪磨砂,讓四個角變實補丁)。
-  try {
-    const win11 = process.platform === 'win32' && Number(os.release().split('.')[0]) >= 10 && Number(os.release().split('.')[2]) >= 22621
-    const wantMaterial = o.glass && win11 && overlayShapeOf(o) === 'expanded'
-    if (wantMaterial) {
-      state.overlayWindow.setBackgroundMaterial('acrylic')
-    } else {
-      state.overlayWindow.setBackgroundMaterial('auto')
-    }
-  } catch {
-    // 忽略:舊版 Electron/OS 不支援
-  }
+  // 走 syncOverlayMaterial 而不是在這裡重寫一份判斷:閘的邏輯兩邊完全相同,
+  // 但這份原本沒有 lastMaterial 快取 —— 每次設定寫入(滑桿拖曳是每 tick 一次)
+  // 都對 DWM 做一次無謂的 setBackgroundMaterial 原生呼叫。
+  syncOverlayMaterial()
   if (!state.overlayWindow.isDestroyed()) {
     // 順序有意義:setSize 會被最小尺寸夾住,所以下限必須先對齊形態
     applyOverlayMinSize()
@@ -104,7 +108,6 @@ export function applyOverlayWindowSettings(): void {
     if (state.overlayWindow.isResizable() !== wantResizable) {
       state.overlayWindow.setResizable(wantResizable)
     }
-    syncOverlayMaterial()
   }
 }
 
@@ -135,10 +138,7 @@ let lastMaterial: 'acrylic' | 'auto' | null = null
 export function syncOverlayMaterial(): void {
   if (!state.overlayWindow || state.overlayWindow.isDestroyed()) return
   const o = state.settings.overlay
-  const win11 =
-    process.platform === 'win32' &&
-    Number(os.release().split('.')[0]) >= 10 &&
-    Number(os.release().split('.')[2]) >= 22621
+  const win11 = isWin11_22H2()
   const want: 'acrylic' | 'auto' =
     o.glass && win11 && overlayShapeOf(o) === 'expanded' ? 'acrylic' : 'auto'
   if (lastMaterial !== want) {

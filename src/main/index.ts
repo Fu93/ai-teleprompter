@@ -9,6 +9,7 @@ import {
   ensureOverlayOnScreen
 } from './windows'
 import { registerHotkeys, registerIpc } from './ipc'
+import { saveSettings } from './settings'
 import { syncCoachingTimer } from './liveCoaching'
 import { initLogging, logMain } from './logging'
 import { DEBUG } from './debug'
@@ -46,10 +47,11 @@ if (!gotLock) {
     state.mainWindow.focus()
   })
 
-  app.whenReady().then(async () => {
+  app.whenReady().then(() => {
     // safeStorage 必須等 Electron ready 後才可依賴；在此遷移舊 settings.json 明文金鑰。
+    // saveSettings 走靜態 import:settings.ts 已被 state/ipc/windows 靜態引入,
+    // 動態 import 只是讓 vite 每次啟動都警告「dynamic import will not move module」。
     if (migrateLegacyKeys(state.settings)) {
-      const { saveSettings } = await import('./settings')
       saveSettings(state.settings)
     }
     registerIpc()
