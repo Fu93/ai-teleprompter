@@ -1819,6 +1819,34 @@ const clickEffectId = (win, id, index = 0) =>
     )
     .catch(() => false)
 
+/**
+ * 等某個 data-effect-id 的元素真的出現(且有版面)。
+ *
+ * 為什麼需要「等」而不是直接用 clickEffectId 的回傳值:確認框是 click 之後
+ * 才 render 的,立刻去查會得到 false —— 而那個 false 與「這個版本根本沒有
+ * 確認框」長得**一模一樣**。於是量測端會以為自己量到了「沒有框」,跳過按確認,
+ * 最後把結果記成「按了沒反應」。**兩個完全不同的世界回傳同一個 false。**
+ *
+ * 這正是「沒量到」與「量不到」長得一模一樣的家族 —— 而這次量到的還是錯的那一個。
+ */
+const waitEffectId = async (win, id, timeoutMs = 2_000) => {
+  const step = 100
+  for (let waited = 0; waited <= timeoutMs; waited += step) {
+    const hit = await win
+      .evaluate(
+        (i) =>
+          [...document.querySelectorAll(`[data-effect-id="${i}"]`)].some(
+            (e) => e.getBoundingClientRect().width > 0
+          ),
+        id
+      )
+      .catch(() => false)
+    if (hit) return true
+    await sleep(step)
+  }
+  return false
+}
+
 const readSettings = (main) => main.evaluate(async () => window.api.getSettings())
 
 // 6.1 總覽
@@ -2690,10 +2718,36 @@ async function stepPractice(main, llm) {
   if (quit !== true) {
     pQuit.unreachable('run 階段找不到「結束練習」')
   } else {
-    await sleep(800)
-    const text = await domText(main, 'main')
-    if (text.includes('開始練習')) pQuit.works('回到設定階段', EVIDENCE.DOM)
-    else pQuit.dead(`按了「結束練習」但畫面是 ${JSON.stringify(text.slice(0, 40))}`)
+    // **這一顆鈕現在會先問「結束這次練習?」** —— 而那是產品的行為,而且是好的
+    // 行為:未完成的作答不該被無聲丟掉。探針原本只按一次鈕、等固定 800ms 就看畫面,
+    // 於是量到「按了沒反應」並記成 dead。**那是量測端沒跟上,不是缺陷。**
+    //
+    // 分流而不是無腦補一次點擊:沒有框的頁面上,「再點一個 confirm-ok」會點到
+    // 別的元素上 —— 比不點更糟,而且一樣量不出真相。
+    const asked = await waitEffectId(main, 'confirm-ok', 2_500)
+    if (asked) await clickEffectId(main, 'confirm-ok')
+    // 等「回到設定階段」而不是睡固定時間:關掉確認框與切換階段是兩個 render。
+    let text = ''
+    for (let i = 0; i < 40; i++) {
+      text = await domText(main, 'main')
+      if (text.includes('開始練習')) break
+      await sleep(150)
+    }
+    if (text.includes('開始練習')) {
+      pQuit.works(
+        asked
+          ? '先問「結束這次練習?」,按確認後回到設定階段'
+          : '回到設定階段(此版本沒有確認框)',
+        EVIDENCE.DOM
+      )
+    } else {
+      // 訊息要講得清是哪一步卡住,不然下一個人要重讀一遍才知道要查哪裡。
+      pQuit.dead(
+        `按了「結束練習」(${
+          asked ? '確認框有出現,也按了確認' : '2.5 秒內沒有出現確認框'
+        })但畫面是 ${JSON.stringify(text.slice(0, 40))}`
+      )
+    }
   }
 
   // (f) 朗讀題目 → 需要作業系統語音引擎
