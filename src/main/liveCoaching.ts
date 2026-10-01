@@ -89,7 +89,16 @@ function onThemSegmentForCoaching(text: string): void {
 }
 
 function deliverRescue(payload: RescuePayload): void {
-  if (!state.overlayWindow || state.overlayWindow.isDestroyed()) setOverlayVisible(true)
+  // panic 是使用者當下的求助動作,救援卡必須真的看得見:
+  // 視窗不存在 → 建立並顯示;視窗在但隱藏(使用者收掉了浮層,卻仍按 Alt+P)→
+  // 顯示它。原寫法只在「不存在」時顯示 —— 隱藏時救援被送進看不見的視窗,
+  // 使用者按了救援、畫面毫無反應。除錯路徑(ipc.ts DebugEmitSignal)早有同一道
+  // 處理,真實的熱鍵路徑反而漏了。
+  // 附帶的正確副作用:setOverlayVisible(true) 會解除滑鼠穿透 ——
+  // 穿透中的浮層連救援卡的關閉鈕都點不到。
+  if (!state.overlayWindow || state.overlayWindow.isDestroyed() || !state.overlayWindow.isVisible()) {
+    setOverlayVisible(true)
+  }
   state.overlayWindow?.webContents.send(IPC.PanicRescue, payload)
 }
 
@@ -110,10 +119,19 @@ function sendTurnYield(kind: 'turn' | 'peer_silence', question: boolean): boolea
   // 與 main 端其他環境訊號路徑同形(見 ipc.ts 的 playPause / speedUp / speedDown):
   // 「未顯示時忽略」。差別在這裡有冷卻,所以「忽略」必須真的回報沒送到。
   if (!state.overlayWindow.isVisible()) return false
-  // 註:頁面還沒 mount 時 useTurnYield 也還沒註冊 listener(preload 的
-  // onTurnYield 是在 useEffect 裡才 ipcRenderer.on)。那個時間窗很窄,而且
-  // 沒有乾淨的主行程訊號能判斷「renderer 已就緒」—— 真的要把這個洞補滿,
-  // 需要的是 renderer 回報 ready,不是再加一個猜測。
+  // 另一個可能也量過了:**頁面還沒 mount、useTurnYield 還沒 ipcRenderer.on**
+  // 的那個時間窗(preload 的 onTurnYield 是在 useEffect 裡才註冊)。
+  //
+  // 實測(e2e 探針,3 輪):先把浮層顯示出來(isVisible() = true,排除「隱藏」這個
+  // 變因),**不等任何東西**立刻推逐字稿 —— 3/3 都出現提示,耗时約 1.2 秒,
+  // 正好等於 1.2s 防抖。也就是說**浮層一可見,listener 就已經在了**。
+  //
+  // 為什麼會這樣:浮層在 app.whenReady() 就建立,而 React mount 早於第一次
+  // 能推逐字稿的時機(使用者還得進 Record、開麥克風、說話)。
+  //
+  // 所以這裡**不再需要一個猜測性的 isLoading() 檢查**,也不需要 renderer
+  // 回報 ready 的握手段 —— 兩者都是為了蓋一個量不到的空窗,而量不到的空窗
+  // 不值得蓋。寫在這裡是為了讓下一個人不必重新推一遍。
   state.overlayWindow.webContents.send(IPC.TurnYieldSignal, { kind, question, at: Date.now() })
   return true
 }

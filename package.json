@@ -24,6 +24,7 @@
     "audit:edge": "node --no-warnings scripts/audit-glass-edge.mjs",
     "audit": "node --no-warnings scripts/audit-all.mjs",
     "audit:effects": "node --no-warnings scripts/audit-effects.mjs",
+    "audit:selftest": "node --no-warnings scripts/audit-selftest.mjs",
     "make-audio-fixture": "node --no-warnings scripts/make-audio-fixture.mjs",
     "dist": "electron-vite build && electron-builder",
     "audit:journey": "node --no-warnings scripts/audit-journey.mjs"

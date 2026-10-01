@@ -91,6 +91,17 @@ const EVIDENCE_COUNT = { [EVIDENCE.DATA]: 0, [EVIDENCE.OTHER_WINDOW]: 0, [EVIDEN
  */
 function probe(controlKey, area) {
   const k = baseKey(controlKey)
+  // self-test 破壞二:這一顆的探針**不給任何結論**,而且不丟錯、不改 tally。
+  // 這與「某段量測程式碼根本沒有執行」的可觀察結果完全相同。
+  if (SELFTEST_SKIP.has(k)) {
+    return {
+      key: k,
+      works: () => true,
+      dead: () => true,
+      unverifiable: () => true,
+      unreachable: () => true
+    }
+  }
   const settle = (verdict, detail) => {
     // 同一個控制項被量到兩次(例如展開與收合各一次)時以最後一次為準,
     // 但「量到問題」不能被後面的成功蓋掉 —— 那會讓紅燈靜默消失。
@@ -164,7 +175,69 @@ function probe(controlKey, area) {
  * 被登記為「這個環境量不到」的控制項,這一輪不需要探針跑過。
  * 但登記表本身要能解釋為什麼 —— 沒有 exempt 也沒跑到 = probe-not-run(紅燈)。
  */
-const REGISTRY = buildRegistry()
+/**
+ * ── self-test 破壞注入(搭配 npm run audit:selftest) ──
+ *
+ * 為什麼需要這個:這個專案裡每一個綠燈,都是靠**手動把它弄壞、看它變紅**才
+ * 敢相信的。這一則就做了三次 —— 而那個機制不在任何自動化裡,所以 CI 保護不了
+ * 下一次修改,下一個人也不會知道綠燈的證明力是怎麼來的。
+ *
+ * 兩種破壞,各自對應到真的發生過的失敗:
+ *
+ *   drop-registry —— 抽掉登記表的幾筆。
+ *     對應到「把登記表裡一筆刪掉,稽核**不會變紅**」:那個洞真的存在過,
+ *     是被負向驗證抓出來的,修法是把 no-effect-probe 的規則改嚴。
+ *     少了登記表的那一行,報告裡就多一顆沒有任何說明的「已驗證」控制項。
+ *
+ *   skip-probes —— 讓選定的探針不給任何結論。
+ *     對應到那個孤兒大括號:(h) 之後的程式碼掛在錯的區塊裡、**從來沒執行過**,
+ *     而報告是「0 筆問題」。這裡的可觀察結果完全相同 ——
+ *     **控制項被列舉到、卻沒有任何探針給它結論**(probe-not-run)。
+ *
+ * 目標清單**從 CONTROLS 推導**而不是寫死名字:寫死會在控制項改名後悄悄失效,
+ * 而「self-test 壞掉」與「self-test 變成空轉」長得一樣 —— 那正是這個專案
+ * 反覆吃虧的地方。
+ *
+ * ⚠️ 兩種破壞都只動量測端,不碰產品、不需要重新建置。「為了測試而暫時改壞產品」
+ * 那種改動會被人偷偷還原;而這個檔案永遠在這裡。
+ *
+ * 正常執行時(SELFTEST 為空)這整段是 no-op —— 而且**兩個集合都必須跟著 mode 關掉**。
+ * 第一版只把登記表那側 gate 住,漏了 SELFTEST_SKIP:乾淨的執行因此少了 9 個結論,
+ * 報告多出 9 筆 probe-not-run。是「乾淨路徑也要跑一次」抓到的 ——
+ * 一段宣稱自己是 no-op 的程式碼,在沒有自我驗證時最會說謊。
+ */
+const SELFTEST = process.env.AI_TP_SELFTEST || ''
+
+const SELFTEST_TARGETS = CONTROLS.filter((c) => !c.exempt).map((c) => baseKey(c.key))
+
+/** 破壞一:抽掉登記項(每隔 7 筆抽 1 筆,散在各頁)。 */
+const SELFTEST_DROP = SELFTEST.includes('drop-registry')
+  ? new Set(SELFTEST_TARGETS.filter((_, i) => i % 7 === 3))
+  : new Set()
+
+/** 破壞二:讓探針不給結論(每隔 11 筆抽 1 筆)。
+ *
+ * **必須與破壞一錯開**,而這是量出來的不是猜的:兩邊都中的控制項會從登記表裡消失,
+ * 而 probe-not-run 那份清單是**遍歷登記表**做出來的 —— 於是它不會出現在 probe-not-run,
+ * 只會出現在 no-effect-probe。第一版的兩組目標重疊了 2 筆,self-test 因此報 9/11,
+ * 看起來像閘門有盲區。實際上那 2 筆**有被抓到**,只是抓到的是另一種紅燈。 */
+const SELFTEST_SKIP = SELFTEST.includes('skip-probes')
+  ? new Set(SELFTEST_TARGETS.filter((_, i) => i % 11 === 5 && i % 7 !== 3))
+  : new Set()
+
+const REGISTRY = SELFTEST.includes('drop-registry')
+  ? buildRegistry(CONTROLS.filter((c) => !SELFTEST_DROP.has(baseKey(c.key))))
+  : buildRegistry()
+// 把自己破壞了什麼寫進報告,self-test 才不用在另一支腳本裡重算一遍 ——
+// 兩處各算一次,改了一處就會出現「self-test 壞掉」與「self-test 空轉」
+// 長得一樣的情況,而那正是這個專案反覆吃虧的地方。
+if (SELFTEST) {
+  report.note('self-test 破壞', {
+    mode: SELFTEST,
+    抽掉登記項: [...SELFTEST_DROP],
+    探針不給結論: [...SELFTEST_SKIP]
+  })
+}
 
 /**
  * 步驟層級的阻擋(整頁進不去、浮層開不起來)。
@@ -1879,7 +1952,9 @@ async function stepDashboard(app, main) {
     // 卡片存在嗎?它有哪些形態?畫面上現在是什麼?
     const diag = await main.evaluate(() => ({
       nodes: [...document.querySelectorAll('[data-preflight]')].map((e) => e.getAttribute('data-preflight')),
-      bodyHasReady: (document.body.innerText || '').includes('都準備好了'),
+      // 用屬性而不是文案:ready 列的文字會隨產品改版(舊文案「都準備好了」改版後這欄永遠 false),
+      // data-preflight="ready" 才是穩定身分。
+      bodyHasReady: document.querySelector('[data-preflight="ready"]') != null,
       head: (document.querySelector('main')?.innerText || '').replace(/\s+/g, ' ').slice(0, 60)
     }))
     pPre.unreachable(`找不到可點的準備度橫幅(${JSON.stringify(diag)})`)
