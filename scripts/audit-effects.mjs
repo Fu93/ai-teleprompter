@@ -1492,6 +1492,140 @@ async function stepOverlay(app, main) {
     }
   }
 
+  // ── (j) 真實投遞路徑:看得見要送到,看不見不該燒掉冷卻 ──
+  //
+  // 這一段**不是控制項**(使用者沒有東西可以按),所以不用 probe(),
+  // 用 report.add 直接記問題 —— 它進 problems,會讓稽核變紅。
+  //
+  // 為什麼值得量:這兩個 session 挖到的真產品缺陷都在這一條路徑上,而
+  // `audit:effects` 原本**只量那兩顆開關有沒有翻轉**,從來沒有真的推過一段
+  // 逐字稿。所以「送不出去卻記了冷卻」與「隱藏時也記冷卻」對這支稽核而言都是
+  // 隱形的 —— 覆蓋率 100%、138 有效果、0 沒效果,而那條路徑**從來沒被執行過**。
+  //
+  // 手法:**用冷卻當量測工具,不要用「有沒有畫出來」。**
+  // 寫這段時實際踩到:「隱藏時不該有提示」那條斷言在修好與沒修好的版本裡
+  // **都會通過** —— win.hide() 之後 Playwright 仍然讀得到 DOM,而隱藏視窗的
+  // setTimeout 被 Chromium 節流,防抖觸發時間不穩。抓不到東西卻長得像防線的
+  // 斷言比沒有更糟。冷卻是資料層的事實,不依賴畫面也不依賴節流。
+  const overlayVisibleNow = () =>
+    app.evaluate(({ BrowserWindow }) => {
+      // dev 是 #/overlay、packaged 是 #overlay(loadFile 的 hash 會吃掉斜線)
+      const isOverlay = (u) => u.endsWith('#overlay') || u.endsWith('#/overlay')
+      const w = BrowserWindow.getAllWindows().find((x) => isOverlay(x.webContents.getURL()))
+      return !!w && !w.isDestroyed() && w.isVisible()
+    })
+
+  /** 切換浮層可見性並**讀回確認**;renderer 端看不到自己的視窗可見性。 */
+  const setOverlayShown = async (want) => {
+    await main.evaluate(
+      (v) =>
+        v
+          ? window.api.overlayShow({ title: '投遞量測', content: '投遞量測' })
+          : window.api.overlayHide(),
+      want
+    )
+    for (let i = 0; i < 40; i++) {
+      if ((await overlayVisibleNow()) === want) return true
+      await sleep(100)
+    }
+    return false
+  }
+
+  /** 清掉 main 端的冷卻(兩階段之間必須做,否則量的是前一階段留下的帳)。 */
+  const resetTurnYieldCooldown = () => main.evaluate(() => window.api.contextReset())
+
+  /** 提示現在在畫面上嗎?(innerText:被淡出動畫移出後就讀不到了) */
+  const hintShown = () =>
+    overlay
+      .evaluate(() => document.body.innerText.includes('該你說話了'))
+      .catch(() => false)
+
+  /** 輪詢到提示出現為止;回傳有沒有等到。 */
+  const waitHintAppears = async (timeoutMs = 6_000) => {
+    for (let waited = 0; waited < timeoutMs; waited += 150) {
+      if (await hintShown()) return true
+      await sleep(150)
+    }
+    return false
+  }
+
+  /**
+   * 等提示退場。
+   *
+   * **這一步不能省。** useTurnYield 的 HINT_DISPLAY_MS 是 6 秒,所以一個在隱藏
+   * 視窗裡送達的提示(舊行為)會在視窗被叫回來時**仍然亮著** —— 如果這時直接推
+   * 下一句,第 (j-2) 段會把它誤讀成「新的提示有出現」而通過。缺陷就這樣被自己
+   * 的殘影藏起來 —— 與 (h) 那個孤兒 `}` 同一類:量到綠燈,但量的是舊東西。
+   */
+  const waitHintGone = async (timeoutMs = 9_000) => {
+    for (let waited = 0; waited < timeoutMs; waited += 200) {
+      if (!(await hintShown())) return true
+      await sleep(200)
+    }
+    return false
+  }
+
+  const tyBefore = await readSetting(main, 'overlay.turnYield')
+  if (!(await writeSetting(main, 'overlay.turnYield', true)).ok) {
+    report.add('state-unreached', '浮層', '無法開啟 overlay.turnYield,(j) 訊號投遞量測的前置條件不成立')
+  } else if (!(await setOverlayShown(true))) {
+    report.add('state-unreached', '浮層', '無法讓浮層顯示出來,(j) 訊號投遞量測的前置條件不成立')
+  } else {
+    report.measured('浮層訊號投遞(可見/隱藏)')
+
+    // (j-1) 可見時:提示真的送達(這一格本來就應該是好的,是基線)
+    await resetTurnYieldCooldown()
+    await main.evaluate(() =>
+      window.api.pushTranscript({ text: '請問這個專案的架構是怎麼設計的', speaker: 'them' })
+    )
+    const visibleOk = await waitHintAppears()
+    if (!visibleOk) {
+      report.add(
+        'dead-ui',
+        '浮層',
+        '浮層可見時推入問句,6 秒內沒有出現「該你說話了」提示 —— ' +
+          '這是最基本的一格;它不行的話使用者根本收不到搶話提示'
+      )
+    }
+    await waitHintGone()
+
+    // (j-2) 隱藏時:不該燒掉冷卻。
+    //
+    // 問句 B 在隱藏時送出,**不判斷有沒有畫出來**(見上方:那條量不到東西)。
+    // 判斷在問句 C:它是**另一句話**,所以規則 1(同句 25 秒)擋不住它;
+    // 擋得住的只有規則 2 的 15 秒全域冷卻 —— 而那只有「B 記了帳」才會存在。
+    // **所以 C 出現 = B 沒有被記帳。**
+    await resetTurnYieldCooldown()
+    await setOverlayShown(false)
+    await main.evaluate(() =>
+      window.api.pushTranscript({ text: '那你怎麼處理資料延遲的問題', speaker: 'them' })
+    )
+    // 1.2s 防抖 + 送達。「有沒有記冷卻」在那之後就定了。
+    await sleep(2_500)
+    await setOverlayShown(true)
+    // 先把舊提示等退場(見 waitHintGone 的註解),否則會拿 B 的殘影當成 C 的成功。
+    await waitHintGone()
+    await main.evaluate(() =>
+      window.api.pushTranscript({ text: '可以請你說明一下測試策略嗎', speaker: 'them' })
+    )
+    const againOk = await waitHintAppears()
+    if (!againOk) {
+      report.add(
+        'dead-ui',
+        '浮層',
+        '浮層隱藏時收到的搶話訊號**被記了冷卻**:把浮層叫回來後立刻再問一句,' +
+          '提示已經不會出現(被 15 秒全域冷卻擋住)。' +
+          '使用者的情境是「按熱鍵把浮層收掉 → 對方問話 → 什麼都沒看到,' +
+          '而且接下來 25 秒再問也不會提示」'
+      )
+    }
+    report.note('訊號投遞量測', { 可見時送達: visibleOk, 隱藏不記冷卻: againOk })
+    await resetTurnYieldCooldown()
+    await setOverlayShown(true)
+  }
+  await waitHintGone()
+  await writeSetting(main, 'overlay.turnYield', tyBefore)
+
   // **把 AI 還原。** 這一步以前是「忘了」—— 而且是被那個孤兒 `}` 吃掉的。
   //
   // (h) 把 scenario.aiModeEnabled 關掉來驗 Panic 的離線模板路徑,而後面還有
