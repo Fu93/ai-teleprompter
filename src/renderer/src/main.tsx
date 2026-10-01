@@ -5,6 +5,17 @@ import { CrashProbe, ErrorBoundary, setCrashProbe } from './components/ErrorBoun
 import { initAuditBridge, installToastBridge, registerAuditControl } from './lib/auditBridge'
 import { toast } from './lib/toast'
 import { installCloseGuard } from './lib/closeGuard'
+// 備份函式走靜態 import:BackupSection 已靜態引入同一模組,這裡再動態引入
+// 沒有任何分塊收益,只會讓 vite 每次建置都警告「dynamic import will not move module」。
+import {
+  BACKUP_VERSION,
+  backupFileName,
+  buildBackup,
+  parseBackup,
+  importBackup,
+  serializeBackup,
+  currentCounts
+} from './lib/backup'
 import '@fontsource-variable/noto-sans-tc'
 import './styles/global.css'
 
@@ -46,7 +57,6 @@ registerAuditControl('crash.clear', () => {
 // 真的呼叫 renderer 裡那組函式,而不是在測試裡重寫一份等價的邏輯。
 // probe=true 會在設定裡塞一把假的金鑰,用來證明它不會跟著備份離開。
 registerAuditControl('backup.probe', async (arg) => {
-  const { BACKUP_VERSION, backupFileName, buildBackup, serializeBackup } = await import('./lib/backup')
   const info = await window.api.appInfo()
   const settings = await window.api.getSettings()
   const poisoned =
@@ -58,7 +68,6 @@ registerAuditControl('backup.probe', async (arg) => {
 })
 
 registerAuditControl('backup.restore', async (arg) => {
-  const { parseBackup, importBackup, currentCounts } = await import('./lib/backup')
   const text = typeof arg === 'string' ? arg : ''
   // 失敗要**丟出來**,不要回傳 { ok: false } —— `ok` 是 auditBridge 的欄位,
   // 控制項自己帶一個會被外層的 ok 蓋掉(外層看「回傳的不是 false」就當成功)。

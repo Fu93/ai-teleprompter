@@ -316,8 +316,10 @@ export interface SessionReport {
   durationSec: number
   mySec: number
   theirSec: number
-  /** 我方發言佔比 0–1 */
+  /** 我方發言佔比 0–1；若音訊來源無法觀察雙方，值僅供內部佔位 */
   talkRatio: number
+  /** 是否同時擷取我方與對方；缺少來源資訊的舊紀錄視為可用以維持相容 */
+  talkRatioAvailable?: boolean
   /** 語音單位:CJK 字元各 1 + 拉丁詞各 1 */
   myUnits: number
   /** 我方語速:單位 / 我方實際發言分鐘 */

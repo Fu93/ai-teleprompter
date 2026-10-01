@@ -60,7 +60,18 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
         clearInterval(recTimerRef.current)
         recTimerRef.current = null
       }
-      recorderRef.current?.stop()
+      countdownAttemptRef.current += 1
+      countdownRunningRef.current = false
+      recordingAttemptRef.current += 1
+      recordingStartRef.current = false
+      const recorder = recorderRef.current
+      if (recorder && recorder.state !== 'inactive') {
+        try {
+          recorder.stop()
+        } catch {
+          // Ignore a device teardown race; tracks are stopped below regardless.
+        }
+      }
       recStreamRef.current?.getTracks().forEach((t) => t.stop())
       recStreamRef.current = null
     }
@@ -191,6 +202,10 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
   const recStreamRef = useRef<MediaStream | null>(null)
   const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recPausedRef = useRef(false)
+  const countdownAttemptRef = useRef(0)
+  const countdownRunningRef = useRef(false)
+  const recordingAttemptRef = useRef(0)
+  const recordingStartRef = useRef(false)
 
   /**
    * 稽核用:強制開啟錄影預覽 modal。
@@ -231,14 +246,25 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
   }
 
   const beginRecording = async (): Promise<void> => {
-    if (selectedId == null || !draft.content.trim()) return
-    if (dirty && !(await save())) return
+    if (recordingStartRef.current || selectedId == null || !draft.content.trim()) return
+    // Claim the start synchronously and mark its attempt before any save/permission await.
+    // Unmount invalidates it, so a late save or permission response cannot start a camera.
+    recordingStartRef.current = true
+    const attempt = ++recordingAttemptRef.current
     try {
+      if (dirty && !(await save())) return
+      if (attempt !== recordingAttemptRef.current) return
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: { echoCancellation: true, noiseSuppression: true }
       })
+      // Page may have been left while the permission prompt was open.
+      if (attempt !== recordingAttemptRef.current) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
       recStreamRef.current = stream
+      const activeRecorderAttempt = attempt
       recChunksRef.current = []
       const mimeType = pickMime()
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
@@ -246,22 +272,48 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
         if (e.data.size > 0) recChunksRef.current.push(e.data)
       }
       recorder.onstop = async () => {
+        if (recTimerRef.current) {
+          clearInterval(recTimerRef.current)
+          recTimerRef.current = null
+        }
         recStreamRef.current?.getTracks().forEach((t) => t.stop())
         recStreamRef.current = null
+        if (recorderRef.current === recorder) recorderRef.current = null
         const blob = new Blob(recChunksRef.current, { type: mimeType || 'video/webm' })
-        const bytes = new Uint8Array(await blob.arrayBuffer())
-        const res = await window.api.saveRecording({
-          bytes,
-          defaultName: `提詞錄影-${formatDateTime(Date.now()).replace(/[\/: ]/g, '-')}.webm`
-        })
-        if (res.ok && res.filePath) {
-          setPreview({ url: URL.createObjectURL(blob), path: res.filePath })
-          toast.success('錄影已儲存')
-        } else {
-          toast.error(`錄影未儲存(${res.error ?? 'canceled'})`)
+        try {
+          const bytes = new Uint8Array(await blob.arrayBuffer())
+          if (blob.size === 0) {
+            if (activeRecorderAttempt === recordingAttemptRef.current) {
+              toast.info('錄影沒有產生影像資料，未建立檔案')
+            }
+            return
+          }
+          const res = await window.api.saveRecording({
+            bytes,
+            defaultName: `提詞錄影-${formatDateTime(Date.now()).replace(/[\/: ]/g, '-')}.webm`
+          })
+          if (res.ok && res.filePath) {
+            // Leaving the page still offers to save the finished recording, but don't
+            // create an orphaned object URL or update an unmounted page afterward.
+            if (activeRecorderAttempt === recordingAttemptRef.current) {
+              setPreview({ url: URL.createObjectURL(blob), path: res.filePath })
+            }
+            toast.success('錄影已儲存')
+          } else if (res.error === 'canceled') {
+            // 取消另存對話框是使用者的正常選擇,不是失敗(與 Record exportSession 同一標準);
+            // 但錄影資料已隨 onstop 丟棄,一聲不響他會以為檔案存到哪裡去了。
+            toast.info('已取消儲存,這段錄影沒有保留。')
+          } else {
+            toast.error(`錄影未儲存(${res.error ?? '未知錯誤'})`)
+          }
+        } catch (err) {
+          toast.error(`錄影儲存失敗。${describeError(err)}`)
+        } finally {
+          if (activeRecorderAttempt === recordingAttemptRef.current) {
+            setRecording(false)
+            setRecPaused(false)
+          }
         }
-        setRecording(false)
-        setRecPaused(false)
       }
       recorder.start(500)
       recorderRef.current = recorder
@@ -273,27 +325,65 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
         if (!recPausedRef.current) setRecSec((s) => s + 1)
       }, 1000)
       await db.scripts.update(selectedId, { lastUsedAt: Date.now() })
+      if (attempt !== recordingAttemptRef.current) return
       await window.api.overlayShow({ title: draft.title, content: draft.content })
     } catch (err) {
-      recStreamRef.current?.getTracks().forEach((t) => t.stop())
-      recStreamRef.current = null
-      toast.error(`無法開啟攝影機。${describeError(err)}`)
+      if (attempt === recordingAttemptRef.current) {
+        if (recTimerRef.current) {
+          clearInterval(recTimerRef.current)
+          recTimerRef.current = null
+        }
+        const recorder = recorderRef.current
+        recorderRef.current = null
+        if (recorder && recorder.state !== 'inactive') {
+          try {
+            recorder.stop()
+          } catch {
+            // A device failure can make the recorder inactive between the state check and stop().
+          }
+        }
+        recStreamRef.current?.getTracks().forEach((t) => t.stop())
+        recStreamRef.current = null
+        toast.error(`錄影無法啟動。${describeError(err)}`)
+      }
+    } finally {
+      if (attempt === recordingAttemptRef.current) recordingStartRef.current = false
     }
   }
 
   /** 倒數 3-2-1 後開錄;使用者可勾選不再顯示(localStorage) */
+  const cancelCountdown = (): void => {
+    countdownAttemptRef.current += 1
+    countdownRunningRef.current = false
+    setCountdown(null)
+  }
+
   const startRecLaunch = async (): Promise<void> => {
-    if (selectedId == null || !draft.content.trim()) return
+    if (
+      selectedId == null ||
+      !draft.content.trim() ||
+      countdownRunningRef.current ||
+      recordingStartRef.current ||
+      recording
+    ) return
     if (localStorage.getItem('rec-countdown-off') === '1') {
       void beginRecording()
       return
     }
-    for (const n of [3, 2, 1]) {
-      setCountdown(n)
-      await new Promise((r) => setTimeout(r, 800))
+    const attempt = ++countdownAttemptRef.current
+    countdownRunningRef.current = true
+    try {
+      for (const n of [3, 2, 1]) {
+        if (attempt !== countdownAttemptRef.current) return
+        setCountdown(n)
+        await new Promise((r) => setTimeout(r, 800))
+      }
+      if (attempt !== countdownAttemptRef.current) return
+      setCountdown(null)
+      void beginRecording()
+    } finally {
+      if (attempt === countdownAttemptRef.current) countdownRunningRef.current = false
     }
-    setCountdown(null)
-    void beginRecording()
   }
 
   const toggleRecPause = (): void => {
@@ -315,8 +405,15 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
       clearInterval(recTimerRef.current)
       recTimerRef.current = null
     }
-    recorderRef.current?.stop()
+    const recorder = recorderRef.current
     recorderRef.current = null
+    if (!recorder || recorder.state === 'inactive') return
+    recordingStartRef.current = false
+    try {
+      recorder.stop()
+    } catch (err) {
+      toast.error(`無法停止錄影。${describeError(err)}`)
+    }
   }
 
   // 標題與內容統一不分大小寫(原本標題忽略大小寫、內容分,搜尋行為不可預期)
@@ -414,6 +511,9 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
               />
               這次之後不再顯示倒數
             </label>
+            <button type="button" className="btn-outline text-xs" onClick={cancelCountdown}>
+              取消倒數
+            </button>
           </div>
         )}
         {/* 錄影預覽 modal */}

@@ -38,7 +38,7 @@ const PRACTICE_TYPES = ['行為面試', '技術面試', '自我介紹', '案例�
 
 type Phase = 'setup' | 'run' | 'done'
 
-export default function Practice(): JSX.Element {
+export default function Practice({ onGuardChange }: { onGuardChange?: (msg: string | null) => void } = {}): JSX.Element {
   const { settings } = useSettings()
   const [phase, setPhase] = useState<Phase>('setup')
   const [position, setPosition] = useState('')
@@ -88,6 +88,9 @@ export default function Practice(): JSX.Element {
   const advancingRef = useRef(false)
   const [run, setRun] = useState<PracticeRun | null>(null)
   const [history, setHistory] = useState<PracticeRun[]>([])
+  /** 已取得到的整體總評。重試路徑(AI 成功但存檔失敗 → 再按查看總評)直接重用,
+   *  不重花一次 AI 呼叫;AI 失敗時不進快取,重試才是真的重試。開新一輪時清空。 */
+  const overallCacheRef = useRef<string | null>(null)
   /**
    * 辨識持續失敗的持續提醒。
    *
@@ -256,6 +259,30 @@ export default function Practice(): JSX.Element {
     warmUpVoices()
   }, [refreshHistory])
 
+  // 切頁守衛(與 Record 同一模式):關窗有守衛,側欄切頁原本沒有 ——
+  // 練習進行中切頁,已答未存的回答與正在錄的音都會靜默消失。
+  useEffect(() => {
+    const msg =
+      phase === 'run'
+        ? recording
+          ? '正在錄音:離開會遺失這段還在轉錄的回答。'
+          : '練習進行中:離開會遺失尚未完成與尚未儲存的回答。'
+        : null
+    onGuardChange?.(msg)
+    return () => onGuardChange?.(null)
+  }, [phase, recording, onGuardChange])
+
+  // 題目自動朗讀:setup 頁的流程文案承諾「AI 出題並朗讀」,但朗讀原本只有一顆
+  // 手動喇叭鈕 —— 每換一題都要自己找按鈕,作答節奏被打斷。換題(進入 run /
+  // 下一題)且該題尚未作答時自動朗讀;手動按鈕保留(重聽用)。
+  // answers[qIndex] 在依賴裡:反饋回來後會重跑,但那時條件已不成立,不會重播。
+  useEffect(() => {
+    if (phase !== 'run') return
+    const q = questions[qIndex]
+    if (!q || answers[qIndex]) return
+    speak(q, { lang: 'zh-TW' })
+  }, [phase, qIndex, questions, answers])
+
   useEffect(() => {
     return () => {
       startAttemptRef.current += 1
@@ -366,6 +393,11 @@ export default function Practice(): JSX.Element {
     let stream: MediaStream | null = null
     let segmenter: AudioSegmenter | null = null
     try {
+      // 雲端引擎未設定就 fail-fast,不等第一段轉錄失敗才發現(與 Record 同一修法)
+      if (settings?.stt.engine === 'cloud' && (!settings.stt.cloud.baseUrl || !settings.stt.cloud.model)) {
+        toast.error('請先在設定頁填入雲端語音 API 的 Base URL 與模型')
+        return
+      }
       if (settings?.stt.engine === 'local') await ensureWhisper()
       if (attempt !== startAttemptRef.current) return
       const answerId = ++answerIdRef.current
@@ -377,6 +409,8 @@ export default function Practice(): JSX.Element {
       // 會話邊界必須先清完 main 端上下文，避免清理晚於第一筆新逐字稿。
       await window.api.contextReset()
       if (attempt !== startAttemptRef.current) return
+      // 題目還在朗讀中就開始回答:停掉 TTS,避免朗讀聲混進麥克風的作答錄音
+      stopSpeaking()
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -458,6 +492,7 @@ export default function Practice(): JSX.Element {
       sttFailStreakRef.current = 0
       sttNotifiedRef.current = false
       setSttFailed(false)
+      overallCacheRef.current = null
       setPhase('run')
     } catch (err) {
       toast.error(describeError(err, { provider: aiProvider }))
@@ -563,8 +598,9 @@ export default function Practice(): JSX.Element {
 
   const finishRunInner = async (): Promise<void> => {
     stopSpeaking()
-    let overall = ''
-    if (settings) {
+    let overall = overallCacheRef.current ?? ''
+    let overallFailed = false
+    if (settings && overallCacheRef.current == null) {
       setBusy('overall')
       try {
         const recap = answersRef.current
@@ -577,8 +613,11 @@ export default function Practice(): JSX.Element {
             content: `以下是應徵「${position.trim()}」的完整面試練習紀錄。請給一段 150-250 字的整體總評：最大優點、最大弱點、三個具體練習建議。\n\n${recap}`
           }
         ])
-      } catch {
+        overallCacheRef.current = overall
+      } catch (err) {
         overall = ''
+        overallFailed = true
+        toast.error(`整體總評未能產生，練習紀錄仍會保存。${describeError(err, { provider: settings.ai.provider === 'ollama' ? 'ollama' : 'openai-compatible' })}`)
       } finally {
         setBusy(null)
       }
@@ -591,8 +630,18 @@ export default function Practice(): JSX.Element {
       createdAt: Date.now(),
       overallFeedback: overall || undefined
     }
-    const id = await db.practiceRuns.add(runData)
+    let id: number
+    try {
+      id = await db.practiceRuns.add(runData)
+    } catch (err) {
+      // 寫入失敗(IndexedDB 滿/隱私模式)要有聲:留在 run 階段讓使用者重試,
+      // 而不是靜默丟掉整輪練習(與 Record 存講稿、Calibration 套用同一標準)。
+      toast.error(`練習紀錄儲存失敗,尚未存檔。${describeError(err)}`)
+      return
+    }
     setRun({ ...runData, id })
+    overallCacheRef.current = null
+    if (overallFailed) toast.info('你仍可查看逐題反饋與保存的練習紀錄。')
     setPhase('done')
     await refreshHistory()
   }
@@ -653,6 +702,7 @@ export default function Practice(): JSX.Element {
     sttFailStreakRef.current = 0
     sttNotifiedRef.current = false
     setSttFailed(false)
+    overallCacheRef.current = null
     stopSpeaking()
     stopListening()
     setPhase('setup')
@@ -782,7 +832,18 @@ export default function Practice(): JSX.Element {
           <div className="text-sm text-ink-300">
             第 {qIndex + 1} / {questions.length} 題 · {position}（{type}）
           </div>
-          <button className="btn-ghost text-xs" onClick={reset}>
+          <button
+            className="btn-ghost text-xs"
+            onClick={async () => {
+              if (!(await confirmDialog({
+                title: '結束這次練習？',
+                body: '尚未完成的作答不會存入練習紀錄。',
+                confirmLabel: '結束並放棄',
+                variant: 'danger'
+              }))) return
+              reset()
+            }}
+          >
             結束練習
           </button>
         </div>

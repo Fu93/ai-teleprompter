@@ -124,7 +124,9 @@ test.describe('第一次使用的準備度', () => {
 
       // 關掉之後要出現正向回饋,不然使用者會以為自己不小心弄壞了什麼
       await expect(main.locator('[data-preflight="ready"]')).toBeVisible()
-      await expect(main.locator('[data-preflight="ready"]')).toContainText('都準備好了')
+      await expect(main.locator('[data-preflight="ready"]')).toContainText(
+        '目前沒有待處理項目；本地語音模型仍可能在首次錄音時下載。'
+      )
     } finally {
       await app.close()
     }

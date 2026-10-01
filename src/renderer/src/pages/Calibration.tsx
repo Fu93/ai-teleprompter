@@ -19,7 +19,10 @@ import { describeError } from '../lib/describeError'
 import { cn } from '../lib/utils'
 import {
   DEFAULT_HFOV_DEG,
+  MAX_IPD_MM,
+  MIN_IPD_MM,
   clampFontSize,
+  clampIpdMm,
   countReadableChars,
   estimateDistanceCm,
   fontSizeFromDistance,
@@ -99,6 +102,11 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
 
   // Step 1: IPD + 視距
   const [ipdMm, setIpdMm] = useState(63)
+  /** 輸入中的草稿:null = 未在編輯(顯示已夾限的 ipdMm)。
+   *  為什麼需要:原寫法 `Number(e.target.value) || 63` 會在清空的瞬間把欄位彈回 63,
+   *  使用者永遠沒辦法「刪掉重打」;且 631 這種超出 min/max 的值會原樣進入距離估算
+   *  (type=number 的 min/max 屬性擋不住鍵盤輸入)。輸入中不強迫值,blur 時才夾限提交。 */
+  const [ipdDraft, setIpdDraft] = useState<string | null>(null)
   const [cameraOn, setCameraOn] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [distanceCm, setDistanceCm] = useState<number | null>(null)
@@ -117,12 +125,14 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
    * 指示燈雖滅但 CPU 一路燒到離頁。與 Record/Practice 的 startAttemptRef 同一套。
    */
   const camAttemptRef = useRef(0)
+  const confirmedDistanceRef = useRef<number | null>(null)
 
   // Step 2: 語速
   const [recording, setRecording] = useState(false)
   const [recSecs, setRecSecs] = useState(0)
   const [transcribing, setTranscribing] = useState(false)
   const [modelProgress, setModelProgress] = useState<number | null>(null)
+  const readingAttemptRef = useRef(0)
   const [rateResult, setRateResult] = useState<{ charsPerMin: number; chars: number; secs: number } | null>(null)
   const [level, setLevel] = useState(0)
   const audioCtxRef = useRef<AudioContext | null>(null)
@@ -139,6 +149,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
 
   useEffect(() => {
     return () => {
+      readingAttemptRef.current += 1
       stopCamera()
       stopAudioPipeline()
       // Whisper worker 帶著數百 MB 模型,離頁一併釋放(Cache API 快取仍在,重進免重新下載)
@@ -151,6 +162,10 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
   // ---------- Step 1: 攝影機 ----------
   const startCamera = useCallback(async (): Promise<void> => {
     setCameraError(null)
+    historyRef.current = []
+    emaRef.current = new Ema(0.12)
+    setDistanceCm(null)
+    setStable(false)
     const attempt = ++camAttemptRef.current
     const isCurrent = (): boolean => attempt === camAttemptRef.current
     try {
@@ -167,6 +182,12 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       if (video) {
         video.srcObject = stream
         await video.play()
+      } else {
+        throw new Error('攝影機預覽尚未就緒，請再試一次')
+      }
+      if (!isCurrent()) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
       }
       setCameraOn(true)
       await getFaceLandmarker() // 預熱模型
@@ -174,22 +195,33 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       if (!isCurrent()) return
       loop(attempt)
     } catch (err) {
-      if (!isCurrent()) return
+      if (!isCurrent()) {
+        streamRef.current?.getTracks().forEach((t) => t.stop())
+        streamRef.current = null
+        if (videoRef.current) videoRef.current.srcObject = null
+        return
+      }
+      streamRef.current?.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+      if (videoRef.current) videoRef.current.srcObject = null
+      setCameraOn(false)
       setCameraError(describeError(err))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const stopCamera = (): void => {
+  const stopCamera = (preserveMeasurement = false): void => {
     camAttemptRef.current += 1 // 讓所有在飛的 await 與 rAF 迴圈自我作廢
     cancelAnimationFrame(rafRef.current)
     if (videoRef.current) videoRef.current.srcObject = null
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
-    historyRef.current = []
-    emaRef.current = new Ema(0.12)
-    setDistanceCm(null)
-    setStable(false)
+    if (!preserveMeasurement) {
+      historyRef.current = []
+      emaRef.current = new Ema(0.12)
+      setDistanceCm(null)
+      setStable(false)
+    }
     setCameraOn(false)
   }
 
@@ -201,8 +233,23 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
    * 攝影機指示燈會一路亮到步驟 2 結束或離頁 —— 沒有人在步驟 1/2 看得到它,
    * 使用者只知道「鏡頭燈一直亮著」。
    */
+  const cancelReading = (): void => {
+    readingAttemptRef.current += 1
+    stopAudioPipeline()
+    void whisperRef.current?.dispose()
+    whisperRef.current = null
+    chunksRef.current = []
+    setRecording(false)
+    setTranscribing(false)
+    setModelProgress(null)
+  }
+
   const goToStep = (next: Step): void => {
-    if (next !== 0 && camAttemptRef.current > 0) stopCamera()
+    if (step === 0 && next !== 0) {
+      confirmedDistanceRef.current = manualDistance ?? (stable ? distanceCm : null)
+      if (camAttemptRef.current > 0) stopCamera(true)
+    }
+    if (step === 1 && next !== 1) cancelReading()
     setStep(next)
   }
 
@@ -293,26 +340,48 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
   const effectiveDistance = manualDistance ?? (stable ? distanceCm : null)
 
   // ---------- Step 2: 語速 ----------
-  const startAudioPipeline = async (): Promise<void> => {
+  const startAudioPipeline = async (attempt: number): Promise<void> => {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: true }
     })
+    if (attempt !== readingAttemptRef.current) {
+      stream.getTracks().forEach((t) => t.stop())
+      return
+    }
     micStreamRef.current = stream
     const ctx = new AudioContext({ sampleRate: 16000 })
-    await ctx.resume()
     audioCtxRef.current = ctx
-    const source = ctx.createMediaStreamSource(stream)
-    const processor = ctx.createScriptProcessor(4096, 1, 1)
-    processor.onaudioprocess = (e) => {
-      const buf = e.inputBuffer.getChannelData(0)
-      chunksRef.current.push(buf.slice())
-      let sum = 0
-      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
-      setLevel(Math.min(1, Math.sqrt(sum / buf.length) * 6))
+    let processor: ScriptProcessorNode | null = null
+    try {
+      await ctx.resume()
+      if (attempt !== readingAttemptRef.current) {
+        stream.getTracks().forEach((t) => t.stop())
+        await ctx.close().catch(() => undefined)
+        if (audioCtxRef.current === ctx) audioCtxRef.current = null
+        if (micStreamRef.current === stream) micStreamRef.current = null
+        return
+      }
+      const source = ctx.createMediaStreamSource(stream)
+      processor = ctx.createScriptProcessor(4096, 1, 1)
+      processor.onaudioprocess = (e) => {
+        const buf = e.inputBuffer.getChannelData(0)
+        chunksRef.current.push(buf.slice())
+        let sum = 0
+        for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
+        setLevel(Math.min(1, Math.sqrt(sum / buf.length) * 6))
+      }
+      source.connect(processor)
+      processor.connect(ctx.destination)
+      processorRef.current = processor
+    } catch (err) {
+      stream.getTracks().forEach((t) => t.stop())
+      processor?.disconnect()
+      if (processorRef.current === processor) processorRef.current = null
+      await ctx.close().catch(() => undefined)
+      if (audioCtxRef.current === ctx) audioCtxRef.current = null
+      if (micStreamRef.current === stream) micStreamRef.current = null
+      throw err
     }
-    source.connect(processor)
-    processor.connect(ctx.destination)
-    processorRef.current = processor
   }
 
   const stopAudioPipeline = (): void => {
@@ -328,14 +397,23 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
   }
 
   const startReading = async (): Promise<void> => {
+    // 雲端引擎未設定就 fail-fast:原本要等使用者唸完整段、錄音結束後逐段失敗才知道
+    // (與 Record/Practice 同一修法)
+    if (settings?.stt.engine === 'cloud' && (!settings.stt.cloud.baseUrl || !settings.stt.cloud.model)) {
+      toast.error('請先在設定頁填入雲端語音 API 的 Base URL 與模型')
+      return
+    }
     // 進場先置位:按鈕 disabled={transcribing} 由此關閉模型載入/麥克風的連點競態窗
     // (原本只在「本地模型需要載入」分支才置位,雲端/已載入路徑整段 await 期間可再按)
+    const attempt = ++readingAttemptRef.current
     setTranscribing(true)
     try {
       if (!whisperRef.current) whisperRef.current = new WhisperClient()
       const client = whisperRef.current
       client.onProgress = (p) => {
-        if (p.status === 'progress') setModelProgress(p.progress ?? 0)
+        if (attempt === readingAttemptRef.current && p.status === 'progress') {
+          setModelProgress(p.progress ?? 0)
+        }
       }
       if (settings?.stt.engine === 'local') {
         if (!client.isLoaded()) {
@@ -343,15 +421,21 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
           await client.load(modelKey)
         }
       }
+      if (attempt !== readingAttemptRef.current) return
       chunksRef.current = []
       recStartRef.current = Date.now()
       setRecSecs(0)
-      await startAudioPipeline()
-      setRecording(true)
-      setTranscribing(false)
+      await startAudioPipeline(attempt)
+      if (attempt === readingAttemptRef.current && micStreamRef.current) setRecording(true)
     } catch (err) {
-      toast.error(describeError(err))
-      setTranscribing(false)
+      if (attempt === readingAttemptRef.current) {
+        stopAudioPipeline()
+        chunksRef.current = []
+        setRecording(false)
+        toast.error(describeError(err))
+      }
+    } finally {
+      if (attempt === readingAttemptRef.current) setTranscribing(false)
     }
   }
 
@@ -362,6 +446,8 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
   }, [recording])
 
   const stopReading = async (): Promise<void> => {
+    if (transcribing || !recording) return
+    const attempt = readingAttemptRef.current
     stopAudioPipeline()
     setRecording(false)
     setTranscribing(true)
@@ -393,24 +479,29 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
         if (!res.ok) throw new Error(res.error ?? '辨識失敗')
         transcript = res.text ?? ''
       }
+      if (attempt !== readingAttemptRef.current) return
       const chars = countReadableChars(transcript)
       const cpm = Math.round((chars / secs) * 60)
       if (chars < 20) throw new Error(`只聽到 ${chars} 個字，請確認麥克風與音量後再試一次`)
       setRateResult({ charsPerMin: cpm, chars, secs: Math.round(secs) })
     } catch (err) {
-      // 雲端引擎的失敗多半是連不上/金鑰;本地引擎的失敗多半是模型或音量,
-      // 兩種要給的下一步完全不同。
-      toast.error(
-        describeError(err, settings?.stt.engine === 'cloud' ? { provider: 'cloud-api' } : undefined)
-      )
+      if (attempt === readingAttemptRef.current) {
+        // 雲端引擎的失敗多半是連不上/金鑰;本地引擎的失敗多半是模型或音量,
+        // 兩種要給的下一步完全不同。
+        toast.error(
+          describeError(err, settings?.stt.engine === 'cloud' ? { provider: 'cloud-api' } : undefined)
+        )
+      }
     } finally {
-      setTranscribing(false)
-      setModelProgress(null)
+      if (attempt === readingAttemptRef.current) {
+        setTranscribing(false)
+        setModelProgress(null)
+      }
     }
   }
 
   // ---------- Step 3: 套用 ----------
-  const baseDistance = effectiveDistance ?? distanceCm ?? 60
+  const baseDistance = effectiveDistance ?? confirmedDistanceRef.current ?? distanceCm ?? 60
   const baseFontSize = clampFontSize(fontSizeFromDistance(baseDistance) + fontSizeAdj)
   const cpm = rateResult?.charsPerMin ?? settings?.personal.profile?.charsPerMin ?? 240
   const derivedSpeed = speedFromRate(cpm, baseFontSize)
@@ -428,10 +519,16 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       derivedFontSize: baseFontSize,
       derivedSpeed
     }
-    await update({
-      personal: { profile },
-      overlay: { fontSize: baseFontSize, speed: derivedSpeed }
-    })
+    try {
+      await update({
+        personal: { profile },
+        overlay: { fontSize: baseFontSize, speed: derivedSpeed }
+      })
+    } catch (err) {
+      // 寫入失敗(磁碟滿等)要有聲:留在原頁讓使用者重試,而不是靜默留在 step 2
+      toast.error(`個人化設定儲存失敗。${describeError(err)}`)
+      return
+    }
     onDone()
   }
 
@@ -476,10 +573,20 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
             <input
               type="number"
               aria-label="瞳距(IPD),單位毫米"
-              min={50}
-              max={80}
-              value={ipdMm}
-              onChange={(e) => setIpdMm(Number(e.target.value) || 63)}
+              min={MIN_IPD_MM}
+              max={MAX_IPD_MM}
+              value={ipdDraft ?? String(ipdMm)}
+              onChange={(e) => setIpdDraft(e.target.value)}
+              onKeyDown={(e) => {
+                // type=number 按 Enter 不會 blur;不 blur 草稿就不會提交,
+                // 距離估算與 step 3 存檔用的仍是舊 ipdMm,畫面卻顯示新草稿。
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+              }}
+              onBlur={() => {
+                if (ipdDraft == null) return
+                setIpdMm(clampIpdMm(Number(ipdDraft)))
+                setIpdDraft(null)
+              }}
               className="input w-24"
             />
             <span className="text-xs text-ink-400">mm（成人平均 63；眼鏡行或鏡子量測最準）</span>

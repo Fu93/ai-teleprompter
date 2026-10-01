@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  clampIpdMm,
   countReadableChars,
   effectiveEngineRate,
   estimateDistanceCm,
@@ -100,5 +101,24 @@ describe('effectiveEngineRate 個人語速 → 引擎有效倍率', () => {
   })
   it('自訂引擎基準', () => {
     expect(effectiveEngineRate(1, 240, 240)).toBe(1)
+  })
+})
+
+describe('clampIpdMm 瞳距夾限', () => {
+  it('範圍內原樣返回（整數）', () => {
+    expect(clampIpdMm(63)).toBe(63)
+    expect(clampIpdMm(58)).toBe(58)
+  })
+  it('超過上限/下限被夾進 50–80(type=number 的 min/max 擋不住手打)', () => {
+    expect(clampIpdMm(631)).toBe(80)
+    expect(clampIpdMm(5)).toBe(50)
+  })
+  it('非數值(清空)回退成人平均 63', () => {
+    expect(clampIpdMm(Number(''))).toBe(63)
+    expect(clampIpdMm(NaN)).toBe(63)
+  })
+  it('小數四捨五入', () => {
+    expect(clampIpdMm(62.4)).toBe(62)
+    expect(clampIpdMm(62.6)).toBe(63)
   })
 })

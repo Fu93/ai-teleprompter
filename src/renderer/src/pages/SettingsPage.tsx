@@ -166,6 +166,9 @@ export default function SettingsPage({
   const [sttApiKey, setSttApiKey] = useState('')
   const [secureKeysLoaded, setSecureKeysLoaded] = useState(false)
   const secureKeysRef = useRef<Record<string, unknown>>({})
+  const pendingKeysRef = useRef<Partial<Record<'apiKey' | 'sttApiKey', string>>>({})
+  const keyTimersRef = useRef<Partial<Record<'apiKey' | 'sttApiKey', ReturnType<typeof setTimeout>>>>({})
+  const keyWriteChainRef = useRef<Promise<void>>(Promise.resolve())
   const [models, setModels] = useState<string[] | null>(null)
   const [ollamaVersion, setOllamaVersion] = useState<string | null>(null)
   const [scenes, setScenes] = useState<SceneSummary[] | null>(null)
@@ -247,8 +250,21 @@ export default function SettingsPage({
       if (!mounted) return
       const stored = keys ?? {}
       secureKeysRef.current = stored
-      setAiApiKey(typeof stored.apiKey === 'string' ? stored.apiKey : settings.ai.openaiCompatible.apiKey)
-      setSttApiKey(typeof stored.sttApiKey === 'string' ? stored.sttApiKey : settings.stt.cloud.apiKey)
+      const pending = pendingKeysRef.current
+      setAiApiKey(
+        typeof pending.apiKey === 'string'
+          ? pending.apiKey
+          : typeof stored.apiKey === 'string'
+            ? stored.apiKey
+            : settings.ai.openaiCompatible.apiKey
+      )
+      setSttApiKey(
+        typeof pending.sttApiKey === 'string'
+          ? pending.sttApiKey
+          : typeof stored.sttApiKey === 'string'
+            ? stored.sttApiKey
+            : settings.stt.cloud.apiKey
+      )
       setSecureKeysLoaded(true)
     }).catch((err) => {
       if (!mounted) return
@@ -281,35 +297,59 @@ export default function SettingsPage({
    * **blur 時仍然立刻寫一次**:debounce 會讓「打完直接關窗」的最後一段
    *   有機會落在計時器裡來不及寫,所以 blur 是最後一道保險。
    */
-  const keyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const writeSecureKey = (name: 'apiKey' | 'sttApiKey', value: string): void => {
+    if ((secureKeysRef.current[name] ?? '') === value) {
+      delete pendingKeysRef.current[name]
+      return
+    }
+    // Serialize full-object writes and merge at execution time. Keep the ref as the
+    // last successfully persisted object: failed writes must remain retryable, and
+    // independently edited keys must never overwrite one another.
+    keyWriteChainRef.current = keyWriteChainRef.current
+      .then(async () => {
+        // A newer keystroke may have superseded this queued debounce/blur write.
+        if (pendingKeysRef.current[name] !== value) return
+        if ((secureKeysRef.current[name] ?? '') === value) {
+          if (pendingKeysRef.current[name] === value) delete pendingKeysRef.current[name]
+          return
+        }
+        const next = { ...secureKeysRef.current, [name]: value }
+        const ok = await window.api.keysSet(next)
+        if (!ok) {
+          toast.error('作業系統安全儲存不可用，API 金鑰未儲存')
+          return
+        }
+        secureKeysRef.current = next
+        if (pendingKeysRef.current[name] === value) delete pendingKeysRef.current[name]
+        window.dispatchEvent(new Event('ai-tp:keys-changed'))
+      })
+      .catch((err) => toast.error(`金鑰儲存失敗。${describeError(err)}`))
+  }
   const saveSecureKey = (name: 'apiKey' | 'sttApiKey', value: string): void => {
-    if (keyTimerRef.current) clearTimeout(keyTimerRef.current)
-    keyTimerRef.current = setTimeout(() => writeSecureKey(name, value), 600)
+    pendingKeysRef.current[name] = value
+    const currentTimer = keyTimersRef.current[name]
+    if (currentTimer) clearTimeout(currentTimer)
+    keyTimersRef.current[name] = setTimeout(() => {
+      delete keyTimersRef.current[name]
+      writeSecureKey(name, value)
+    }, 600)
   }
   /** blur 時呼叫:立刻寫,不等 debounce。見上方「為什麼改成 debounce」。 */
   const flushSecureKey = (name: 'apiKey' | 'sttApiKey', value: string): void => {
-    if (keyTimerRef.current) {
-      clearTimeout(keyTimerRef.current)
-      keyTimerRef.current = null
-    }
+    const currentTimer = keyTimersRef.current[name]
+    if (currentTimer) clearTimeout(currentTimer)
+    delete keyTimersRef.current[name]
     writeSecureKey(name, value)
   }
-  const writeSecureKey = (name: 'apiKey' | 'sttApiKey', value: string): void => {
-    if ((secureKeysRef.current[name] ?? '') === value) return
-    const next = { ...secureKeysRef.current, [name]: value }
-    secureKeysRef.current = next
-    void window.api.keysSet(next).then((ok) => {
-      if (!ok) toast.error('作業系統安全儲存不可用，API 金鑰未儲存')
-    }).catch((err) => toast.error(`金鑰儲存失敗。${describeError(err)}`))
-  }
-  // 離頁時把還在 debounce 裡的金鑰寫出去:使用者打完金鑰馬上切到別頁
-  // (或關視窗)是同一個遺失情境,不只是「打完不動」。
+  // 離頁時同步 flush 所有欄位的最新輸入;計時器分欄位,一個金鑰不會取消另一個。
   useEffect(
     () => () => {
-      if (keyTimerRef.current) {
-        clearTimeout(keyTimerRef.current)
-        keyTimerRef.current = null
-        void window.api.keysSet(secureKeysRef.current)
+      for (const name of ['apiKey', 'sttApiKey'] as const) {
+        const timer = keyTimersRef.current[name]
+        if (timer) clearTimeout(timer)
+        delete keyTimersRef.current[name]
+        const pending = pendingKeysRef.current[name]
+        if (pending !== undefined) writeSecureKey(name, pending)
       }
     },
     []
@@ -538,6 +578,7 @@ export default function SettingsPage({
               value={settings.stt.localModel}
               onChange={(e) => update({ stt: { localModel: e.target.value as AppSettings['stt']['localModel'] } })}
             >
+              <option value="tiny">tiny — 最快（~75MB）</option>
               <option value="base">base — 均衡（~145MB）</option>
               <option value="small">small — 最準（~500MB）</option>
             </select>
@@ -550,6 +591,7 @@ export default function SettingsPage({
               value={settings.stt.language}
               onChange={(e) => update({ stt: { language: e.target.value } })}
             >
+              <option value="zh">繁體中文</option>
               <option value="en">English</option>
               <option value="auto">自動偵測</option>
             </select>

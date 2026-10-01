@@ -16,8 +16,8 @@
  *     永遠會回來(它還沒解決)。這個差別是刻意的:提示可以消失,阻斷不行。
  */
 import type { JSX } from 'react'
-import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronUp, Copy, ExternalLink, Info } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronUp, Copy, ExternalLink, Info, RefreshCw } from 'lucide-react'
 import { useSettings } from '../lib/store'
 import { registerAuditControl } from '../lib/auditBridge'
 import {
@@ -63,50 +63,113 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
   const [models, setModels] = useState<string[] | null>(null)
   const [reachable, setReachable] = useState<boolean | null>(null)
   const [keys, setKeys] = useState<{ stt: boolean; ai: boolean }>({ stt: false, ai: false })
+  const [keysReady, setKeysReady] = useState(false)
+  const [checkVersion, setCheckVersion] = useState(0)
+  const [checking, setChecking] = useState(false)
+  const [keysChecking, setKeysChecking] = useState(false)
+  const keysAttemptRef = useRef(0)
+  const ollamaUrlRef = useRef<string | null>(null)
   const [dismissed, setDismissed] = useState<string[]>(() => readDismissed())
   const [expanded, setExpanded] = useState(variant === 'full')
   const [copied, setCopied] = useState<string | null>(null)
 
+  // settings 走 ref 讀取:refreshKeys 保持穩定引用,設定頁任何欄位的逐鍵 update()
+  // 都不會重建它、也不會把 keysGet 重打一遍(設定物件每次 update 都是新的身分)。
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+
   // 真去查,不是推測。keysGet 回來的是 secure store,settings 裡的 apiKey
   // 可能是舊的備援值 —— 兩個都看,任一個有就算填過。
-  useEffect(() => {
-    let alive = true
-    void (async () => {
-      try {
-        const k = await window.api?.keysGet?.()
-        if (!alive) return
-        const s = settings
-        setKeys({
-          stt: !!k?.sttApiKey || !!s?.stt?.cloud?.apiKey,
-          ai: !!k?.apiKey || !!s?.ai?.openaiCompatible?.apiKey
-        })
-      } catch {
-        /* 讀不到金鑰狀態不算錯:那就把兩項都當未填,卡片會多問一次,不會少問 */
+  const refreshKeys = useCallback(async (): Promise<void> => {
+    const attempt = ++keysAttemptRef.current
+    // 刻意**不**把 keysReady 拉回 false:它只代表「第一次查完了」。
+    // 重查(焦點/手動/keys-changed)期間繼續顯示舊結果,只讓重查鈕轉圈;
+    // 若這裡回到 false,stillChecking 會把整張卡 return null —— alt-tab 回來
+    // 卡片閃一次、設定頁逐鍵閃一次(實測)。
+    setKeysChecking(true)
+    try {
+      const k = await window.api?.keysGet?.()
+      if (attempt !== keysAttemptRef.current) return
+      const s = settingsRef.current
+      setKeys({
+        stt: !!k?.sttApiKey || !!s?.stt?.cloud?.apiKey,
+        ai: !!k?.apiKey || !!s?.ai?.openaiCompatible?.apiKey
+      })
+    } catch {
+      if (attempt !== keysAttemptRef.current) return
+      /* 讀不到金鑰狀態不算錯:那就把兩項都當未填,卡片會多問一次,不會少問 */
+      setKeys({ stt: false, ai: false })
+    } finally {
+      if (attempt === keysAttemptRef.current) {
+        setKeysReady(true)
+        setKeysChecking(false)
       }
-    })()
-    return () => {
-      alive = false
     }
-  }, [settings])
+  }, [])
 
   useEffect(() => {
-    if (!settings || settings.ai.provider !== 'ollama') return
+    void refreshKeys()
+    // 後兩個是 settings 裡的「備援金鑰」(遷移前的舊資料可能把金鑰留在 settings):
+    // 只有這兩個值變了才需要重算 keys,其他設定欄位怎麼改都不動。
+  }, [refreshKeys, checkVersion, settings?.stt.cloud.apiKey, settings?.ai.openaiCompatible.apiKey])
+
+  useEffect(() => {
+    const recheck = (): void => setCheckVersion((v) => v + 1)
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') recheck()
+    }
+    window.addEventListener('focus', recheck)
+    window.addEventListener('ai-tp:keys-changed', recheck)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('focus', recheck)
+      window.removeEventListener('ai-tp:keys-changed', recheck)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
+
+  // 依賴收斂到「Ollama 位址」這個字串:設定頁其他欄位逐鍵 update() 改變的是
+  // settings 物件身分,不是這個值 —— 用值當依賴,每次按鍵才不會打一次
+  // ollamaListModels(那是一次真的 fetch 到 localhost)。
+  const ollamaBaseUrl = settings?.ai.provider === 'ollama' ? settings.ai.ollama.baseUrl : null
+
+  useEffect(() => {
+    if (ollamaBaseUrl === null) {
+      ollamaUrlRef.current = null
+      setReachable(null)
+      setModels(null)
+      setChecking(false)
+      return
+    }
     let alive = true
+    if (ollamaUrlRef.current !== ollamaBaseUrl) {
+      ollamaUrlRef.current = ollamaBaseUrl
+      setReachable(null)
+    }
+    setChecking(true)
     void (async () => {
-      const r = await probeOllama(settings.ai.ollama.baseUrl)
-      if (alive) {
-        setModels(r.models)
-        // installed 與「models 長度」是兩個獨立的事:裝了沒拉模型是一種狀態,
-        // 沒裝是另一種。它們要給不同的指引,不能合併成「沒有模型」。
-        setReachable(r.installed)
+      try {
+        const r = await probeOllama(ollamaBaseUrl)
+        if (alive) {
+          setModels(r.models)
+          // installed 與「models 長度」是兩個獨立的事:裝了沒拉模型是一種狀態,
+          // 沒裝是另一種。它們要給不同的指引,不能合併成「沒有模型」。
+          setReachable(r.installed)
+        }
+      } catch {
+        if (alive) {
+          setModels(null)
+          setReachable(false)
+        }
+      } finally {
+        if (alive) setChecking(false)
       }
     })()
     return () => {
       alive = false
     }
-    // auditOverride 在 deps 裡:測試(或除錯者)改變模擬狀態時,查詢要重跑。
-    // 少了它,「改完沒反應」會被誤讀成「卡片壞了」。
-  }, [settings, auditOverride])
+    // auditOverride 與手動/視窗焦點重查(checkVersion)都會觸發重新檢查。
+  }, [ollamaBaseUrl, auditOverride, checkVersion])
 
   // audit 控制項註冊在**這裡**,而不是 main.tsx。
   // 兩個理由:一是控制項只在使用者看得到這張卡片時才有意義;
@@ -147,7 +210,9 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
   })
 
   // 還在查 ollama 時不要急著宣布「你少東西」—— 那會是一個假的紅字。
-  const stillChecking = settings?.ai.provider === 'ollama' && reachable === null
+  const needsKeyCheck = settings?.stt.engine === 'cloud' || settings?.ai.provider === 'openai-compatible'
+  const stillChecking =
+    (settings?.ai.provider === 'ollama' && reachable === null) || (needsKeyCheck && !keysReady)
   if (!settings || stillChecking) return null
 
   const visible = result.items.filter((i) => i.severity === 'blocking' || !dismissed.includes(i.id))
@@ -163,7 +228,22 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
     return (
       <div data-preflight="ready" className="flex items-center gap-2 text-[11px] text-ink-400">
         <CheckCircle2 size={13} className="shrink-0 text-emerald-400" />
-        <span>AI 模型與語音辨識都準備好了,可以直接開始。</span>
+        {/* 這列只在「零待處理項目」時出現。本地 STT 的下載提示被使用者關掉後,
+            「首次錄音仍會下載」才值得再講一次;雲端 STT 根本沒有本地模型,再講就是錯的。 */}
+        <span className="flex-1">
+          {settings.stt.engine === 'local'
+            ? '目前沒有待處理項目；本地語音模型仍可能在首次錄音時下載。'
+            : '目前沒有待處理項目,可以直接開始。'}
+        </span>
+        <button
+          type="button"
+          className="btn-ghost shrink-0 text-[11px]"
+          onClick={() => setCheckVersion((v) => v + 1)}
+          title="重新檢查 Ollama 與安全儲存中的 API 金鑰"
+        >
+          <RefreshCw size={12} className={checking || keysChecking ? 'animate-spin' : ''} />
+          {checking || keysChecking ? '檢查中' : '重查'}
+        </button>
       </div>
     )
   }
@@ -212,7 +292,7 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
         )}
         <span className="min-w-0 flex-1">
           <span className="block font-medium text-ink-100">
-            {blockingCount > 0 ? `還差 ${blockingCount} 項才能開始` : '有 1 件事要先知道'}
+            {blockingCount > 0 ? `AI 功能還差 ${blockingCount} 項設定` : `有 ${visible.length} 項使用前提示`}
           </span>
           <span className="mt-0.5 block truncate text-ink-400">{first.title}</span>
         </span>
@@ -230,28 +310,41 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
         tone === 'amber' ? 'border-amber-400/30 bg-amber-400/8' : 'border-sky-400/25 bg-sky-400/8'
       )}
     >
-      <button
-        type="button"
-        data-effect-id="preflight-toggle"
-        className="flex w-full items-center gap-2.5 text-left"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-      >
-        {blockingCount > 0 ? (
-          <AlertTriangle size={15} className="shrink-0 text-amber-400" />
-        ) : (
-          <Info size={15} className="shrink-0 text-sky-300" />
-        )}
-        <span className="min-w-0 flex-1">
-          <span className="block text-xs font-semibold text-ink-100">
-            {blockingCount > 0 ? '開始之前,這台電腦還差這些' : '開始之前,先知道這件事'}
+      <div className="flex items-start gap-3">
+        <button
+          type="button"
+          data-effect-id="preflight-toggle"
+          className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+        >
+          {blockingCount > 0 ? (
+            <AlertTriangle size={15} className="shrink-0 text-amber-400" />
+          ) : (
+            <Info size={15} className="shrink-0 text-sky-300" />
+          )}
+          <span className="min-w-0 flex-1">
+            <span className="block text-xs font-semibold text-ink-100">
+              {blockingCount > 0 ? 'AI 功能設定檢查' : 'AI 功能使用提示'}
+            </span>
+            <span className="mt-0.5 block text-[11px] text-ink-400">
+              {visible.length} 項 · 這些設定不會阻擋提詞浮層
+            </span>
           </span>
-          <span className="mt-0.5 block text-[11px] text-ink-400">
-            {visible.length} 項 · 設定與提詞本身不受影響,可以先到處看看
-          </span>
-        </span>
-        {expanded ? <ChevronUp size={15} className="shrink-0 text-ink-400" /> : <ChevronDown size={15} className="shrink-0 text-ink-400" />}
-      </button>
+          {expanded ? <ChevronUp size={15} className="shrink-0 text-ink-400" /> : <ChevronDown size={15} className="shrink-0 text-ink-400" />}
+        </button>
+        <button
+          type="button"
+          className="btn-ghost shrink-0 text-[11px]"
+          onClick={() => {
+            setCheckVersion((v) => v + 1)
+          }}
+          title="重新檢查 Ollama 與安全儲存中的 API 金鑰"
+        >
+          <RefreshCw size={12} className={checking || keysChecking ? 'animate-spin' : ''} />
+          {checking || keysChecking ? '檢查中' : '重查'}
+        </button>
+      </div>
 
       {expanded && (
         <div className="mt-3 space-y-2.5">
@@ -268,7 +361,7 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
                     item.severity === 'blocking' ? 'bg-amber-400/15 text-amber-300' : 'bg-sky-400/15 text-sky-300'
                   )}
                 >
-                  {item.severity === 'blocking' ? '需要先處理' : '第一次會等一下'}
+                  {item.severity === 'blocking' ? 'AI 功能需設定' : '首次使用提示'}
                 </span>
               </div>
 

@@ -84,8 +84,12 @@ interface Turn {
 }
 
 /** 相同說者且間隔不超過冷場門檻的段落合併為一輪；長停頓保留為可量測的冷場 */
+export function sortTranscriptSegments(segments: TranscriptSegment[]): TranscriptSegment[] {
+  return [...segments].sort((a, b) => a.start - b.start || a.end - b.end)
+}
+
 function toTurns(segments: TranscriptSegment[]): Turn[] {
-  const sorted = [...segments].sort((a, b) => a.start - b.start)
+  const sorted = sortTranscriptSegments(segments)
   const turns: Turn[] = []
   for (const seg of sorted) {
     const start = Math.min(seg.start, seg.end)
@@ -115,7 +119,7 @@ function toTurns(segments: TranscriptSegment[]): Turn[] {
 
 export function buildSessionReport(
   segments: TranscriptSegment[],
-  opts: { durationSec?: number } = {}
+  opts: { durationSec?: number; speakerAvailability?: { me: boolean; them: boolean } } = {}
 ): SessionReport {
   const turns = toTurns(segments ?? [])
   const now = Date.now()
@@ -126,6 +130,7 @@ export function buildSessionReport(
       mySec: 0,
       theirSec: 0,
       talkRatio: 0,
+      talkRatioAvailable: opts.speakerAvailability ? opts.speakerAvailability.me && opts.speakerAvailability.them : true,
       myUnits: 0,
       myCpm: 0,
       turnCount: 0,
@@ -147,6 +152,11 @@ export function buildSessionReport(
   const mySec = myTurns.reduce((a, t) => a + t.speechSec, 0)
   const theirSec = theirTurns.reduce((a, t) => a + t.speechSec, 0)
   const talkRatio = mySec + theirSec > 0 ? mySec / (mySec + theirSec) : 0
+  // A single audio source cannot establish who spoke for what share of a conversation.
+  // Legacy callers/data without availability metadata retain the original behavior.
+  const talkRatioAvailable = opts.speakerAvailability
+    ? opts.speakerAvailability.me && opts.speakerAvailability.them
+    : true
 
   const myUnits = myTurns.reduce((a, t) => a + countSpeechUnits(t.text), 0)
   const myCpm = mySec >= 1 ? Math.round((myUnits / mySec) * 60) : 0
@@ -173,6 +183,7 @@ export function buildSessionReport(
     mySec: Math.round(mySec),
     theirSec: Math.round(theirSec),
     talkRatio,
+    talkRatioAvailable,
     myUnits,
     myCpm,
     turnCount: turns.length,
@@ -196,10 +207,10 @@ export function buildSuggestions(r: SessionReport): SessionSuggestion[] {
   const out: SessionSuggestion[] = []
   const pct = Math.round(r.talkRatio * 100)
 
-  if (r.theirSec > 10 && r.talkRatio > 0.75) {
+  if (r.talkRatioAvailable !== false && r.theirSec > 10 && r.talkRatio > 0.75) {
     out.push({ severity: 'high', message: `你說了 ${pct}% 的時間——試著把發言壓到六成以下,多留空間給對方` })
   }
-  if (r.theirSec > 10 && r.talkRatio < 0.25) {
+  if (r.talkRatioAvailable !== false && r.theirSec > 10 && r.talkRatio < 0.25) {
     out.push({ severity: 'low', message: `你只說了 ${pct}% 的時間,對方可能需要更多你的觀點` })
   }
   if (r.longestMyTurnSec > LONG_TURN_SEC) {
@@ -213,7 +224,7 @@ export function buildSuggestions(r: SessionReport): SessionSuggestion[] {
   } else if (r.myCpm > 0 && r.myCpm < CPM_SLOW) {
     out.push({ severity: 'low', message: `語速偏慢(${r.myCpm} 字/分),重點句可加快節奏` })
   }
-  if (r.theirQuestionCount >= 3 && r.talkRatio < 0.5) {
+  if (r.talkRatioAvailable !== false && r.theirQuestionCount >= 3 && r.talkRatio < 0.5) {
     out.push({ severity: 'medium', message: `對方問了 ${r.theirQuestionCount} 個問題,確認每題都有正面回應` })
   }
 

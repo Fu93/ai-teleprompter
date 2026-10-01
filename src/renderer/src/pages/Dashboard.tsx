@@ -6,6 +6,7 @@ import type { MeetingSession, PracticeRun, Script } from '@shared/types'
 import { formatDateTime } from '../lib/utils'
 import { useSettings } from '../lib/store'
 import { analyzePracticeRun } from '../lib/session-intelligence'
+import { toast } from '../lib/toast'
 import { PreflightCard } from '../components/PreflightCard'
 
 interface Props {
@@ -96,7 +97,7 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
       setSessions(recentSessions)
       setRuns(recentRuns)
       const scanned = await db.sessions.orderBy('startedAt').reverse().limit(HISTORY_CAP).toArray()
-      const withReport = scanned.filter((s) => s.report)
+      const withReport = scanned.filter((s) => s.report && s.report.talkRatioAvailable !== false)
       setTotals({
         sessions: sessionCount,
         runs: runCount,
@@ -110,11 +111,25 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
     })()
   }, [])
 
+  /**
+   * 開浮層的唯一入口:總覽頁有兩個地方會開(上方「開始提詞」與下方清單每列的
+   * 「提詞」),行為必須一致 —— 空稿(例如剛建立的「未命名講稿」)不開空浮層,
+   * 引導回講稿頁先寫內容。原本只有 launchLatest 有檢查,清單那排照樣開出空浮層。
+   */
+  const launchScript = async (s: Script): Promise<void> => {
+    if (!s.content.trim()) {
+      toast.info('這份講稿還是空的——先到「提詞講稿」寫點內容再開始提詞。')
+      onNavigate('scripts')
+      return
+    }
+    await db.scripts.update(s.id!, { lastUsedAt: Date.now() })
+    await window.api.overlayShow({ title: s.title, content: s.content })
+  }
+
   const launchLatest = async (): Promise<void> => {
     const s = recent[0]
     if (!s) return
-    await db.scripts.update(s.id!, { lastUsedAt: Date.now() })
-    await window.api.overlayShow({ title: s.title, content: s.content })
+    await launchScript(s)
   }
 
   return (
@@ -310,10 +325,7 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
                 </div>
                 <button
                   className="btn-ghost shrink-0 text-xs"
-                  onClick={async () => {
-                    await db.scripts.update(s.id!, { lastUsedAt: Date.now() })
-                    await window.api.overlayShow({ title: s.title, content: s.content })
-                  }}
+                  onClick={() => void launchScript(s)}
                 >
                   <Play size={13} /> 提詞
                 </button>

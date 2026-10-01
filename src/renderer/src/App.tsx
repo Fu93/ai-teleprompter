@@ -72,15 +72,32 @@ function MainApp(): JSX.Element {
   })
   // 講稿編輯中有未存變更:側欄切頁前要攔下來確認
   const [scriptsDirty, setScriptsDirty] = useState(false)
+  // 錄音/練習進行中:頁面主動上報的離開守衛訊息(與 scriptsDirty 同一模式,
+  // 但訊息由頁面給 —— 「正在錄音」與「練習進行中」要講的話不同)。
+  // 沒有它,錄音中點側欄會把整場會議靜默丟掉:頁面 unmount 只收音源不寫 DB。
+  const [leaveGuard, setLeaveGuard] = useState<string | null>(null)
 
   const navigate = async (target: PageId): Promise<void> => {
+    // 同頁點擊(使用者常反射性點側欄當前項)必須直接返回:下面的確認與
+    // setScriptsDirty(false) 都是「離開」的語意,對當前頁執行會把 dirty 旗標
+    // 靜默解除 —— 之後真正切頁時守衛已不在,未存變更就會無聲消失。
+    if (target === page) return
     if (
       scriptsDirty &&
-      target !== page &&
       !(await confirmDialog({
         title: '講稿有未儲存的修改',
         body: '離開「提詞講稿」會遺失這些變更。',
         confirmLabel: '放棄變更並離開'
+      }))
+    ) {
+      return
+    }
+    if (
+      leaveGuard &&
+      !(await confirmDialog({
+        title: '離開會遺失進行中的內容',
+        body: leaveGuard,
+        confirmLabel: '放棄並離開'
       }))
     ) {
       return
@@ -117,9 +134,9 @@ function MainApp(): JSX.Element {
       case 'scripts':
         return <Scripts onDirtyChange={setScriptsDirty} />
       case 'record':
-        return <Record />
+        return <Record onGuardChange={setLeaveGuard} />
       case 'practice':
-        return <Practice />
+        return <Practice onGuardChange={setLeaveGuard} />
       case 'calibration':
         return <Calibration onDone={() => setPage('settings')} />
       case 'settings':

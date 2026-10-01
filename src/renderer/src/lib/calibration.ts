@@ -85,6 +85,24 @@ export function isPlausibleRate(charsPerMin: number): boolean {
   return charsPerMin >= 100 && charsPerMin <= 480
 }
 
+/** 瞳距的合理範圍（mm）。輸入框的 min/max 屬性擋不住手打，真正生效的夾限在 clampIpdMm */
+export const MIN_IPD_MM = 50
+export const MAX_IPD_MM = 80
+
+/**
+ * 夾限瞳距輸入。
+ *
+ * 為什麼需要：type=number 的 min/max 只擋 spinner 不擋鍵盤，631 會原樣進入
+ * 距離估算；而非數值（清空）回退成人平均 63。由 blur 時呼叫 —— 輸入過程中
+ * 不強迫改值，否則清空瞬間被彈回 63，使用者永遠無法「刪掉重打」。
+ */
+export function clampIpdMm(v: number): number {
+  // Number('') is 0 rather than NaN; treat a cleared number input as the same
+  // missing-value fallback instead of clamping it to an implausible 50 mm.
+  if (!Number.isFinite(v) || v <= 0) return 63
+  return Math.min(MAX_IPD_MM, Math.max(MIN_IPD_MM, Math.round(v)))
+}
+
 /**
  * 個人語速 → 定時引擎的有效倍率。
  * 引擎以 defaultWpm（120）為 1× 基準；校準後 1× 應代表「使用者自己的語速」，

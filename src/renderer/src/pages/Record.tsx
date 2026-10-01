@@ -22,7 +22,7 @@ import { cn, formatDateTime, formatDuration } from '../lib/utils'
 import { aiChat, extractJson, resolvedModelName } from '../lib/ai'
 import { toast } from '../lib/toast'
 import { describeError } from '../lib/describeError'
-import { buildSessionReport } from '../lib/session-intelligence'
+import { buildSessionReport, sortTranscriptSegments } from '../lib/session-intelligence'
 import { AudioSegmenter } from '../lib/audio/segmenter'
 import { WhisperClient, WHISPER_MODELS, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { encodeWav } from '../lib/audio/wav'
@@ -41,7 +41,7 @@ type ModelState = {
   msg?: string
 }
 
-export default function Record(): JSX.Element {
+export default function Record({ onGuardChange }: { onGuardChange?: (msg: string | null) => void } = {}): JSX.Element {
   const { settings } = useSettings()
   const [recording, setRecording] = useState(false)
   /** start() 的多步 await(模型載入/麥克風/AudioContext)期間擋再按:
@@ -148,6 +148,19 @@ export default function Record(): JSX.Element {
           '正在收尾:還在等最後幾段語音辨識回來。現在關閉會遺失尾段逐字稿。'
         : null
   )
+
+  // 切頁守衛:關窗有上面的 useCloseGuard,側欄切頁原本沒有 —— 錄音中點側欄會把
+  // 整場會議靜默丟掉(unmount 只 stopAll,不寫 DB,麥克風燈滅就是使用者看到的全部)。
+  // 與 Scripts 的 onDirtyChange 同一模式:訊息由頁面上報,App.navigate 攔下確認。
+  useEffect(() => {
+    const msg = recording
+      ? '正在錄音。離開「錄音轉錄」會讓這場會議不留任何逐字稿。'
+      : saving
+        ? '正在收尾:還在等最後幾段語音辨識回來。現在離開會遺失尾段逐字稿。'
+        : null
+    onGuardChange?.(msg)
+    return () => onGuardChange?.(null)
+  }, [recording, saving, onGuardChange])
 
   // 稽核用:展開第 N 場會議(會後報告/摘要只有展開後才存在於 DOM,
   // 是「從來沒被量測過」的其中一個深狀態)。
@@ -294,7 +307,9 @@ export default function Record(): JSX.Element {
         start: Math.max(0, end - audio.length / sr),
         end
       }
-      segsRef.current = [...segsRef.current, seg]
+      // ASR requests from mic and system audio run concurrently; completion order is
+      // not speech order. Keep the live transcript and persisted report chronological.
+      segsRef.current = sortTranscriptSegments([...segsRef.current, seg])
       setSegments(segsRef.current)
       // 成功一次就代表 STT 通了:清掉失敗累積,橫幅自動消失
       sttFailStreakRef.current = 0
@@ -362,13 +377,47 @@ export default function Record(): JSX.Element {
       toast.error('請至少選擇一個音訊來源')
       return
     }
+    // 雲端引擎未設定就 fail-fast:原本要等開麥之後第一段轉錄失敗才知道,
+    // 使用者已經講了半分鐘、而且要自己從錯誤訊息反推「去設定頁」。
+    if (settings?.stt.engine === 'cloud' && (!settings.stt.cloud.baseUrl || !settings.stt.cloud.model)) {
+      toast.error('請先在設定頁填入雲端語音 API 的 Base URL 與模型,再開始錄音')
+      return
+    }
+    // Request system-audio capture while still inside the user's start action.
+    // Loading Whisper first may take minutes and loses the transient user activation
+    // required by getDisplayMedia in Chromium/Electron.
+    if (wantSys) {
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+        stream.getVideoTracks().forEach((t) => t.stop()) // 只留音訊
+        if (attempt !== startAttemptRef.current) {
+          stream.getTracks().forEach((t) => t.stop())
+          return
+        }
+        if (stream.getAudioTracks().length === 0) {
+          stream.getTracks().forEach((t) => t.stop())
+          throw new Error('系統音訊擷取被取消或不可用')
+        }
+        streamsRef.current.sys = stream
+      } catch {
+        // main 端 setDisplayMediaRequestHandler核准不到來源時,這裡收到的是
+        // NotAllowedError —— 交給 describeError 會被第一條規則誤診成
+        // 「麥克風權限被拒」,把使用者導去改一個不相關的系統設定。
+        // 這條路的成因已知(handler 回不出來源 / loopback 不可用),直接講。
+        if (attempt === startAttemptRef.current)
+          toast.error('無法擷取系統音訊。請確認有可擷取的螢幕與音訊輸出,或先只用「我的麥克風」開始。')
+        return
+      }
+    }
     if (settings?.stt.engine === 'local') {
       try {
         await ensureWhisper()
       } catch {
+        stopAll()
         return
       }
       if (attempt !== startAttemptRef.current) {
+        stopAll()
         startingRef.current = false
         setStarting(false)
         return
@@ -418,20 +467,8 @@ export default function Record(): JSX.Element {
         await segmentersRef.current.mic.start(stream)
       }
       if (wantSys) {
-        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
-        stream.getVideoTracks().forEach((t) => t.stop()) // 只留音訊
-        if (attempt !== startAttemptRef.current) {
-          stream.getTracks().forEach((t) => t.stop())
-          sessionStartedAtRef.current = 0
-          startingRef.current = false
-          setStarting(false)
-          return
-        }
-        if (stream.getAudioTracks().length === 0) {
-          stream.getTracks().forEach((t) => t.stop())
-          throw new Error('系統音訊擷取被取消或不可用')
-        }
-        streamsRef.current.sys = stream
+        const stream = streamsRef.current.sys
+        if (!stream) throw new Error('系統音訊擷取已中止，請重新開始')
         segmentersRef.current.sys = new AudioSegmenter({
           onSegment: (a, sr) => queueTranscription(a, sr, 'them'),
           onLevel: setSysLevel,
@@ -498,7 +535,8 @@ export default function Record(): JSX.Element {
           // 會話量化報告:與 session 一起存,供 Dashboard 趨勢使用;
           // 併入會議期間的 coaching 觸發計數,形成改進閉環
           const report = buildSessionReport(segments, {
-            durationSec: Math.min((endedAt - startedAt) / 1000, 24 * 60 * 60)
+            durationSec: Math.min((endedAt - startedAt) / 1000, 24 * 60 * 60),
+            speakerAvailability: { me: wantMic, them: wantSys }
           })
           try {
             report.coachingCounts = await window.api.coachingStats()
@@ -564,14 +602,19 @@ export default function Record(): JSX.Element {
       return
     }
     const now = Date.now()
-    await db.scripts.add({
-      title: `${s.title}（講稿）`,
-      content: body,
-      createdAt: now,
-      updatedAt: now
-    })
-    // 不跨頁跳轉:Record 沒有 props(見 function Record(): JSX.Element),
-    // 而 Scripts 進頁時本來就會自動選中最新的那一份(orderBy updatedAt desc),
+    try {
+      await db.scripts.add({
+        title: `${s.title}（講稿）`,
+        content: body,
+        createdAt: now,
+        updatedAt: now
+      })
+    } catch (err) {
+      // 寫入失敗(IndexedDB 滿/隱私模式)要有聲,而不是靜默失敗讓使用者以為存好了
+      toast.error(`講稿儲存失敗。${describeError(err)}`)
+      return
+    }
+    // 不跨頁跳轉:Scripts 進頁時本來就會自動選中最新的那一份(orderBy updatedAt desc),
     // 所以 toast 裡直接給出下一步就好。使用者按完會看到「已存成講稿」並知道去哪找 ——
     // 硬加一個跨頁跳轉得動 App 的 navigate 簽章,那是為了順手而擴大改動面。
     toast.success(`已存成講稿:${s.title}（講稿）,在「提詞講稿」頁`)
@@ -591,10 +634,17 @@ export default function Record(): JSX.Element {
       const who = seg.speaker === 'me' ? '我' : '對方'
       lines.push(`**[${formatDuration(seg.start)}] ${who}**：${seg.text}`)
     })
-    await window.api.exportFile({
-      defaultName: `${s.title.replace(/[\\/:*?"<>|]/g, '_')}.md`,
-      content: lines.join('\n')
-    })
+    try {
+      const res = await window.api.exportFile({
+        defaultName: `${s.title.replace(/[\\/:*?"<>|]/g, '_')}.md`,
+        content: lines.join('\n')
+      })
+      // canceled 是使用者主動取消,不是失敗;除此之外的 no 都要說人話。
+      // 原本結果整個沒看:寫入失敗(磁碟滿/無權限)是靜默的,使用者以為匯出成功了。
+      if (!res.ok && res.error !== 'canceled') toast.error(`匯出失敗(${res.error ?? '未知錯誤'})`)
+    } catch (err) {
+      toast.error(`匯出失敗。${describeError(err)}`)
+    }
   }
 
   const removeSession = async (id?: number): Promise<void> => {
@@ -699,7 +749,7 @@ export default function Record(): JSX.Element {
               <input type="checkbox" checked={wantMic} onChange={(e) => setWantMic(e.target.checked)} className="accent-accent-500" />
               <Mic size={15} /> 我的麥克風
             </label>
-            <label className="flex cursor-pointer items-center gap-2 text-sm" title="擷取系統播放中的聲音（會議對方、影片等），選擇分享畫面即可">
+            <label className="flex cursor-pointer items-center gap-2 text-sm" title="擷取系統播放中的聲音（會議對方、影片等），開始後自動擷取，不會出現分享視窗">
               <input type="checkbox" checked={wantSys} onChange={(e) => setWantSys(e.target.checked)} className="accent-accent-500" />
               <MonitorSpeaker size={15} /> 系統音訊（對方）
             </label>
@@ -723,12 +773,14 @@ export default function Record(): JSX.Element {
               <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-rose-450" />
               聆聽中 {formatDuration(elapsed)}
             </span>
-            <div className="flex items-center gap-2" title="麥克風音量">
-              <Mic size={13} className="text-ink-400" />
-              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-ink-800">
-                <div className="h-full bg-emerald-500 transition-[width] duration-100" style={{ width: `${micLevel * 100}%` }} />
+            {wantMic && (
+              <div className="flex items-center gap-2" title="麥克風音量">
+                <Mic size={13} className="text-ink-400" />
+                <div className="h-1.5 w-24 overflow-hidden rounded-full bg-ink-800">
+                  <div className="h-full bg-emerald-500 transition-[width] duration-100" style={{ width: `${micLevel * 100}%` }} />
+                </div>
               </div>
-            </div>
+            )}
             {wantSys && (
               <div className="flex items-center gap-2" title="系統音訊音量">
                 <MonitorSpeaker size={13} className="text-ink-400" />
@@ -769,7 +821,9 @@ export default function Record(): JSX.Element {
         ) : (
           <div className="space-y-3">
             {segments.map((seg, i) => (
-              <div key={i} className="flex gap-3">
+              // 陣列每次追加都會整個重排序(mic/sys 的 ASR 回來順序不等於語音順序):
+              // index key 會讓既有列被重用成別的段落,複合 key 讓排序後的 DOM 節點跟著段落走。
+              <div key={`${seg.start}-${seg.end}-${seg.speaker}-${i}`} className="flex gap-3">
                 <div className="w-24 shrink-0 pt-0.5 text-right font-mono text-[10px] text-ink-400">
                   {formatDuration(seg.start)}
                 </div>
@@ -821,8 +875,12 @@ export default function Record(): JSX.Element {
               { label: '時長', value: formatDuration(lastReport.durationSec) },
               {
                 label: '發言佔比',
-                value: `${Math.round(lastReport.talkRatio * 100)}%`,
-                hint: `我 ${formatDuration(lastReport.mySec)} / 對方 ${formatDuration(lastReport.theirSec)}`
+                value:
+                  lastReport.talkRatioAvailable === false ? '—' : `${Math.round(lastReport.talkRatio * 100)}%`,
+                hint:
+                  lastReport.talkRatioAvailable === false
+                    ? '需同時擷取麥克風與系統音訊'
+                    : `我 ${formatDuration(lastReport.mySec)} / 對方 ${formatDuration(lastReport.theirSec)}`
               },
               {
                 label: '我的語速',
@@ -916,9 +974,6 @@ export default function Record(): JSX.Element {
                     )}
                     <div className="min-w-0">
                       {/* title 不是裝飾:會議標題可以長到把整列截斷,而沒有一個
-                          可看的全文,使用者只能靠猜。稽核的 truncated-no-label 規則
-                          (由 scripts/audit-states.mjs 的長標題狀態量到)會抓這一類。 */}
-                                            {/* title 不是裝飾:會議標題可以長到把整列截斷,而沒有一個
                           可看的全文,使用者只能靠猜。稽核的 truncated-no-label 規則
                           (由 scripts/audit-states.mjs 的長標題狀態量到)會抓這一類。 */}
                       <div className="truncate text-sm" title={s.title}>

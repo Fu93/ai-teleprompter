@@ -4,6 +4,7 @@ import {
   cpmForText,
   buildSessionReport,
   buildSuggestions,
+  sortTranscriptSegments,
   analyzePracticeRun
 } from '../session-intelligence'
 import type { TranscriptSegment } from '@shared/types'
@@ -137,6 +138,25 @@ describe('buildSessionReport', () => {
     const r = buildSessionReport([seg('me', '字'.repeat(50), 0, 20)])
     expect(r.steadiness).toBe(100)
   })
+
+  it('只有一個音訊來源時不宣稱雙方發言比例可用', () => {
+    const report = buildSessionReport([seg('me', '我的發言', 0, 10)], {
+      speakerAvailability: { me: true, them: false }
+    })
+    expect(report.talkRatioAvailable).toBe(false)
+    expect(report.talkRatio).toBe(1) // 保留原始計算值供相容性與除錯,UI 不應呈現為真實比例
+  })
+
+  it('轉錄段落依語音時間排序,同起點較短片段優先且不修改輸入', () => {
+    const input = [
+      seg('them', '較晚片段', 5, 8),
+      seg('me', '同起點較長', 1, 4),
+      seg('me', '同起點較短', 1, 2)
+    ]
+    const sorted = sortTranscriptSegments(input)
+    expect(sorted.map((s) => s.text)).toEqual(['同起點較短', '同起點較長', '較晚片段'])
+    expect(input.map((s) => s.text)).toEqual(['較晚片段', '同起點較長', '同起點較短'])
+  })
 })
 
 describe('buildSuggestions 規則', () => {
@@ -149,6 +169,19 @@ describe('buildSuggestions 規則', () => {
     ])
     const s = buildSuggestions(r)
     expect(s.some((x) => x.severity === 'high' && x.message.includes('時間'))).toBe(true)
+  })
+
+  it('不可用的雙方音源不產生發言佔比或問句比例建議', () => {
+    const report = {
+      ...base,
+      theirSec: 30,
+      talkRatio: 0.9,
+      theirQuestionCount: 4,
+      talkRatioAvailable: false
+    }
+    const suggestions = buildSuggestions(report)
+    expect(suggestions.some((s) => s.message.includes('時間'))).toBe(false)
+    expect(suggestions.some((s) => s.message.includes('問題'))).toBe(false)
   })
 
   it('語速過快 → medium', () => {
