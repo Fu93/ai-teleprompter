@@ -32,6 +32,7 @@
 import { _electron as electron } from 'playwright-core'
 import { mkdirSync, writeFileSync } from 'fs'
 import sharp from 'sharp'
+import { CORNER_TOL_PX, cornerScan } from './lib/corner-scan.mjs'
 
 process.env.AI_TP_E2E = '1'
 process.env.AI_TP_AUDIT = '1'
@@ -120,6 +121,12 @@ function summarize(line) {
 const avg = (a) => a.reduce((s, v) => s + v, 0) / a.length
 /** 取中間 30% 當「內部」,避開任何邊緣效應 */
 const innerOf = (a) => avg(a.slice(Math.floor(a.length * 0.35), Math.ceil(a.length * 0.65)))
+
+// 四角幾何量測在 scripts/lib/corner-scan.mjs:抽出來是為了讓負向驗證能用
+// 合成 PNG 直接跑(見 scripts/lib/__tests__/corner-scan.test.mjs),
+// 不必為了驗證量測端而啟動整個 App。容差 CORNER_TOL_PX = 4 device px,
+// 涵蓋 antialias + rim 暗環 + 折射合計 1–2px 的偏移,同時仍抓得住
+// 「角被填成方形」(實測方角首材質 ≤ 2px)與半徑對半縮水(7 vs 14)。
 
 const results = []
 const BACKDROPS = [
@@ -219,13 +226,18 @@ for (const [id, toolTitle] of SURFACES) {
     const el =
       document.querySelector('.dynamic-island-pill') || document.querySelector('.glass-overlay')
     if (!el) return null
+    const cs = getComputedStyle(el)
     const r = el.getBoundingClientRect()
-    return { x: r.x, y: r.y, w: r.width, h: r.height }
+    // 半徑取左上角宣告值(三個形態四角等值):膠囊 rounded-full 在 computed style
+    // 是 9999px,cornerScan 會按 CSS 規則把它夾到 min(w,h)/2。
+    const radiusCss = parseFloat(cs.borderTopLeftRadius) || 0
+    return { x: r.x, y: r.y, w: r.width, h: r.height, radiusCss }
   })
   if (!box) {
     results.push({ id, status: 'element-not-found', ratio: null })
     continue
   }
+  const cornerRadiusCss = box.radiusCss
 
   // 隐藏表面內容再截圖:只留材質與輪廓光。
   //
@@ -259,6 +271,13 @@ for (const [id, toolTitle] of SURFACES) {
       clip: { x: box.x, y: box.y, width: box.w, height: box.h }
     })
     const p = await edgeProfile(file)
+    // 角落幾何只在白桌布那輪判定:深/灰桌布上材質與背景的對比天生不足以
+    // 分辨「被切掉的角」和「材質」,cornerScan 會量不到東西。白桌布上
+    // 深玻璃(≈64)vs 255 的對比充裕,且這正是幾何缺陷最會現形的背景。
+    let corners = null
+    if (bgName === 'white') {
+      corners = await cornerScan(file, box, cornerRadiusCss)
+    }
     const w = p.width
     const h = p.height
     const sides = {
@@ -279,7 +298,7 @@ for (const [id, toolTitle] of SURFACES) {
       .filter(([, s]) => s.lift >= cap && s.bandMax - s.inner >= RIM_LIFT_MIN_ABS)
       .map(([k]) => k)
     const worstLift = Math.max(...Object.values(judged).map((s) => s.lift))
-    const pass = worstEdge < EDGE_CAP && offenders.length === 0
+    const pass = worstEdge < EDGE_CAP && offenders.length === 0 && (corners === null || corners.pass)
 
     results.push({
       id,
@@ -292,6 +311,7 @@ for (const [id, toolTitle] of SURFACES) {
       offenders,
       sides,
       judged,
+      corners,
       size: `${Math.round(w)}x${Math.round(h)}`
     })
   }
@@ -312,9 +332,9 @@ function join2(a, b) {
 console.log('')
 console.log(`=== Liquid Glass 邊緣驗證 ===`)
 console.log(
-  `通過條件:最外 2px 亮度 < ${EDGE_CAP}/255,且最外 ${BAND_PX}px 的最大值 < 內部的 ${RIM_LIFT_CAP_CAPSULE}x(膠囊) / ${RIM_LIFT_CAP_PANEL}x(面板),且絕對差 < ${RIM_LIFT_MIN_ABS} 級`
+  `通過條件:最外 2px 亮度 < ${EDGE_CAP}/255,且最外 ${BAND_PX}px 的最大值 < 內部的 ${RIM_LIFT_CAP_CAPSULE}x(膠囊) / ${RIM_LIFT_CAP_PANEL}x(面板),且絕對差 < ${RIM_LIFT_MIN_ABS} 級;白桌布輪另驗四角:對角首材質距離 = 宣告半徑 × (1−1/√2) × dpr ± ${CORNER_TOL_PX}px`
 )
-console.log('量測方式:在每條邊的中點取一條垂直於邊界的掃線,四邊都列入判斷')
+console.log('量測方式:在每條邊的中點取一條垂直於邊界的掃線,四邊都列入判斷;四角另沿 45° 對角線掃(只在白桌布,幾何缺陷在那裡最會現形)')
 console.log('為什麼量 6px:缺陷是「1.5px 暗環 + 輪廓光」兩段相鄰的 inset 陰影,亮帶落在 3~5px。舊版只量最外 2px 而把 3~5px 當基準,於是把缺陷當成了參考值(見 summarize 的註解)')
 console.log('為什麼分兩個門檻:rim 應該跟著曲率走。膠囊的直邊佔輪廓 85%,在上面畫 rim 就是白邊;面板的邊本來就該有 rim。理由與實測值見 RIM_LIFT_CAP_CAPSULE 的註解')
 console.log('')
@@ -329,19 +349,25 @@ for (const r of results) {
   const detail = Object.entries(r.judged)
     .map(([k, s]) => `${k}邊 lift ${s.lift.toFixed(2)}x [${s.band.join(',')}] 內${Math.round(s.inner)}`)
     .join('  ')
+  const cornerDetail =
+    r.corners && r.corners.firsts
+      ? `  四角 ${r.corners.firsts.join('/')}px 理論${r.corners.theory}px${r.corners.pass ? '' : ' ← 角落幾何不符(方角?半徑被吃掉?)'}`
+      : ''
   const why =
     r.status === 'pass'
       ? ''
       : r.worstEdge >= EDGE_CAP
         ? ' 超出絕對上限'
-        : ` 有硬亮帶:${r.offenders.join('')} >${r.cap}x 且差 ${RIM_LIFT_MIN_ABS} 級以上`
-  console.log(`[${r.id}/${r.bg}] ${mark} ${r.shape} ${r.size}  ${detail}${why}`)
+        : r.corners && !r.corners.pass
+          ? ' 角落幾何不符'
+          : ` 有硬亮帶:${r.offenders.join('')} >${r.cap}x 且差 ${RIM_LIFT_MIN_ABS} 級以上`
+  console.log(`[${r.id}/${r.bg}] ${mark} ${r.shape} ${r.size}  ${detail}${cornerDetail}${why}`)
   if (r.status !== 'pass') failed++
 }
 console.log('')
 console.log(
   failed === 0
-    ? `全部通過:最外 ${BAND_PX}px 沒有畫出白框 —— 膠囊的 rim 只在弧上,面板的 rim 在閱讀門檻內。`
+    ? `全部通過:最外 ${BAND_PX}px 沒有畫出白框,且四角都遵守宣告的半徑 —— 膠囊的 rim 只在弧上,面板的 rim 在閱讀門檻內。`
     : `${failed} 項未通過 —— 我改壞了,必須修到過。`
 )
 writeFileSync(join2(OUT, 'report.json'), JSON.stringify(results, null, 2))

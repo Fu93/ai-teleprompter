@@ -19,6 +19,7 @@ import { broadcastSettings, state } from './state'
 import {
   applyOverlayMinSize,
   applyOverlayWindowSettings,
+  syncOverlayMaterial,
   setOverlayVisible,
   recenterOverlay,
   cancelCloseRequest,
@@ -168,13 +169,17 @@ export function registerIpc(): void {
 
   /** 動畫用即時尺寸:每幀呼叫,只改視窗與記憶體設定,不落盤(結束時由 OverlaySetSize 定案)。
    *  刻意不走 applyOverlayWindowSettings:那裡含 setContentProtection/setIgnoreMouseEvents/
-   *  setBackgroundMaterial 與 os.release 解析,每幀 60 次全是浪費,morph 只需要 setSize */
+   *  setBackgroundMaterial 與 os.release 解析,每幀 60 次全是浪費,morph 只需要 setSize。
+   *  例外是材質:syncOverlayMaterial 是形態閘(acrylic 只准在展開形態),內部有
+   *  lastMaterial 快取,值沒變就是純比較 —— morph 開始的第一幀就切換,膠囊四角的
+   *  磨砂補丁不會拖到動畫結束才消失。 */
   ipcMain.handle(IPC.OverlaySetSizeLive, (_e, w: number, h: number) => {
     if (state.overlayWindow && !state.overlayWindow.isDestroyed()) {
       // 形態下限必須跟著動畫走,理由見 applyOverlayMinSize 的註解。
       // 這裡不能整包走 applyOverlayWindowSettings:那會每帧做 setContentProtection、
       // setIgnoreMouseEvents、setBackgroundMaterial 與 os.release() 解析。
       applyOverlayMinSize()
+      syncOverlayMaterial()
       // 刻意不寫 settings.overlay.width/height:那兩個欄位是「使用者選的展開尺寸」，
       // 這條路徑每帧呼叫(morph 動畫)，寫進去等於用動畫中的尺寸不斷污染它。
       state.overlayWindow.setSize(Math.round(w), Math.round(h))
@@ -186,7 +191,10 @@ export function registerIpc(): void {
     platform: process.platform,
     userDataPath: app.getPath('userData'),
     debug: DEBUG,
-    audit: AUDIT
+    audit: AUDIT,
+    // 附在 AppInfo 上是為了讓「熱鍵沒反應」有唯一可查答案:e2e 失敗時把它
+    // 印出來,就不必再用「疑似全域熱鍵爭用」去猜(那個說法查過之後不成立)。
+    hotkeyConflicts: [...state.hotkeyConflicts]
   }))
 
   // ---- AI (Ollama) ----

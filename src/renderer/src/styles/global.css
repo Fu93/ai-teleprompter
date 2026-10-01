@@ -219,6 +219,26 @@ body {
   );
 }
 
+/* ── 展開/貼鏡的輪廓:20px + squircle ──
+   為什麼從 16px(rounded-2xl)加大:
+     展開 720×260、貼鏡 420×170 的面板,16px 是「一般應用視窗」的圓角;
+     畫在同一個浮層上,它和藥丸(h/2 的全圓端)的視覺語彙是斷開的 ——
+     這就是「為什麼展開後是有邊角的長方形」的另一半答案(另一半是 rim,
+     已用 --rim-cap 修掉)。20px 讓面板在比例上更接近島的連續輪廓,
+     但不到「圓牌」的程度 —— 貼鏡只有 170px 高,半徑再大就開始吃正文。
+   為什麼配 -electron-corner-smoothing:
+     真實靈動島的輪廓是「連續曲率」(squircle),不是圓弧接直線。
+     這條規則是 Electron 37+ 的實驗性 CSS(Chromium 內建,無需 polyfill),
+     60% 約對應 iOS 的連續圓角;在不支援的引擎上是未知屬性,靜默忽略、
+     退回普通圓角 —— 降級零成本。
+   為什麼不用 utility class:半徑與 smoothing 要一起換,定義在同一處
+     (.overlay-radius),morph 的插值公式(.is-shape-morphing)與折射半徑
+     (useGlassRefraction)才有一個可引用的單一來源。 */
+.overlay-radius {
+  border-radius: 20px;
+  -electron-corner-smoothing: 60%;
+}
+
 /* ── Liquid Glass 真折射(P2-13)──
    Chromium 支援 SVG filter 作為 backdrop-filter(非規格行為);
    不支援的引擎自動退回上一行的一般 blur 玻璃 — @supports 即降級,零 JS 偵測。
@@ -514,13 +534,16 @@ h2 {
 
 /* 輪廓半徑插值:切換藥丸/展開/貼鏡時,兩邊是**不同的元素**(React 直接換掉整個子樹),
    所以「進入的那一邊」必須自己從對方形態的半徑起步,否則 morph 的頭一帧就是
-   半徑瞬間跳一格(28 → 16 / 16 → 28),看起來像兩個形狀疊了一下。
+   半徑瞬間跳一格(20 → 24 / 24 → 20),看起來像兩個形狀疊了一下。
     --morph-p:0 = 圓角矩形、1 = 膠囊(由 useMorph 的形狀彈簧逐幀寫入)
     --pill-r:藥丸的設計半徑(∅ = PILL_SIZE.h / 2)
-   未套用這個 class 時,藥丸用 rounded-full(真正的 h/2 膠囊)、展開/貼鏡用 rounded-2xl;
-   定案後 --morph-p 剛好是 0/1,與那兩個值完全一致,所以不會有跳動。 */
+   未套用這個 class 時,藥丸用 rounded-full(真正的 h/2 膠囊)、展開/貼鏡用
+   .overlay-radius(20px);定案後 --morph-p 剛好是 0/1,與那兩個值完全一致,
+   所以不會有跳動。平滑度(-electron-corner-smoothing)不參與插值:
+   它不可動畫(見 Electron 文件 Formal reference),morph 的兩端各自是
+   「膠囊=無平滑」與「面板=60%」就夠了,中途用普通圓弧過渡眼睛追不到。 */
 .is-shape-morphing {
-  border-radius: calc(16px + (var(--pill-r, 24px) - 16px) * var(--morph-p, 0));
+  border-radius: calc(20px + (var(--pill-r, 24px) - 20px) * var(--morph-p, 0));
 }
 
 /* 事件視窗:靈動島的內容交換——事件以大字升為主角,4s 後縮回 */

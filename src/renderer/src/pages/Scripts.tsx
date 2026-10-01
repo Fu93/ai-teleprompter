@@ -192,6 +192,29 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
   const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recPausedRef = useRef(false)
 
+  /**
+   * 稽核用:強制開啟錄影預覽 modal。
+   *
+   * 這個 modal 裡有兩個東西從未被量過:一個 `truncate` 的完整檔案路徑
+   * （截斷後沒有替代文字 = 使用者不知道錄影存在哪）和一個只有圖示的
+   * 關閉鈕（沒有 aria-label、沒有 title,也沒有 28px 命中區）。
+   * 觸發條件是 MediaRecorder 錄完,headless 不可能真的錄一段。
+   */
+  useEffect(
+    () =>
+      registerAuditControl('scripts.preview', (arg) => {
+        setPreview({
+          url: URL.createObjectURL(new Blob([], { type: 'video/webm' })),
+          path:
+            typeof arg === 'string'
+              ? arg
+              : 'C:\\Users\\user\\Videos\\Freebuff\\錄影\\2026-09-30-自我介紹-第二版-take3.webm'
+        })
+        return true
+      }),
+    []
+  )
+
   // 錄影預覽的 blob URL:關閉按鈕有 revoke,但直接切頁(unmount)也要收,
   // 否則影片 blob 留在記憶體直到 app 結束
   useEffect(() => {
@@ -350,6 +373,8 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
           {filtered.map((s) => (
             <button
               key={s.id}
+              // 名稱是使用者自己取的講稿標題 → 動態,必須有穩定身分
+              data-effect-id="script-row"
               onClick={() => void select(s)}
               className={cn(
                 'mb-1 w-full rounded-lg px-3 py-2.5 text-left transition-colors cursor-pointer',
@@ -393,13 +418,33 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
         )}
         {/* 錄影預覽 modal */}
         {preview && (
-          <div className="absolute inset-0 z-30 flex items-center justify-center bg-ink-950/85 p-6 backdrop-blur-sm">
+          <div
+            // data-modal-backdrop:與 ConfirmDialog 同一個宣告。錄影預覽是模態
+            // (背景不可操作),而「模態蓋住背景」正是模態的定義。
+            // 沒有它, domAudit 的 text-covered 會把底下的講稿列表、工具列
+            // 全部報成缺陷 —— 那是必然的覆蓋,留在報告裡只會訓練人忽略報告。
+            data-modal-backdrop="preview"
+            className="absolute inset-0 z-30 flex items-center justify-center bg-ink-950/85 p-6 backdrop-blur-sm"
+          >
             <div className="glass anim-rise w-full max-w-2xl rounded-2xl p-4">
               <div className="mb-2.5 flex items-center gap-2">
                 <span className="text-sm font-semibold">錄影完成</span>
-                <span className="flex-1 truncate text-[11px] text-ink-400">{preview.path}</span>
+                <span
+                  // title 是因為這是完整路徑且用 truncate:截斷後使用者
+                  // 永遠不知道錄影到底存在哪,而「開啟所在資料夾」壞掉時
+                  // 這是他唯一能拿到的線索。
+                  className="flex-1 truncate text-[11px] text-ink-400"
+                  title={preview.path}
+                >
+                  {preview.path}
+                </span>
                 <button
-                  className="text-ink-400 hover:text-white cursor-pointer"
+                  // 與 toast 關閉鈕同一個處理:28px 命中區、15px 圖示不變。
+                  // 原本是 15x15 —— 這個彈窗剛好出現在「錄完一段、要決定
+                  // 留不留」的當下,那時使用者的注意力在錄影內容上。
+                  className="-mr-1 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center text-ink-400 hover:text-white"
+                  aria-label="關閉錄影預覽"
+                  title="關閉錄影預覽"
                   onClick={() => {
                     URL.revokeObjectURL(preview.url)
                     setPreview(null)
@@ -474,13 +519,14 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
               {recording ? (
                 <>
                   <button
+                    data-effect-id="rec-pause"
                     className="btn-outline shrink-0 text-xs"
                     onClick={toggleRecPause}
                     title={recPaused ? '續錄' : '暫停(計時凍結)'}
                   >
                     {recPaused ? <Play size={14} /> : <Pause size={14} />}
                   </button>
-                  <button className="btn-outline shrink-0 text-xs text-rose-450" onClick={stopRec}>
+                  <button data-effect-id="rec-stop" className="btn-outline shrink-0 text-xs text-rose-450" onClick={stopRec}>
                     <span className="h-2 w-2 animate-pulse rounded-full bg-rose-450" />
                     {recPaused ? '已暫停' : '停止錄影'} {formatDuration(recSec)}
                   </button>
@@ -500,6 +546,12 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
               // 這是編輯講稿的主要控制項,沒有無障礙名稱時螢幕閱讀器只會報「文字區塊」。
               // placeholder 會隨內容消失,不能當名稱用(這也是 no-accessible-name
               // 判定 placeholder 不足的原因);title 才有機會在內容非空時仍然可讀。
+              //
+              // data-effect-id:aria-label 裡帶著講稿標題(使用者自己取的字串),
+              // 所以名稱**會隨資料變**。稽核要量的是「編輯器內容有沒有真的寫進
+              // IndexedDB」這個控制項的行為,不是「這一份稿叫什麼名字」——
+              // 名稱會變的話,每一輪量到的都是不同的控制項,覆蓋率會靜默縮水。
+              data-effect-id="script-body"
               aria-label={`講稿內容${draft.title ? `：${draft.title}` : ''}`}
               className="flex-1 resize-none bg-transparent px-6 py-5 text-[15px] leading-relaxed text-ink-100 outline-none"
               placeholder={'在這裡貼上或輸入講稿…\n\n支援從 .txt / .md 匯入。空行會作為段落分隔。'}

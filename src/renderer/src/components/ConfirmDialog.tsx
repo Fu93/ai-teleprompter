@@ -106,6 +106,10 @@ export function ConfirmHost(): JSX.Element | null {
         <div className="mt-5 flex justify-end gap-2">
           <button
             ref={cancelRef}
+            // data-effect-id:標題與按鈕文字由呼叫端決定("取消" / "刪除講稿" /
+            // "放棄變更並離開");稽核要驗的是「取消不改變任何資料」這個**角色**,
+            // 不是某一句文案。
+            data-effect-id="confirm-cancel"
             className="btn-outline text-xs"
             onClick={() => settle(false)}
             data-confirm="cancel"
@@ -113,6 +117,7 @@ export function ConfirmHost(): JSX.Element | null {
             {current.cancelLabel ?? '取消'}
           </button>
           <button
+            data-effect-id="confirm-ok"
             className={cn('text-xs', danger ? 'btn-danger' : 'btn-primary')}
             onClick={() => settle(true)}
             data-confirm="ok"

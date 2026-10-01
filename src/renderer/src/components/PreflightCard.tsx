@@ -194,6 +194,9 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
       <button
         type="button"
         data-preflight="compact"
+        // 可及名稱是「還差 N 項才能開始 + 第一項標題」—— 偵測結果一變它就變,
+        // 所以用穩定 id。稽核驗的是「按下去真的到設定頁」。
+        data-effect-id="preflight-compact"
         onClick={() => onNavigate?.('settings')}
         className={cn(
           'flex w-full items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-left text-xs',
@@ -229,6 +232,7 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
     >
       <button
         type="button"
+        data-effect-id="preflight-toggle"
         className="flex w-full items-center gap-2.5 text-left"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
@@ -279,6 +283,7 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
                       (畫面上有「已複製」但讀不到)。 */}
                   <button
                     type="button"
+                    data-effect-id="preflight-copy"
                     className="btn-outline shrink-0 text-[11px]"
                     onClick={() => void copy(item.command!)}
                     aria-label={
@@ -295,19 +300,20 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
 
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 {item.action && item.action.kind === 'external' && (
-                  <button type="button" className="btn-outline text-[11px]" onClick={() => act(item)}>
+                  <button data-effect-id="preflight-action" type="button" className="btn-outline text-[11px]" onClick={() => act(item)}>
                     <ExternalLink size={12} className="mr-1" />
                     下載 Ollama
                   </button>
                 )}
                 {item.action && item.action.kind === 'goto' && (
-                  <button type="button" className="btn-outline text-[11px]" onClick={() => act(item)}>
+                  <button data-effect-id="preflight-action" type="button" className="btn-outline text-[11px]" onClick={() => act(item)}>
                     {item.command ? '去設定頁' : '前往設定'}
                   </button>
                 )}
                 {item.severity !== 'blocking' && (
                   <button
                     type="button"
+                    data-effect-id="preflight-dismiss"
                     // 28px 高的命中區。這顆鈕原本只有 17px 高(純文字 + 11px 字級),
                     // 被 audit:ui 的 small-tap-target 報出來 —— 而且它是在 P0-C
                     // 提交之後才被量到的,因為那一輪我只跑了 audit:states,

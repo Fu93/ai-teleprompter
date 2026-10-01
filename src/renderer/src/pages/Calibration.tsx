@@ -60,6 +60,43 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       return true
     }), [])
 
+  /**
+   * 稽核用:強制進入 step 0 / step 1 裡「會改變版面」的狀態。
+   *
+   * `calibration.step` 只能換步驟,但步驟內的狀態從來沒被量過:
+   *   - cameraError:沒有攝影機的使用者會看到的那行提示
+   *   - modelProgress:首次使用時的下載進度條
+   *   - rateResult:語速結果卡(含「數值少見,建議再測一次」分支)
+   *
+   * 這三個的觸發條件分別是 getUserMedia 失敗、Whisper 進度回呼、
+   * 麥克風量測 —— headless 一個都走不到。沒量過的結果是:
+   * 語速結果卡上那句「建議再測一次」從來沒有被任何規則掃到過。
+   */
+  useEffect(
+    () =>
+      registerAuditControl('calibration.branchState', (arg) => {
+        const want = typeof arg === 'string' ? arg : 'camera-error'
+        if (want === 'camera-error') {
+          setCameraError('NotFoundError: Requested device not found')
+          return true
+        }
+        if (want === 'model-progress') {
+          setModelProgress(37)
+          return true
+        }
+        if (want === 'rate-implausible') {
+          setRateResult({ charsPerMin: 12, chars: 7, secs: 35 })
+          return true
+        }
+        if (want === 'rate-plausible') {
+          setRateResult({ charsPerMin: 268, chars: 224, secs: 50 })
+          return true
+        }
+        return false
+      }),
+    []
+  )
+
   // Step 1: IPD + 視距
   const [ipdMm, setIpdMm] = useState(63)
   const [cameraOn, setCameraOn] = useState(false)
@@ -605,6 +642,11 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
             </div>
             <div className="px-5 py-4">
               <div
+                // 量測鉤子:字級微調的探針要讀的是**這一段預覽文字的** computed font-size。
+                // 沒有這個屬性時,探針只能從「文字包含這句話的元素」裡挑 ——
+                // 而最外層的容器也包含它,於是量到的是繼承來的 16px,
+                // 兩顆真的有效的按鈕被記成「按了沒效果」。
+                data-effect-id="font-preview"
                 className="font-medium leading-relaxed text-white"
                 style={{ fontSize: Math.min(28, baseFontSize * 0.6), lineHeight: 1.5 }}
               >

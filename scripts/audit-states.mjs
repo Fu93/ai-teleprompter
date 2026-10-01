@@ -553,6 +553,166 @@ async function phaseData(main, tag) {
   }
 }
 
+// ───────────────────────── A5 會改變版面的頁面內狀態 ─────────────────────────
+/**
+ * 這一組是先前四支稽核全部漏掉的那一整塊。
+ *
+ * 為什麼前一階段的 48 個狀態抓不到它們:那些狀態全部是「疊在頁面上的東西」
+ * (對話框、toast、鍵盤巡覽、有資料的頁面),而這裡的每一個都是**頁面本身換了形狀**
+ * —— 一個橫幅、一張進度卡、一個被推下去的按鈕。
+ *
+ * 而且它們的觸發條件在 headless 全部走不到:辨識失敗要連續 3 次 STT 失敗
+ * (STT_FAILURE_BANNER_THRESHOLD)、模型下載卡由進度回呼驅動、語速結果要真的量麥克風。
+ * 所以只能走 `registerAuditControl` 強制推進 —— 見各頁的 branchState 控制項。
+ *
+ * 特別值得量的兩個:
+ *   - record/practice 的 sttFailed 橫幅:「你講的話不會被存」的唯一提示
+ *   - scripts/preview 彈窗:一個 truncate 路徑 + 一個只有圖示的關閉鈕
+ *
+ * 每個狀態都必須真的渲染出來才記 measured;強制失敗的報 unreached,
+ * 否則又會回到「跑了但沒量到,報告看起來全清」那種狀況。
+ */
+async function phaseBranchStates(main, tag) {
+  const cases = [
+    {
+      page: 'record',
+      control: 'record.branchState',
+      arg: 'stt-failed',
+      label: `branch/record-stt-failed${tag}`,
+      file: `branch-record-stt-failed${tag}`,
+      expect: '語音辨識持續失敗'
+    },
+    {
+      page: 'record',
+      control: 'record.branchState',
+      arg: 'model-loading',
+      label: `branch/record-model-loading${tag}`,
+      file: `branch-record-model-loading${tag}`,
+      expect: '下載 Whisper'
+    },
+    {
+      page: 'record',
+      control: 'record.branchState',
+      arg: 'model-error',
+      label: `branch/record-model-error${tag}`,
+      file: `branch-record-model-error${tag}`,
+      expect: '模型下載失敗'
+    },
+    {
+      page: 'record',
+      control: 'record.branchState',
+      arg: 'report',
+      label: `branch/record-report${tag}`,
+      file: `branch-record-report${tag}`,
+      expect: null
+    },
+    {
+      page: 'practice',
+      control: 'practice.branchState',
+      arg: 'stt-failed',
+      label: `branch/practice-stt-failed${tag}`,
+      file: `branch-practice-stt-failed${tag}`,
+      expect: '語音辨識持續失敗'
+    },
+    {
+      page: 'practice',
+      control: 'practice.branchState',
+      arg: 'model-dl',
+      label: `branch/practice-model-dl${tag}`,
+      file: `branch-practice-model-dl${tag}`,
+      expect: '下載 Whisper'
+    },
+    {
+      page: 'practice',
+      control: 'practice.branchState',
+      arg: 'busy',
+      label: `branch/practice-busy-feedback${tag}`,
+      file: `branch-practice-busy-feedback${tag}`,
+      expect: 'AI 評分中'
+    },
+    {
+      page: 'calibration',
+      control: 'calibration.step',
+      arg: 0,
+      then: { control: 'calibration.branchState', arg: 'camera-error' },
+      label: `branch/calibration-camera-error${tag}`,
+      file: `branch-calibration-camera-error${tag}`,
+      expect: '攝影機不可用'
+    },
+    {
+      page: 'calibration',
+      control: 'calibration.step',
+      arg: 1,
+      then: { control: 'calibration.branchState', arg: 'model-progress' },
+      label: `branch/calibration-model-progress${tag}`,
+      file: `branch-calibration-model-progress${tag}`,
+      expect: '下載語音模型'
+    },
+    {
+      page: 'calibration',
+      control: 'calibration.step',
+      arg: 1,
+      then: { control: 'calibration.branchState', arg: 'rate-implausible' },
+      label: `branch/calibration-rate-implausible${tag}`,
+      file: `branch-calibration-rate-implausible${tag}`,
+      // 這是唯一一個「量到的是提醒使用者再測一次」的分支
+      expect: '建議再測一次'
+    },
+    {
+      page: 'scripts',
+      control: 'scripts.preview',
+      arg: undefined,
+      label: `branch/scripts-preview${tag}`,
+      file: `branch-scripts-preview${tag}`,
+      expect: '錄影完成'
+    }
+  ]
+
+  for (const c of cases) {
+    await nav(main, 'dashboard')
+    await sleep(400)
+    await nav(main, c.page)
+    await sleep(1300)
+
+    const r1 = await main
+      .evaluate(([n, a]) => window.__auditForce?.(n, a) ?? { ok: false, error: 'bridge 不可用' }, [
+        c.control,
+        c.arg
+      ])
+      .catch((e) => ({ ok: false, error: String(e) }))
+    if (!r1?.ok) {
+      report.unreached('force', `${c.label}:${c.control} 未成功(${r1?.error ?? 'ok=false'})`)
+      continue
+    }
+    if (c.then) {
+      const r2 = await main
+        .evaluate(([n, a]) => window.__auditForce?.(n, a) ?? { ok: false, error: 'bridge 不可用' }, [
+          c.then.control,
+          c.then.arg
+        ])
+        .catch((e) => ({ ok: false, error: String(e) }))
+      if (!r2?.ok) {
+        report.unreached('force', `${c.label}:${c.then.control} 未成功(${r2?.error ?? 'ok=false'})`)
+        continue
+      }
+    }
+    await sleep(700)
+
+    // 「強制成功」不等於「真的渲染出來」。這是 auditBridge 註解裡說過的失敗模式:
+    // 狀態沒變與沒問題,在報告與截圖上長得一模一樣。
+    if (c.expect) {
+      const seen = await main
+        .evaluate((t) => (document.querySelector('main')?.innerText || '').includes(t), c.expect)
+        .catch(() => false)
+      if (!seen) {
+        report.unreached('force', `${c.label}:找不到「${c.expect}」—— 強制成功但沒渲染`)
+        continue
+      }
+    }
+    await shoot(main, c.label, c.file)
+  }
+}
+
 // ───────────────────────── main ─────────────────────────
 async function main_() {
   const srcLen = guardSerializable(domAudit, 'domAudit')
@@ -599,6 +759,8 @@ async function main_() {
     await phaseKeyboard(main, tag, PAGES)
     console.log('A4 有資料的頁面…')
     await phaseData(main, tag)
+    console.log('A5 會改變版面的頁面內狀態…')
+    await phaseBranchStates(main, tag)
   }
 
   const problems = report.finish(join(OUT, 'report.json'))

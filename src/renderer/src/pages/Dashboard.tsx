@@ -138,6 +138,10 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
         {MODES.map((m) => (
           <button
             key={m.id}
+            // data-effect-id:這張卡的可及名稱是「標題 + 說明」的長字串,而說明文案
+            // 改一次就會讓稽核的控制項 key 換一個。覆蓋率檢查需要穩定的身分,
+            // 否則它會永遠紅著,而永遠紅的檢查等於沒有檢查(見 effect-inventory.mjs)。
+            data-effect-id="mode-card"
             onClick={() => onNavigate(m.id)}
             className="card group p-5 text-left transition-all hover:border-ink-600 hover:bg-ink-850 cursor-pointer"
           >

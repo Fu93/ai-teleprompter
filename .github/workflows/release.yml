@@ -1,0 +1,47 @@
+name: Release
+
+# 發佈流程:git tag v0.x.x && git push origin v0.x.x
+# → electron-builder 產出 NSIS 安裝包 + latest.yml(自動更新清單)
+# → 附加到同名 GitHub Release。
+# electron-updater 以 publish.provider=github(electron-builder.yml)對應,
+# 使用者端啟動 30 秒後自動檢查並下載(src/main/updater.ts)。
+#
+# e2e 不在這裡跑:tag 釘住的 commit 在 master 上已跑過完整 CI(含封鎖 e2e 套件),
+# 發佈作業保持精簡以縮短「推 tag → Release 可下載」的時間。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      # --publish always 由 npm 附加到 script 尾端,正好落在 electron-builder 上
+      # (不落在 electron-vite build):建置 + 產 latest.yml + 上傳到 GitHub Release。
+      # GH_TOKEN 用內建的 GITHUB_TOKEN 即可;首個 Release 可能不存在,
+      # electron-builder 會以 tag 名自動建立 draft release。
+      - name: Build installer and publish to GitHub Releases
+        run: npm run dist -- --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

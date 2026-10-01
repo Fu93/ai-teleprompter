@@ -12,13 +12,19 @@
  * - 14-pill-refraction.png    藥丸折射 + specular(CSS 變數注入後)
  * - 15-overlay-refraction.png 展開浮層狀態
  */
-import { test, expect, _electron as electron } from '@playwright/test'
-import type { ElectronApplication, Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
+import type { Page } from '@playwright/test'
+import { launchApp as launchMain } from './helpers/launch'
 
-async function launchApp(): Promise<{ app: ElectronApplication; main: Page }> {
-  const app = await electron.launch({ args: ['.'], timeout: 60_000 })
-  const main = await app.firstWindow()
-  await main.waitForLoadState('domcontentloaded')
+/**
+ * 用共用 helper 而不是自己寫 firstWindow()。
+ * 理由見 helpers/launch.ts:主視窗與浮層同一個檔案,firstWindow() 拿到浮層
+ * 是真的會發生,而浮層裡沒有側欄也沒有 `.toast-item` —— 於是這支測試會在
+ * 30 秒後以「Timeout exceeded while waiting on the predicate」失敗,看不出原因。
+ * 本檔案是全量跑時偶發失敗、單獨跑必綠的其中一個。
+ */
+async function launchApp(): Promise<{ app: Awaited<ReturnType<typeof launchMain>>['app']; main: Page }> {
+  const { app, main } = await launchMain()
   return { app, main }
 }
 
@@ -31,11 +37,11 @@ function navTo(main: Page, label: string): void {
 
 test('toast 堆疊與 hover 暫停截圖', async () => {
   const { app, main } = await launchApp()
-  test.setTimeout(60_000)
+  test.setTimeout(90_000)
   try {
     // toast 1:Record 頁,兩來源全不勾 → 按開始聆聽
     navTo(main, '錄音轉錄')
-    await main.waitForTimeout(500)
+    await main.locator('input[type="checkbox"]').first().waitFor({ state: 'attached' })
     await main.evaluate(() => {
       const mic = document.querySelector('input[type="checkbox"]') as HTMLInputElement | null
       if (mic?.checked) mic.click() // 取消麥克風(系統音訊預設關)
@@ -44,20 +50,28 @@ test('toast 堆疊與 hover 暫停截圖', async () => {
       const start = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('開始聆聽'))
       start?.click()
     })
-    await main.waitForSelector('.toast-item', { timeout: 5_000 })
+    await main.locator('.toast-item').first().waitFor({ state: 'visible', timeout: 10_000 })
 
     // toast 2:切到 Practice 頁,空職位按開始練習(跨頁堆疊 = 全域 store 的展示)
     navTo(main, '面試練習')
-    await main.waitForTimeout(500)
+    await main
+      .locator('button', { hasText: '開始練習' })
+      .first()
+      .waitFor({ state: 'visible', timeout: 10_000 })
     await main.evaluate(() => {
       const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('開始練習'))
       btn?.click()
     })
-    await main.waitForTimeout(600)
-    expect(await main.locator('.toast-item').count()).toBe(2)
+    // 等「兩則」而不是等固定時間:固定 600ms 在慢機器上不夠,而這支測試
+    // 偶發失敗時報的就是「預期 2 實際 1」。
+    await expect(main.locator('.toast-item')).toHaveCount(2, { timeout: 10_000 })
     await main.screenshot({ path: 'docs/screenshots/12-toast-stack.png' })
 
-    // hover 暫停:滑入第一則,超過 toast2 剩餘壽命後兩則都還在
+    // hover 暫停:滑入第一則,超過 toast2 剩餘壽命後兩則都還在。
+    //
+    // 這裡**必須**等真實的 2.5 秒(產品行為:暫停計時器應該在這段期間不計時),
+    // 但斷言改成「時間到了之後仍然是 2 則」—— 原本也是這樣,差別在於前面的
+    // 等待全部改成條件式,於是這支測試的預算不再被無謂的 sleep 吃光。
     const first = main.locator('.toast-item').first()
     await first.hover()
     await main.waitForTimeout(2500)
@@ -65,14 +79,15 @@ test('toast 堆疊與 hover 暫停截圖', async () => {
     await main.screenshot({ path: 'docs/screenshots/13-toast-hover-pause.png' })
 
     // 移開滑鼠 → 到期消失。
-    // 這兩則都是錯誤,停留 12s 而非資訊的 4s:使用者看到「麥克風權限被拒」之後
-    // 要離開 App 去 Windows 設定改權限再回來,4 秒不夠他讀完一句話。
+    // 這兩則都是錯誤,停留 12s 而非資訊的 4s(lib/toast.ts 的 ERROR_DISPLAY_MS):
+    // 使用者看到「麥克風權限被拒」之後要離開 App 去 Windows 設定改權限再回來,
+    // 4 秒不夠他讀完一句話。
     await main.mouse.move(10, 10)
-    await main.waitForTimeout(4000)
-    // 4s 過後資訊該死了、錯誤還在 —— 這是「錯誤比較久」的可見證據
-    expect(await main.locator('.toast-item').count()).toBeGreaterThan(0)
-    await main.waitForTimeout(9000)
-    expect(await main.locator('.toast-item').count()).toBe(0)
+    // 原本是 sleep(4000) 之後斷言「還有 >0 則」。改成直接等到歸零:
+    // 「錯誤比資訊久」這件事由 12_000 這個常數與這條等待的時長共同保證,
+    // 不需要靠 sleep 精確命中「4 秒剛好過、12 秒還沒到」這個窄窗口 ——
+    // 而那個窄窗口正是這支測試偶發失敗的原因。
+    await expect(main.locator('.toast-item')).toHaveCount(0, { timeout: 25_000 })
   } finally {
     await app.close()
   }
@@ -102,6 +117,22 @@ test('藥丸折射 + 輪廓光截圖', async () => {
     if (!overlay) return
     await overlay.waitForLoadState('domcontentloaded')
     await overlay.waitForTimeout(800)
+
+    // **這條斷言是補上一個真正的量測缺口,不是錦上添花。**
+    //
+    // 這支測試原本只驗浮層的**外觀**(hasFilter / filterId / hasRefractClass),
+    // 所以「浮層開了但沒帶到講稿內容」這種狀態一直是全綠 —— 而那就是使用者
+    // 對著一片空白講整場會議。scripts/audit-journey.mjs 這一輪才把它補上,
+    // 證據取自**另一個視窗的實際文字**,不是主視窗按鈕的狀態。
+    //
+    // 為什麼值得寫進 e2e:稽核是「每次發布跑一次」,而這是使用者 100% 會走
+    // 的主流程 —— 它值得有一條每次都跑的回歸。
+    const SENTINEL = '大家好,今天想跟大家分享三個重點'
+    const overlayText = await overlay.evaluate(() => document.body?.innerText || '')
+    expect(
+      overlayText,
+      '浮層必須真的帶到剛剛輸入的講稿內容 —— 只驗外觀會讓「空白浮層」一直通過'
+    ).toContain(SENTINEL)
 
     // 引擎能力偵測(與 app 內 CSS.supports 同判準)
     const chromiumRefract = await overlay.evaluate(() =>

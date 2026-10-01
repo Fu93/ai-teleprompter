@@ -10,17 +10,23 @@
  *
  * 執行前需先 `npm run build`。
  */
-import { test, expect, _electron as electron } from '@playwright/test'
-import type { ElectronApplication, Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
+import type { Page } from '@playwright/test'
+import { launchApp as launchMain } from './helpers/launch'
 
-/** 依旗標啟動:env 一律顯式給,避免測試之間互相汙染 */
-async function launch(debug: boolean): Promise<{ app: ElectronApplication; main: Page }> {
+/**
+ * 依旗標啟動:env 一律顯式給,避免測試之間互相汙染。
+ *
+ * 用共用 helper 篩主視窗(見 helpers/launch.ts)。這支測試第一次失敗時報的是
+ * 「element not found」—— 熱鍵面板沒開。當時我猜是全域熱鍵被佔用,
+ * 但查過之後不成立:面板是用 DOM 點開的,不走 globalShortcut。
+ * 真正的嫌疑是拿錯了視窗,而 helper 從此杜絕這條路徑。
+ */
+async function launch(debug: boolean): Promise<{ app: Awaited<ReturnType<typeof launchMain>>['app']; main: Page }> {
   const env = { ...process.env }
   if (debug) env.AI_TP_DEBUG = '1'
   else delete env.AI_TP_DEBUG
-  const app = await electron.launch({ args: ['.'], timeout: 60_000, env })
-  const main = await app.firstWindow()
-  await main.waitForLoadState('domcontentloaded')
+  const { app, main } = await launchMain(env)
   return { app, main }
 }
 

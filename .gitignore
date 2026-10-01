@@ -11,3 +11,6 @@ dist/
 
 # UI 稽核產物(每次執行重新產生)
 docs/audit/
+
+# 稽核用的假裝置 fixture(產生物,由 npm run make-audio-fixture 產生)
+fixtures/audit/

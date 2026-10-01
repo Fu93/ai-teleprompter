@@ -54,6 +54,9 @@ export function ToastHost(): JSX.Element | null {
       className="pointer-events-none fixed bottom-5 left-1/2 z-[90] flex -translate-x-1/2 flex-col-reverse items-center gap-2"
       role="status"
       aria-live="polite"
+      // toast 是**跨頁面的同一個元件**:不宣告範圍的話,它的「關閉通知」按鈕
+      // 會被每一頁各算一顆控制項,覆蓋率對帳就再也不能回答「它驗過沒」。
+      data-effect-scope="toast"
     >
       {items.map((t, i) => {
         const meta = KIND_META[t.kind]

@@ -576,7 +576,7 @@ export default function OverlayApp(): JSX.Element {
         className={cn(
           'dynamic-island-pill glass-pill lg-rim flex h-full cursor-default select-none items-center gap-2 rounded-full px-3.5',
           // 半徑插值:切換形態時兩邊是不同元素,進入的那一邊必須從「對方形態的半徑」
-          // 起步(藥丸 rounded-full = 高一半、展開/貼鏡 rounded-2xl = 16px),
+          // 起步(藥丸 rounded-full = 高一半、展開/貼鏡 overlay-radius = 20px),
           // 否則 morph 的頭一帧就是半徑瞬間跳一格。公式在 global.css 的 .is-shape-morphing。
           morphing && 'is-shape-morphing',
           refractOk && o.glass && !morphing && 'glass-refract'
@@ -767,8 +767,8 @@ export default function OverlayApp(): JSX.Element {
       <div
         data-overlay-surface="lens"
         className={cn(
-          'glass-overlay lg-rim relative flex h-full flex-col overflow-hidden rounded-2xl',
-          // 從藥丸進來時,這一邊要從膠囊半徑起步再收到 16px(見 .is-shape-morphing)
+          'glass-overlay lg-rim relative flex h-full flex-col overflow-hidden overlay-radius',
+          // 從藥丸進來時,這一邊要從膠囊半徑起步再收到面板半徑(見 .is-shape-morphing)
           morphing && 'is-shape-morphing'
         )}
         style={{ background: `rgba(12, 14, 20, ${Math.max(0.25, Math.min(0.9, o.opacity))})` }}
@@ -833,7 +833,7 @@ export default function OverlayApp(): JSX.Element {
             原本是 absolute top-9 浮在正文上方,實測把第一行提詞文字整行蓋住;
             改成把正文往下讓位(pt-8)又會把底部的「下一句」擠出 170px 的視窗。
             貼鏡視窗只有 420x170,扣掉工具列 36px、底部提示 22px 後,
-            「下一句/再下一句」再吃掉 40px,留给正文只剩 70px ——
+            「下一句/再下一句」再吃掉 40px,留給正文只剩 70px ——
             沒有任何浮層層能再吃高度。所以這三顆按鈕改放進工具列的空白處
             (原本是 flex-1 spacer,什麼都沒放),不再占用正文空間。*/}
         {null}
@@ -867,8 +867,8 @@ export default function OverlayApp(): JSX.Element {
     <div
       data-overlay-surface="expanded"
       className={cn(
-        'glass-overlay lg-rim relative flex h-full flex-col overflow-hidden rounded-2xl',
-        // 從藥丸進來時,這一邊要從膠囊半徑起步再收到 16px(見 .is-shape-morphing)
+        'glass-overlay lg-rim relative flex h-full flex-col overflow-hidden overlay-radius',
+        // 從藥丸進來時,這一邊要從膠囊半徑起步再收到面板半徑(見 .is-shape-morphing)
         morphing && 'is-shape-morphing'
       )}
       style={{ background: `rgba(12, 14, 20, ${Math.max(0.25, Math.min(0.9, o.opacity))})` }}

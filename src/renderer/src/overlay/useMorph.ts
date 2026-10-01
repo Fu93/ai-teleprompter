@@ -51,7 +51,7 @@ export interface UseMorphResult {
 interface Springs {
   w: SpringAnimator
   h: SpringAnimator
-  /** 0 = 圓角矩形(16px)、1 = 膠囊(高的一半) */
+  /** 0 = 圓角矩形(.overlay-radius,20px)、1 = 膠囊(高的一半) */
   shape: SpringAnimator
 }
 

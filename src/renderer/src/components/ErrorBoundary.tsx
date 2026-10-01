@@ -143,7 +143,7 @@ function CrashScreen({ crash, testId, onReload }: { crash: CrashInfo; testId?: s
               <p className="mt-2 text-xs leading-relaxed text-ink-300">
                 程式記錄的「未存內容」是空的——已存進資料庫的內容不會受影響。
                 <span className="mt-1 block text-ink-400">
-                  但畫面當下正在編輯、還沒存的东西會消失。
+                  但畫面當下正在編輯、還沒存的東西會消失。
                 </span>
               </p>
             )}

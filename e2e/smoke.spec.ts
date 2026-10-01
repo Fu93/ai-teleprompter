@@ -4,13 +4,25 @@
  *
  * 執行前需先 `npm run build`(測試載入 out/ 產物)。
  */
-import { test, expect, _electron as electron } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
+import { launchApp as launchMain } from './helpers/launch'
+import { waitOverlayFeedbackReady } from './helpers/turnYield'
 
+/**
+ * 用共用 helper 啟動,而不是自己寫 `app.firstWindow()`。
+ *
+ * 這不是重構洁癖 —— 是因為 `firstWindow()` **不保證是主視窗**:主視窗與浮層都
+ * loadFile 同一個 index.html(浮層只多一個 `#/overlay` hash),而浮層可能先完成 load。
+ * 本檔案原本自己寫 firstWindow(),於是「浮層 = windows().find(w => w !== main)」
+ * 會在 firstWindow() 拿到浮層時**指向主視窗**。症狀是浮層提示怎麼等都不出現
+ * (因為那個「浮層」其實是 dashboard),而錯誤訊息完全看不出真正原因。
+ *
+ * helpers/launch.ts 以 `aside`(側欄)辨識主視窗 —— 只有主視窗有。
+ * 完整說明見那份檔案的註解。
+ */
 async function launchApp(): Promise<{ app: ElectronApplication; main: Page }> {
-  const app = await electron.launch({ args: ['.'], timeout: 60_000 })
-  const main = await app.firstWindow()
-  await main.waitForLoadState('domcontentloaded')
+  const { app, main } = await launchMain()
   return { app, main }
 }
 
@@ -88,10 +100,12 @@ test('turn-yield:對方問句經 IPC → 浮層顯示「該你說話了」提示
   const { app, main } = await launchApp()
   test.setTimeout(60_000)
   try {
-    // 浮層視窗載入有先後 → 輸詢等待
+    // 浮層視窗載入有先後 → 輪詢等待
     await expect
       .poll(() => app.windows().length, { timeout: 15_000, intervals: [500, 1_000, 2_000] })
       .toBeGreaterThanOrEqual(2)
+    // main 已由 helpers/launch.ts 以 `aside` 確認是主視窗,所以「不是 main 的
+    // 那一個」這才真的等於浮層。
     const overlay = app.windows().find((w) => w !== main)
     expect(overlay).toBeTruthy()
     await overlay!.waitForLoadState('domcontentloaded')
@@ -101,24 +115,19 @@ test('turn-yield:對方問句經 IPC → 浮層顯示「該你說話了」提示
     // 經真 IPC 推對方問句(與 Record 頁系統音訊轉錄相同的 context:push-transcript 路徑)
     // main 偵測問句語尾 → 1.2s 防抖 → 廣播 context:turn-yield → 浮層提示
     //
-    // 與下方教練測試同樣的竞態:setSettings 回了不代表浮層 renderer 已套用
-    // turnYield=true,滿載時推送可能先到而被忽略。與其猜延遲不如重試到訊號真的出現。
-    await expect
-      .poll(
-        async () => {
-          await main.evaluate(() =>
-            window.api.pushTranscript({ text: '可以請你介紹一下你自己嗎', speaker: 'them' })
-          )
-          try {
-            await overlay!.waitForSelector('text=該你說話了', { timeout: 3_000 })
-            return true
-          } catch {
-            return false
-          }
-        },
-        { timeout: 30_000, intervals: [3_500] }
-      )
-      .toBe(true)
+    // **這裡原本是一個「重試到訊號出現為止」的 expect.poll,而它結構上不可能成功。**
+    // 重試送的是同一句話,而 turnYield.ts 的規則 1(同句 25 秒冷卻)會把
+    // 第 2 次起的每一次重試都擋成 null —— 就算浮層早就準備好了也發不出訊號。
+    // 於是這支測試只能靠「第一次 push 剛好贏得競態」通過,輸了就必紅。
+    // 真正的競態(浮層還沒套用 turnYield=true)是**可以直接觀察到的**:
+    // 工具列那顆按鈕的 title 會翻成「關閉「該你說話了」提示」。等它翻好再推,
+    // 一次就成功。完整病因見 e2e/helpers/turnYield.ts。
+    await waitOverlayFeedbackReady(overlay!, { turnYield: true })
+
+    await main.evaluate(() =>
+      window.api.pushTranscript({ text: '可以請你介紹一下你自己嗎', speaker: 'them' })
+    )
+    await overlay!.waitForSelector('text=該你說話了', { timeout: 15_000 })
   } finally {
     await app.close()
   }
@@ -140,27 +149,22 @@ test('即時教練:搶話訊號經 IPC → 浮層顯示教練提示', async () =
     // 兩段必須在同一個 evaluate 內背靠背送出:分開兩次呼叫在併跑負載下
     // 可能間隔超過 2s 判定窗,搶話不觸發(併跑 flake 來源)。
     //
-    // 另一個 flake 來源是「設定廣播」與「逐字稿推送」的競態:setSettings 回了不代表
-    // 浮層 renderer 已經套用 coaching=true,滿載時推送可能先到而被忽略。
-    // 與其猜延遲,不如重試到訊號真的出現為止 —— 斷言本身不變,走的仍是
+    // 這裡原本也是「重試到訊號出現為止」,同樣結構上無效,而且比 turn-yield 更嚴重:
+    // interrupt 的冷卻窗是 **180 秒**(coachingRules.ts DEFAULT_COOLDOWNS.interrupt),
+    // 而冷卻是在規則引擎評估時就記下的 —— 第一次推送只要讓規則命中,
+    // 後續 30 秒內的重試全部被自己的冷卻擋掉。註解說「與其猜延遲不如重試」,
+    // 但重試正是唯一不可能成功的方法。
+    //
+    // 改成等可觀察的屏障(按鈕 title 翻成「即時教練開啟中」= 浮層真的套用了
+    // coaching=true),然後只推一次。斷言不變,走的仍是
     // 真 IPC → main 教練判定 → 浮層渲染 的完整路徑。
-    await expect
-      .poll(
-        async () => {
-          await main.evaluate(() => {
-            void window.api.pushTranscript({ text: '那我們請你說明一下這個案例的背景', speaker: 'them' })
-            void window.api.pushTranscript({ text: '這個專案主要是我負責資料管線的設計', speaker: 'me' })
-          })
-          try {
-            await overlay!.waitForSelector('text=打斷對方', { timeout: 3_000 })
-            return true
-          } catch {
-            return false
-          }
-        },
-        { timeout: 30_000, intervals: [3_500] }
-      )
-      .toBe(true)
+    await waitOverlayFeedbackReady(overlay!, { coaching: true })
+
+    await main.evaluate(() => {
+      void window.api.pushTranscript({ text: '那我們請你說明一下這個案例的背景', speaker: 'them' })
+      void window.api.pushTranscript({ text: '這個專案主要是我負責資料管線的設計', speaker: 'me' })
+    })
+    await overlay!.waitForSelector('text=打斷對方', { timeout: 15_000 })
   } finally {
     await app.close()
   }

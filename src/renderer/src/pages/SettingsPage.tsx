@@ -78,6 +78,10 @@ function Switch({
 }): JSX.Element {
   return (
     <button
+      // data-effect-id:頁面上有 8 個開關,而稽核要逐個驗「它真的翻了對應的設定」。
+      // 用 label 當 key 也行,但 label 文案是產品會改的東西 —— 那一族的重複實例
+      // 用同一個穩定 id 涵蓋,逐個對應的責任留給探針(它會列出 8 組 label→設定路徑)。
+      data-effect-id="switch"
       onClick={() => onChange(!checked)}
       // 這是開關不是一般按鈕:螢幕閱讀器預設會報「按鈕」而完全不報狀態,
       // 使用者不知道現在是開還是關。role/aria-checked 是 toggle 的必要條件。
@@ -168,6 +172,70 @@ export default function SettingsPage({
   const [simBusy, setSimBusy] = useState(false)
   const [simDataUrl, setSimDataUrl] = useState<string | null>(null)
 
+  /**
+   * **作業系統層級註冊失敗的熱鍵。**
+   *
+   * 上一行的重複偵測只看得見「自己和自己衝突」。但熱鍵更常是
+   * **被別的程式佔走** —— Ctrl+Alt+T 這種組合在 Windows 上很容易撞到
+   * 常駐軟體,而 Alt+Up / Alt+Down 是某些視窗管理器的標準鍵。
+   * main 端 `globalShortcut.register` 會回 false 並記進 state.hotkeyConflicts,
+   * 但那個值**從來沒有被任何畫面讀過**。
+   *
+   * 結果:設定頁寫著「全域熱鍵，任何應用程式上方都有效」,
+   * 使用者挑了一組組合、存檔成功、設定看起來完全正常 ——
+   * 按下去什麼都不發生,而且沒有任何地方告訴他為什麼。
+   * 這種故障在每一個 DOM 稽核裡都長得跟正常的一模一樣。
+   *
+   * 這是 audit:effects 抓到的(它量的是「按了之後系統有沒有變」)。
+   */
+  const [hotkeyConflicts, setHotkeyConflicts] = useState<string[]>([])
+
+  /**
+   * **每次熱鍵設定改變都要重新問一次。**
+   *
+   * 第一版只在 mount 時讀一次 `appInfo().hotkeyConflicts`，而 main 是在
+   * `SettingsSet` 之後重新註冊熱鍵的 —— 所以使用者把衝突的那幾顆改掉之後，
+   * 畫面還是拿著**舊的那份名單**。
+   *
+   * 後果比沒有提示更糟：
+   *   1. 使用者已經修好了，警告卻還說「6 顆熱鍵沒有註冊成功」，
+   *      而且列的是他已經改掉的組合 —— 他會以為自己的修改沒生效。
+   *   2. 反查「這顆是哪個功能」時，`settings.hotkeys` 已經是新的了，
+   *      用舊名單去比對永遠比不到，於是每顆都退化成一串按鍵代碼。
+   *
+   * 這個缺陷是 audit:effects 抓到的：它的熱鍵探針為了驗「熱鍵下拉有沒有
+   * 效果」會把組合改掉，於是快照與現況對不上 —— 訊息裡明明白白寫著
+   * 「有 6 顆」而列出的組合和當下的設定無關。
+   */
+  useEffect(() => {
+    let alive = true
+    const load = (): void => {
+      void window.api
+        .appInfo()
+        .then((info) => {
+          if (alive) setHotkeyConflicts(info.hotkeyConflicts ?? [])
+        })
+        .catch(() => {
+          if (alive) setHotkeyConflicts([])
+        })
+    }
+    load()
+    // 熱鍵任一項改變 → main 重新註冊 → 衝突名單可能完全不同了
+    const sig = JSON.stringify(settings?.hotkeys ?? null)
+    const id = setTimeout(load, 400) // 等 main 重新註冊完再問
+    return () => {
+      alive = false
+      clearTimeout(id)
+      void sig
+    }
+  }, [settings?.hotkeys])
+
+  // 場景清單(場景情境那張卡片的資料來源)。
+  // **這行是被我自己弄丟過的**:加入上面那個 hotkeyConflicts effect 時,
+  // 我用它當錨點做替換,把這整個 useEffect 一起刪掉了。型別檢查完全沒報錯
+  // (scenes 只是永遠保持 null,`scenes ?? []` 讓它安靜地渲染成空),
+  // 是 audit:effects 報「只找到 0 個情境按鈕」才發現。
+  // 刪掉別的 effect 時要用「插入」而不是「拿它當替換錨點」。
   useEffect(() => {
     void window.api.sceneList().then(setScenes).catch(() => setScenes([]))
   }, [])
@@ -193,13 +261,59 @@ export default function SettingsPage({
   }, [settings?.ai.openaiCompatible.apiKey, settings?.stt.cloud.apiKey])
   const [testError, setTestError] = useState<string | null>(null)
 
+  /**
+   * 存金鑰去作業系統安全儲存(safeStorage)。
+   *
+   * 為什麼改成 debounce 而不是只有 onBlur:
+   *   原本兩個金鑰欄位是「離開欄位才存」,而同一頁其他 14 個欄位都是
+   *   onChange 立刻存。使用者的實際動作是「打完金鑰 → 直接關掉視窗」——
+   *   那個 blur 事件不一定會發生(金鑰沒送到焦點的情況下關窗、App 被關閉、
+   *   系統直接結束行程),於是他輸入的字**整個遺失,而且沒有任何提示**。
+   *   使用者下次打開會看到空的金鑰欄位,以為自己記錯了。
+   *   這是「改了但沒存」裡最貴的一種:它牽涉使用者付費的東西,而且使用者
+   *   不會收到任何回饋。
+   *
+   * 為什麼 debounce 而不是每敲一個字就寫一次:
+   *   金鑰是十幾個字,每敲一個字都過一次 IPC + safeStorage 加密是不必要的負擔
+   *   (而 Windows DPAPI 每次呼叫都不便宜)。600ms 讓「停頓」才寫,
+   *   使用者打完字繼續動作時已經存好了。
+   *
+   * **blur 時仍然立刻寫一次**:debounce 會讓「打完直接關窗」的最後一段
+   *   有機會落在計時器裡來不及寫,所以 blur 是最後一道保險。
+   */
+  const keyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveSecureKey = (name: 'apiKey' | 'sttApiKey', value: string): void => {
+    if (keyTimerRef.current) clearTimeout(keyTimerRef.current)
+    keyTimerRef.current = setTimeout(() => writeSecureKey(name, value), 600)
+  }
+  /** blur 時呼叫:立刻寫,不等 debounce。見上方「為什麼改成 debounce」。 */
+  const flushSecureKey = (name: 'apiKey' | 'sttApiKey', value: string): void => {
+    if (keyTimerRef.current) {
+      clearTimeout(keyTimerRef.current)
+      keyTimerRef.current = null
+    }
+    writeSecureKey(name, value)
+  }
+  const writeSecureKey = (name: 'apiKey' | 'sttApiKey', value: string): void => {
+    if ((secureKeysRef.current[name] ?? '') === value) return
     const next = { ...secureKeysRef.current, [name]: value }
     secureKeysRef.current = next
     void window.api.keysSet(next).then((ok) => {
       if (!ok) toast.error('作業系統安全儲存不可用，API 金鑰未儲存')
     }).catch((err) => toast.error(`金鑰儲存失敗。${describeError(err)}`))
   }
+  // 離頁時把還在 debounce 裡的金鑰寫出去:使用者打完金鑰馬上切到別頁
+  // (或關視窗)是同一個遺失情境,不只是「打完不動」。
+  useEffect(
+    () => () => {
+      if (keyTimerRef.current) {
+        clearTimeout(keyTimerRef.current)
+        keyTimerRef.current = null
+        void window.api.keysSet(secureKeysRef.current)
+      }
+    },
+    []
+  )
 
   if (!settings) return <div className="p-8 text-sm text-ink-400">載入中…</div>
 
@@ -337,7 +451,7 @@ export default function SettingsPage({
         <Switch label="鏡像模式" hint="透過反射罩拍攝時使用（左右翻轉）" checked={o.mirror} onChange={(v) => patchO({ mirror: v })} />
         <Switch
           label="毛玻璃質感"
-          hint="Windows 11 啟用視窗後 acrylic 模糊（Dynamic Island 式通透）;舊系統自動退回半透明"
+          hint="展開面板啟用 Windows 11 acrylic 毛玻璃;藥丸與貼鏡固定使用內建玻璃質感(避免圓角外露出系統磨砂)。舊系統自動退回半透明"
           checked={o.glass}
           onChange={(v) => patchO({ glass: v })}
         />
@@ -401,6 +515,7 @@ export default function SettingsPage({
             ).map((e) => (
               <button
                 key={e.id}
+                data-effect-id="stt-engine"
                 onClick={() => update({ stt: { engine: e.id } })}
                 className={cn(
                   'flex-1 rounded-lg border px-3 py-2.5 text-sm transition-colors cursor-pointer',
@@ -447,7 +562,15 @@ export default function SettingsPage({
             </div>
             <div>
               <div className="label">API Base URL</div>
+              {/*
+                data-effect-id:這一頁有**兩組**「API Base URL / API Key / 模型」
+                (雲端辨識一組、AI 助理一組),可及名稱完全一樣。
+                用名稱當身分的話,探針的 `.first()` 永遠只會拿到前一個 ——
+                實際發生過:填進辨識的金鑰、斷言 AI 的金鑰,於是量到「打完金鑰
+                資料層還是 null」,一顆好的控制項被記成壞的。
+              */}
               <input
+                data-effect-id="stt-base-url"
                 aria-label="API Base URL" className="input"
                 value={settings.stt.cloud.baseUrl}
                 onChange={(e) => update({ stt: { cloud: { baseUrl: e.target.value } } })}
@@ -457,18 +580,23 @@ export default function SettingsPage({
             <div>
               <div className="label">API Key</div>
               <input
+                data-effect-id="stt-api-key"
                 aria-label="API Key" className="input"
                 type="password"
                 value={sttApiKey}
                 disabled={!secureKeysLoaded}
-                onChange={(e) => setSttApiKey(e.target.value)}
-                onBlur={(e) => saveSecureKey('sttApiKey', e.target.value)}
+                onChange={(e) => {
+                  setSttApiKey(e.target.value)
+                  saveSecureKey('sttApiKey', e.target.value)
+                }}
+                onBlur={(e) => flushSecureKey('sttApiKey', e.target.value)}
                 placeholder="gsk_..."
               />
             </div>
             <div>
               <div className="label">模型</div>
               <input
+                data-effect-id="stt-model"
                 aria-label="模型" className="input"
                 value={settings.stt.cloud.model}
                 onChange={(e) => update({ stt: { cloud: { model: e.target.value } } })}
@@ -501,6 +629,7 @@ export default function SettingsPage({
             ).map((p) => (
               <button
                 key={p.id}
+                data-effect-id="provider"
                 onClick={() => update({ ai: { provider: p.id } })}
                 className={cn(
                   'flex-1 rounded-lg border px-3 py-2.5 text-sm transition-colors cursor-pointer',
@@ -532,13 +661,25 @@ export default function SettingsPage({
                 </button>
               </div>
             </div>
-            {testError && <div className="text-xs leading-relaxed text-rose-450">{testError}</div>}
+            {testError && (
+              // 失敗訊息是**行內**的，不是 toast —— 使用者按了「測試連線」之後
+              // 畫面上唯一變的是這一行。稽核原本只看 toast，於是量到
+              // 「按下去沒有任何失敗訊息」；實際上訊息一直都在。
+              // 給它一個穩定 id：文字內容會隨 describeError 改寫，
+              // 用 class 或文字比對都不是穩定的身分。
+              <div data-effect-id="ollama-test-error" className="text-xs leading-relaxed text-rose-450">
+                {testError}
+              </div>
+            )}
             {models && models.length > 0 && (
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-1 text-xs text-emerald-400">
                   <Check size={13} /> Ollama v{ollamaVersion}，{models.length} 個模型
                 </div>
                 <select
+                  // 名稱來自選項(下載了哪些模型),會隨環境變 —— 用穩定 id。
+                  data-effect-id="ollama-model"
+                  aria-label="Ollama 模型"
                   className="input flex-1"
                   value={settings.ai.ollama.model}
                   onChange={(e) => update({ ai: { ollama: { model: e.target.value } } })}
@@ -557,6 +698,7 @@ export default function SettingsPage({
             <div>
               <div className="label">API Base URL</div>
               <input
+                data-effect-id="ai-base-url"
                 aria-label="API Base URL" className="input"
                 value={settings.ai.openaiCompatible.baseUrl}
                 onChange={(e) => update({ ai: { openaiCompatible: { baseUrl: e.target.value } } })}
@@ -566,17 +708,22 @@ export default function SettingsPage({
             <div>
               <div className="label">API Key</div>
               <input
+                data-effect-id="ai-api-key"
                 aria-label="API Key" className="input"
                 type="password"
                 value={aiApiKey}
                 disabled={!secureKeysLoaded}
-                onChange={(e) => setAiApiKey(e.target.value)}
-                onBlur={(e) => saveSecureKey('apiKey', e.target.value)}
+                onChange={(e) => {
+                  setAiApiKey(e.target.value)
+                  saveSecureKey('apiKey', e.target.value)
+                }}
+                onBlur={(e) => flushSecureKey('apiKey', e.target.value)}
               />
             </div>
             <div>
               <div className="label">模型</div>
               <input
+                data-effect-id="ai-model"
                 aria-label="模型" className="input"
                 value={settings.ai.openaiCompatible.model}
                 onChange={(e) => update({ ai: { openaiCompatible: { model: e.target.value } } })}
@@ -593,6 +740,7 @@ export default function SettingsPage({
             {(scenes ?? []).map((s) => (
               <button
                 key={s.key}
+                data-effect-id="scene"
                 onClick={() => update({ scenario: { activeScene: s.key } })}
                 title={`${s.label} ・ ${s.tone} ・ 風險 ${s.riskLevel}${s.source !== 'builtin' ? ' ・ ' + s.source : ''}`}
                 className={cn(
@@ -622,6 +770,7 @@ export default function SettingsPage({
             ).map((m) => (
               <button
                 key={m.id}
+                data-effect-id="panic-mode"
                 onClick={() => update({ scenario: { panicMode: m.id } })}
                 className={cn(
                   'flex-1 rounded-lg border px-3 py-2 text-sm transition-colors cursor-pointer',
@@ -758,6 +907,32 @@ export default function SettingsPage({
             </div>
           )
         })()}
+        {hotkeyConflicts.length > 0 && (
+          // 紅色而不是琥珀色：這不是「兩顆熱鍵打架、只有一顆生效」，
+          // 是「這顆熱鍵完全沒有作用」。使用者的實際體驗是按了沒反應，
+          // 而上面那段重複偵測看不到這種情況(它只比對自己跟自己)。
+          <div
+            role="alert"
+            className="mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+          >
+            <div className="font-semibold">有 {hotkeyConflicts.length} 顆熱鍵沒有註冊成功，按了不會有反應。</div>
+            <ul className="mt-1 space-y-0.5">
+              {hotkeyConflicts.map((k) => {
+                // 反查是哪個功能 —— 只寫「Alt+P」使用者還要自己猜是哪一顆。
+                const owner = Object.entries(settings.hotkeys).find(([, v]) => v === k)
+                return (
+                  <li key={k}>
+                    <span className="font-mono">{k.replaceAll('Control', 'Ctrl')}</span>
+                    {owner && <> — {HOTKEY_LABELS[owner[0]] ?? owner[0]}</>}
+                  </li>
+                )
+              })}
+            </ul>
+            <div className="mt-1 text-rose-200/80">
+              這些組合已被其他程式佔用（常見於常駐軟體或視窗管理器）。請把對應的下拉改成上面列的組合。
+            </div>
+          </div>
+        )}
         <div className="mt-1.5 text-[11px] text-ink-400">
           語速步進每次 ±0.1×（0.5–3×）；熱鍵在浮層隱藏或滑鼠穿透時也有效。
         </div>

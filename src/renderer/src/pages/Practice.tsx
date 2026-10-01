@@ -30,6 +30,7 @@ import {
   type DrainResult
 } from '../lib/transcriptionQueue'
 import { confirmDialog } from '../lib/confirm'
+import { registerAuditControl } from '../lib/auditBridge'
 import { toast } from '../lib/toast'
 import { analyzePracticeRun } from '../lib/session-intelligence'
 
@@ -108,6 +109,143 @@ export default function Practice(): JSX.Element {
   answersRef.current = answers
 
   const modelKey = (settings?.stt.localModel ?? 'base') as WhisperModelKey
+
+  /**
+   * 稽核用:強制進入「會改變版面」的狀態。
+   *
+   * 與 Record 同一個理由 —— 辨識失敗橫幅要連續 3 次 STT 失敗才出現
+   * (STT_FAILURE_BANNER_THRESHOLD),模型下載卡則由進度回呼驅動,
+   * 兩者在 headless 都走不到。所以這兩個狀態從未被任何稽核掃過。
+   *
+   * 特別是 sttFailed 這條:沒有它,使用者拿到的是一個偏低的分數,
+   * 而他永遠不會知道原因是「你講的話根本沒進系統」。
+   *
+   * arg:字串名稱;不傳則全部設成典型值(最貼近「真實會同時看到什麼」)。
+   *
+   * 注意 phase 必須一起設:'run' 階段之前(setup)這三個狀態根本不在 DOM 裡,
+   * 而只設 sttFailed 回傳 true 卻沒有任何變化 —— 這正是 auditBridge 註解裡
+   * 說過的「強制成功但沒渲染」。稽核端會用文字斷言把它抓出來。
+   */
+  useEffect(
+    () =>
+      registerAuditControl('practice.branchState', (arg) => {
+        const want = typeof arg === 'string' ? arg : 'stt-failed'
+        if (want === 'stt-failed') {
+          setQuestions(['請用三分鐘介紹你負責的產品'])
+          setRun({ id: 1, position: '產品經理', type: '行為面試', questions: ['請用三分鐘介紹你負責的產品'], answers: [], createdAt: Date.now() })
+          setPhase('run')
+          setSttFailed(true)
+          return true
+        }
+        if (want === 'model-dl') {
+          setQuestions(['請用三分鐘介紹你負責的產品'])
+          setRun({ id: 1, position: '產品經理', type: '行為面試', questions: ['請用三分鐘介紹你負責的產品'], answers: [], createdAt: Date.now() })
+          setPhase('run')
+          setModelDL({ progress: 37, file: 'ggml-base.bin' })
+          return true
+        }
+        if (want === 'busy') {
+          setQuestions(['請用三分鐘介紹你負責的產品'])
+          setRun({
+            id: 1,
+            position: '產品經理',
+            type: '行為面試',
+            questions: ['請用三分鐘介紹你負責的產品'],
+            answers: [],
+            createdAt: Date.now()
+          })
+          setPhase('run')
+          // recording 也必須為 true:'AI 評分中…' 是錄音中那顆按鈕的文案,
+          // 另一顆('開始回答')在 busy 時只有 spinner 沒有字。兩者版式不同,
+          // 都要量 —— 而這個錯在第一次跑稽核時就以「強制成功但沒渲染」被抓出來。
+          setRecording(true)
+          setBusy('feedback')
+          return true
+        }
+        /**
+         * 底下四條是**列舉端**需要的:它們決定「畫面上會出現哪些控制項」,
+         * 而少了它們,「完成回答，取得反饋 / 下一題 / 查看總評 / 再練一輪」
+         * 這四顆鈕就永遠不存在於任何被宣告的狀態裡 —— 覆蓋率對帳會說
+         * 「這顆有登記,但從來沒出現過」,而那是對的。
+         *
+         * 為什麼不靠腳本點出來:run 階段的每一顆都要真的開麥克風、真的講一段話,
+         * 而「答完最後一題」還要 AI 評分回來。列舉要的是**版面**,不是行為;
+         * 行為由各自的探針(用假麥克風 + mock 服務)負責。
+         */
+        const mkRun = (questions: string[], answers: PracticeAnswer[]): PracticeRun => ({
+          id: 1,
+          position: '產品經理',
+          type: '行為面試',
+          questions,
+          answers,
+          createdAt: Date.now()
+        })
+        const answered: PracticeAnswer = {
+          question: '請用三分鐘介紹你負責的產品',
+          answerTranscript: '我負責的產品是一個面試練習工具,主要解決的是講話沒有結構的問題。',
+          durationSec: 42,
+          feedback: {
+            score: 82,
+            content: '回答切題,有具體例子。',
+            structure: '結構清楚,先結論後說明。',
+            delivery: '語速穩定,可再放慢一點。',
+            betterAnswer: '示範回答:我會先說明背景,再講做法,最後交代結果與學到的事。'
+          }
+        }
+        const threeQs = ['請用三分鐘介紹你負責的產品', '說一個你主導的專案', '為什麼想離開現在的工作']
+        /**
+         * `questions` 與 `run.questions` 是**兩個不同的 state**。
+         *
+         * 只 setRun(...)、忘記 setQuestions(...) 的症狀是「強制成功但沒渲染」:
+         * run 階段讀的 `questions[qIndex]` 是 undefined、`questions.length` 是 0,
+         * 於是畫面寫著「第 1 / 0 題」,而主要按鈕因為
+         * `qIndex + 1 >= questions.length` 恆成立,永遠是「查看總評」——
+         * 「下一題」這顆按鈕於是**不存在於任何被宣告的狀態裡**。
+         * 這不是列舉端的問題,是這裡少了一行。
+         */
+        if (want === 'run') {
+          setQuestions(threeQs)
+          setRun(mkRun(threeQs, []))
+          setQIndex(0)
+          setAnswers([])
+          setRecording(false)
+          setPhase('run')
+          return true
+        }
+        if (want === 'answering') {
+          setQuestions(threeQs)
+          setRun(mkRun(threeQs, []))
+          setQIndex(0)
+          setAnswers([])
+          setCurTranscript('我正在說明這個產品解決的問題,以及它是為誰設計的…')
+          setLevel(0.42)
+          setRecording(true)
+          setPhase('run')
+          return true
+        }
+        if (want === 'answered') {
+          setQuestions(threeQs)
+          setRun(mkRun(threeQs, [answered]))
+          setQIndex(0)
+          setAnswers([answered])
+          setRecording(false)
+          setPhase('run')
+          return true
+        }
+        // 最後一題答完:主要按鈕的文字從「下一題」變成「查看總評」
+        if (want === 'last-answered') {
+          setQuestions([threeQs[0]])
+          setRun(mkRun([threeQs[0]], [answered]))
+          setQIndex(0)
+          setAnswers([answered])
+          setRecording(false)
+          setPhase('run')
+          return true
+        }
+        return false
+      }),
+    []
+  )
 
   const refreshHistory = useCallback(async (): Promise<void> => {
     setHistory(await db.practiceRuns.orderBy('createdAt').reverse().limit(10).toArray())
@@ -545,6 +683,9 @@ export default function Practice(): JSX.Element {
               {PRACTICE_TYPES.map((t) => (
                 <button
                   key={t}
+                  // 名稱來自 PRACTICE_TYPES 常數,但這一族是「選一個」的按鈕群:
+                  // 稽核要驗的是「選了之後出題真的用這個類型」,不是每一個字串
+                  data-effect-id="practice-type"
                   onClick={() => setType(t)}
                   className={cn(
                     'rounded-lg border px-3.5 py-2 text-sm transition-colors cursor-pointer',
@@ -564,6 +705,7 @@ export default function Practice(): JSX.Element {
               {[3, 5, 8].map((n) => (
                 <button
                   key={n}
+                  data-effect-id="practice-count"
                   onClick={() => setCount(n)}
                   className={cn(
                     'h-9 w-12 rounded-lg border text-sm transition-colors cursor-pointer',
@@ -600,6 +742,8 @@ export default function Practice(): JSX.Element {
               {history.map((r) => (
                 <div key={r.id} className="card flex items-center justify-between px-4 py-2.5">
                   <button
+                    // 名稱是「職稱 · 類型」(使用者輸入的)→ 動態
+                    data-effect-id="practice-row"
                     className="min-w-0 flex-1 text-left cursor-pointer"
                     onClick={() => loadHistory(r)}
                   >

@@ -10,6 +10,7 @@ import {
   MonitorSpeaker,
   Play,
   Save,
+  BookPlus,
   Sparkles,
   Square,
   Trash2
@@ -159,6 +160,61 @@ export default function Record(): JSX.Element {
         return true
       }),
     [sessions]
+  )
+
+  /**
+   * 稽核用:強制進入「會改變版面」的狀態。
+   *
+   * 為什麼這些只能靠橋推進,不能靠腳本點:辨識失敗橫幅的門檻是**連續 3 次**
+   * STT 失敗(STT_FAILURE_BANNER_THRESHOLD),headless 沒有麥克風也沒有模型,
+   * 怎麼點都走不到那三次失敗。模型下載卡同理 —— 它由 Whisper 的進度回呼驅動。
+   * 結果是:這三個狀態從未被任何一支稽核掃過,而「辨識持續失敗,你的話不會被儲存」
+   * 是使用者唯一會知道自己在白講的提示。
+   *
+   * arg 形狀:傳入要設的狀態;不傳則把三個都設成典型值。
+   */
+  useEffect(
+    () =>
+      registerAuditControl('record.branchState', (arg) => {
+        const want = typeof arg === 'string' ? arg : 'stt-failed'
+        if (want === 'stt-failed') {
+          setSttFailed(true)
+          return true
+        }
+        if (want === 'model-loading') {
+          setModel({ status: 'loading', progress: 37, file: 'ggml-base.bin' })
+          return true
+        }
+        if (want === 'model-error') {
+          setModel({ status: 'error', progress: 0, file: '', msg: '模型下載失敗：磁碟空間不足' })
+          return true
+        }
+        if (want === 'report') {
+          setLastReport({
+            durationSec: 754,
+            mySec: 388,
+            theirSec: 366,
+            talkRatio: 0.51,
+            myUnits: 1284,
+            myCpm: 198,
+            turnCount: 23,
+            avgMyTurnSec: 16.9,
+            longestMyTurnSec: 74.2,
+            gapCount: 6,
+            gapTotalSec: 41.5,
+            theirQuestionCount: 9,
+            steadiness: 72,
+            suggestions: [
+              { severity: 'high', message: '最長的一段連續發言是 74 秒,對方沒有插話空間' },
+              { severity: 'medium', message: '有 6 次超過 5 秒的冷場,平均 6.9 秒' }
+            ],
+            generatedAt: Date.now()
+          })
+          return true
+        }
+        return false
+      }),
+    []
   )
 
   // Whisper worker 帶著數百 MB 模型,離頁一併釋放(Cache API 快取仍在,重進免重新下載)
@@ -484,6 +540,43 @@ export default function Record(): JSX.Element {
     }
   }
 
+  /**
+   * 把逐字稿存成一份講稿。
+   *
+   * 為什麼需要這個轉換(使用者視角稽核 scripts/audit-journey.mjs 量到的唯一死路):
+   *   這個 App 是提詞機,但錄音產出的是「會議紀錄」。使用者開完會拿到逐字稿,
+   *   最自然的下一步是「把這段變成我下次要用的講稿」—— 而程式裡沒有任何一條路
+   *   做得到,唯一的下游動作是「匯出 .md 到磁碟」。他得自己開記事本複製貼上到
+   *   講稿頁,而這一步沒有任何 UI 指引。**產出的東西和使用者累積的內容被隔離在
+   *   兩個 store 裡,而其中一邊是這個產品的主功能。**
+   *
+   * 格式的選擇:只取**我方**的發言。提詞是給自己講的,對方的話不需要念出來;
+   *   全部段落混在一起會變成一份「會議逐字稿」而不是講稿。
+   *   段落前保留時間戳是刻意的 —— 講稿需要能對照原文位置。
+   */
+  const saveTranscriptAsScript = async (s: MeetingSession): Promise<void> => {
+    const mine = s.segments.filter((seg) => seg.speaker === 'me')
+    const body = (mine.length ? mine : s.segments)
+      .map((seg) => `[${formatDuration(seg.start)}] ${seg.text}`)
+      .join('\n')
+    if (!body.trim()) {
+      toast.error('這場會議沒有可以存成講稿的內容')
+      return
+    }
+    const now = Date.now()
+    await db.scripts.add({
+      title: `${s.title}（講稿）`,
+      content: body,
+      createdAt: now,
+      updatedAt: now
+    })
+    // 不跨頁跳轉:Record 沒有 props(見 function Record(): JSX.Element),
+    // 而 Scripts 進頁時本來就會自動選中最新的那一份(orderBy updatedAt desc),
+    // 所以 toast 裡直接給出下一步就好。使用者按完會看到「已存成講稿」並知道去哪找 ——
+    // 硬加一個跨頁跳轉得動 App 的 navigate 簽章,那是為了順手而擴大改動面。
+    toast.success(`已存成講稿:${s.title}（講稿）,在「提詞講稿」頁`)
+  }
+
   const exportSession = async (s: MeetingSession): Promise<void> => {
     const lines = [`# ${s.title}`, '', `時間：${formatDateTime(s.startedAt)}`, '']
     if (s.summary) {
@@ -708,6 +801,10 @@ export default function Record(): JSX.Element {
               </div>
             )}
             <button
+              // data-effect-id:可及名稱在這裡是會變的 —— aria-label 寫「關閉這份報告」,
+              // 而列舉端對按鈕優先取可見文字(「關閉」)。那個字太通用,
+              // 用名稱當身分等於讓稽核去指一個可能指錯的對象。
+              data-effect-id="report-close"
               className="btn-ghost ml-auto shrink-0 text-[11px]"
               onClick={() => {
                 setLastReport(null)
@@ -805,6 +902,8 @@ export default function Record(): JSX.Element {
               <div key={s.id} className="card overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-2.5">
                   <button
+                    // 名稱是會議標題(使用者自己取的)→ 動態,必須有穩定身分
+                    data-effect-id="session-row"
                     // py-1.5:原本列高只有 17px(等於一行文字),是整頁最小的點擊目標。
                     // 內容本身不變,只是把可點範圍拉到 29px,對齊其他控制項的下限。
                     className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left cursor-pointer"
@@ -844,6 +943,16 @@ export default function Record(): JSX.Element {
                       )}
                       {s.summary ? '重新摘要' : 'AI 摘要'}
                     </button>
+                    <button
+                      // 這是「錄音 → 提詞」唯一缺的那一步。這個 App 的主功能是提詞,
+                      // 但逐字稿原本只能「匯出 .md 到磁碟」—— 那是給人看的,
+                      // 回到這個 App 的路要使用者自己複製貼上。這顆鈕把它接回去。
+                      className="btn-ghost text-xs"
+                      onClick={() => void saveTranscriptAsScript(s)}
+                      title="把這場會議的逐字稿存成一份講稿,之後就能拿去提詞"
+                    >
+                      <BookPlus size={12} /> 存成講稿
+                    </button>
                     <button className="btn-ghost text-xs" onClick={() => exportSession(s)}>
                       匯出
                     </button>
@@ -857,40 +966,72 @@ export default function Record(): JSX.Element {
                     </button>
                   </div>
                 </div>
-                {expandedId === s.id && s.summary && (
+                {/*
+                  展開列的條件原本是 `s.summary` —— 那是一個**死路**:
+                  歷史上的每一場會議都沒有摘要(摘要要使用者自己按),而列上的箭頭
+                  在每一列都畫著。點下去什麼都不會發生,於是「展開」這個動作
+                  對 99% 的資料而言是無效的 UI。
+                  改成「有摘要顯示摘要;沒摘要顯示逐字稿」——兩者都有的時候
+                  摘要在上、逐字稿在下(使用者想核對的重點往往就在原文裡)。
+                */}
+                {expandedId === s.id && (
                   <div className="space-y-3 border-t border-ink-800 bg-ink-850/50 px-5 py-4 text-xs leading-relaxed">
-                    <div>
-                      <div className="mb-1 font-medium text-accent-300">摘要</div>
-                      {s.summary.abstract}
-                    </div>
-                    {s.summary.keyPoints.length > 0 && (
-                      <div>
-                        <div className="mb-1 font-medium text-accent-300">重點</div>
-                        <ul className="list-inside list-disc space-y-0.5 text-ink-200">
-                          {s.summary.keyPoints.map((k, i) => (
-                            <li key={i}>{k}</li>
-                          ))}
-                        </ul>
-                      </div>
+                    {s.summary && (
+                      <>
+                        <div>
+                          <div className="mb-1 font-medium text-accent-300">摘要</div>
+                          {s.summary.abstract}
+                        </div>
+                        {s.summary.keyPoints.length > 0 && (
+                          <div>
+                            <div className="mb-1 font-medium text-accent-300">重點</div>
+                            <ul className="list-inside list-disc space-y-0.5 text-ink-200">
+                              {s.summary.keyPoints.map((k, i) => (
+                                <li key={i}>{k}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {s.summary.todos.length > 0 && (
+                          <div>
+                            <div className="mb-1 font-medium text-accent-300">待辦</div>
+                            <ul className="space-y-0.5 text-ink-200">
+                              {s.summary.todos.map((t, i) => (
+                                <li key={i}>☐ {t}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {s.summary.followUps.length > 0 && (
+                          <div>
+                            <div className="mb-1 font-medium text-accent-300">建議跟進</div>
+                            <ul className="list-inside list-disc space-y-0.5 text-ink-200">
+                              {s.summary.followUps.map((t, i) => (
+                                <li key={i}>{t}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </>
                     )}
-                    {s.summary.todos.length > 0 && (
+                    {s.segments.length > 0 && (
                       <div>
-                        <div className="mb-1 font-medium text-accent-300">待辦</div>
-                        <ul className="space-y-0.5 text-ink-200">
-                          {s.summary.todos.map((t, i) => (
-                            <li key={i}>☐ {t}</li>
+                        <div className="mb-1 font-medium text-accent-300">逐字稿</div>
+                        <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
+                          {s.segments.map((seg, i) => (
+                            <div key={i} className="flex gap-2">
+                              <span
+                                className={cn(
+                                  'shrink-0 font-mono text-[10px] leading-5 text-ink-500',
+                                  seg.speaker === 'me' ? 'text-accent-400' : ''
+                                )}
+                              >
+                                {seg.speaker === 'me' ? '我' : '對方'}
+                              </span>
+                              <span className="min-w-0 text-ink-200">{seg.text}</span>
+                            </div>
                           ))}
-                        </ul>
-                      </div>
-                    )}
-                    {s.summary.followUps.length > 0 && (
-                      <div>
-                        <div className="mb-1 font-medium text-accent-300">建議跟進</div>
-                        <ul className="list-inside list-disc space-y-0.5 text-ink-200">
-                          {s.summary.followUps.map((t, i) => (
-                            <li key={i}>{t}</li>
-                          ))}
-                        </ul>
+                        </div>
                       </div>
                     )}
                   </div>

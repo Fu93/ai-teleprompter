@@ -447,4 +447,12 @@ export interface AppInfo {
    * 只拿來決定要不要掛「狀態強制橋」window.__auditForce,不影響任何可見 UI。
    */
   audit: boolean
+  /**
+   * 註冊失敗的全域熱鍵(已被其他程式佔用或無效)。
+   *
+   * 為什麼走 AppInfo 而不是只在 main 端留著:這份清單是「熱鍵沒反應」唯一的
+   * 可查答案,而 e2e 需要在**測試失敗當下**讀到它 —— 否則每次只能猜。
+   * DebugPanel 的診斷快照與 e2e 的失敗訊息共用同一個來源。
+   */
+  hotkeyConflicts: string[]
 }

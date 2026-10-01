@@ -9,7 +9,7 @@ jobs:
   test:
     # e2e 走真 Electron 視窗(顯示/全域熱鍵),windows runner 免 xvfb 可直接跑
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -33,9 +33,12 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
 
-      # e2e 需要真實顯示/熱鍵環境(smoke 驗證 Alt+P 等全域註冊;顯示用 runner 自帶桌面 session)
-      - name: E2E (smoke + visual)
-        run: npx playwright test e2e/smoke.spec.ts e2e/visual.spec.ts
+      # 封鎖套件 = package.json 的 test:e2e(16 個 spec,單一來源避免兩處清單漂移):
+      # 含資料安全(backup)、關閉守衛(confirm-close)、崩潰復原(error-boundary)、
+      # 完整使用者旅程(user-journey/blindspot)等回歸。meeting-flow 不在此列 ——
+      # 它自我宣告為時序敏感的演示 spec,由下一步 best-effort 執行、不擋 merge。
+      - name: E2E (blocking suite)
+        run: npm run test:e2e
 
       # meeting-flow 是時序敏感的演示 spec:CI 上嘗試執行但不擋 merge
       - name: E2E meeting-flow (best effort)

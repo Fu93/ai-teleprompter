@@ -62,9 +62,12 @@ export function applyOverlayWindowSettings(): void {
   state.overlayWindow.setIgnoreMouseEvents(o.clickThrough, { forward: true })
   state.overlayWindow.setAlwaysOnTop(o.alwaysOnTop, 'screen-saver')
   // 玻璃質感:Win11 22H2+ 嘗試視窗後 acrylic 毛玻璃;不支援或失敗則靜默降級(CSS 玻璃仍生效)
+  // **acrylic 只在展開形態開啟** —— 見 syncOverlayMaterial 的註解(藥丸/貼鏡的
+  // 四個角在頁面層是透明的,acrylic 會在整個視窗矩形鋪磨砂,讓四個角變實補丁)。
   try {
     const win11 = process.platform === 'win32' && Number(os.release().split('.')[0]) >= 10 && Number(os.release().split('.')[2]) >= 22621
-    if (o.glass && win11) {
+    const wantMaterial = o.glass && win11 && overlayShapeOf(o) === 'expanded'
+    if (wantMaterial) {
       state.overlayWindow.setBackgroundMaterial('acrylic')
     } else {
       state.overlayWindow.setBackgroundMaterial('auto')
@@ -100,6 +103,55 @@ export function applyOverlayWindowSettings(): void {
     const wantResizable = overlayShapeOf(o) === 'expanded'
     if (state.overlayWindow.isResizable() !== wantResizable) {
       state.overlayWindow.setResizable(wantResizable)
+    }
+    syncOverlayMaterial()
+  }
+}
+
+/**
+ * 材質的形態閘:acrylic 只允許出現在展開形態,藥丸/貼鏡一律 auto。
+ *
+ * 為什麼(使用者視角「永遠都有那四個角」的根因):
+ *   setBackgroundMaterial('acrylic') 是**視窗矩形**的背後材質 —— DWM 會在
+ *   整個矩形鋪系統模糊,頁面「畫透明」的地方透出的是 acrylic,不是桌布。
+ *   藥丸(320×48,rounded-full)的四個角在頁面層是切掉的、畫透明,
+ *   結果四個角透出 acrylic 的磨砂補丁 —— 使用者看到「有四個實角的有色矩形」,
+ *   形狀再正確也救不回來。貼鏡同理(它的圓角比藥丸還小,違和更明顯)。
+ *
+ *   展開形態可以開:面板本身就是矩形、四角有內容,acrylic 的模糊是
+ *   「毛玻璃質感」的正面貢獻,沒有透明區會被它吃掉。
+ *
+ * 為什麼獨立成函式而不是只靠 applyOverlayWindowSettings:
+ *   這個閘必須在**形態變化的那一刻**(morph 開始)生效,而 morph 的每一幀
+ *   走 OverlaySetSizeLive(刻意跳過 applyOverlayWindowSettings 的重活,
+ *   見 ipc.ts)。morph 開始時 renderer 會先寫入形態旗標(SettingsSet),
+ *   所以在 OverlaySetSizeLive 每幀呼叫這個輕量閘,材質就會在動畫第一幀
+ *   切換 —— acrylic→auto 若晚到動畫結束,膠囊四角的磨砂會拖到最後一刻。
+ *
+ * 為什麼快取 lastMaterial:setBackgroundMaterial 是有成本的原生呼叫,
+ *   這個函式每幀被呼叫,「值沒變就不呼叫」與 wantResizable 同一原則。
+ */
+let lastMaterial: 'acrylic' | 'auto' | null = null
+export function syncOverlayMaterial(): void {
+  if (!state.overlayWindow || state.overlayWindow.isDestroyed()) return
+  const o = state.settings.overlay
+  const win11 =
+    process.platform === 'win32' &&
+    Number(os.release().split('.')[0]) >= 10 &&
+    Number(os.release().split('.')[2]) >= 22621
+  const want: 'acrylic' | 'auto' =
+    o.glass && win11 && overlayShapeOf(o) === 'expanded' ? 'acrylic' : 'auto'
+  if (lastMaterial !== want) {
+    try {
+      state.overlayWindow.setBackgroundMaterial(want)
+      lastMaterial = want
+      // 稽核探針(probe-material)的斷言來源:沒有公開 API 可以讀回目前材質,
+      // main 端把每次實際切換記出來。只在 AI_TP_AUDIT 下輸出,正式版零成本。
+      if (process.env['AI_TP_AUDIT'] === '1') {
+        logMain('INFO', `[material] shape=${overlayShapeOf(o)} glass=${o.glass} -> ${want}`)
+      }
+    } catch {
+      // 忽略:舊版 Electron/OS 不支援;lastMaterial 保持不變,下次再試
     }
   }
 }

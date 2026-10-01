@@ -42,7 +42,52 @@ const BASELINE = {
   'audit:ui': { file: 'docs/audit/report.json', minStates: 6 },
   'audit:deep': { file: 'docs/audit/deep/report.json', minStates: 40 },
   'audit:states': { file: 'docs/audit/states/report.json', minStates: 48 },
-  'audit:edge': { file: 'docs/audit/edge/report.json', minStates: 9, kind: 'combos' }
+  'audit:edge': { file: 'docs/audit/edge/report.json', minStates: 9, kind: 'combos' },
+  'audit:journey': { file: 'docs/audit/journey/report.json', minStates: 8 },
+  /**
+   * audit:effects 多一層「覆蓋率」門檻 —— 狀態數不夠形容它。
+   *
+   * 為什麼不能只看問題數:這支稽核的核心產物是「每一顆控制項都有結論」。
+   * 一份「只跑了 12 顆控制項、0 筆問題」的報告會是綠的,但它比紅燈危險:
+   * 它把「沒有量」寫成「沒有問題」。所以:
+   *   minWorks    真的觀察到效果的控制項數量下限
+   *   minControls 列舉到的控制項實例數下限
+   *   maxExempt   豁免數上限(**只能持平或下降**)—— 豁免是債務,不是成就:
+   *               新增豁免必須同時下調這個數字,否則它會變成第二個「永遠綠的檢查」
+   */
+  'audit:effects': {
+    file: 'docs/audit/effects/report.json',
+    minStates: 131,
+    minWorks: 130,
+    minControls: 100,
+    maxExempt: 24
+  }
+}
+
+/**
+ * audit:effects 的額外門檻(覆蓋率對帳的結果)。
+ * 回傳字串 = 不通過的理由;null = 通過。
+ */
+export function checkEffectsCoverage(data) {
+  const cov = data?.meta?.notes?.['覆蓋率']
+  if (!cov) return '報告裡沒有覆蓋率清單 —— 這不是「通過」,這是對帳沒有跑'
+  const uncovered = cov['沒有探針'] ?? -1
+  const notRun = cov['探針沒跑到'] ?? -1
+  const neverSeen = cov['登記了但從沒出現']
+  if (uncovered !== 0) {
+    return `有 ${uncovered} 顆控制項出現在畫面上但沒有登記、也沒有豁免(新增 UI 時忘了登記)`
+  }
+  if (notRun !== 0) {
+    return `有 ${notRun} 顆控制項有登記、但這一輪沒有任何探針給出結論(「沒量到」不等於「沒問題」)`
+  }
+  if (neverSeen !== undefined && neverSeen !== 0) {
+    return (
+      `有 ${neverSeen} 顆控制項登記了、但沒有任何被宣告的狀態裡出現過它 —— ` +
+      '這種控制項不在報告裡(不是 0 筆,是沒有這一列),所以它必須讓閘門紅燈:' +
+      '把狀態宣告齊,或把它標成豁免並寫下理由'
+    )
+  }
+  return null
 }
 
 const STEPS = [
@@ -53,6 +98,8 @@ const STEPS = [
   { name: 'audit:deep', cmd: [npm, 'run', 'audit:deep'] },
   { name: 'audit:states', cmd: [npm, 'run', 'audit:states'] },
   { name: 'audit:edge', cmd: [npm, 'run', 'audit:edge'] },
+  { name: 'audit:journey', cmd: [npm, 'run', 'audit:journey'] },
+  { name: 'audit:effects', cmd: [npm, 'run', 'audit:effects'] },
   { name: 'e2e', cmd: [npx, 'playwright', 'test'], special: 'e2e' }
 ]
 
@@ -112,7 +159,55 @@ export function checkAuditBaseline(name) {
   if (n < rule.minStates) {
     return { ok: false, why: `只量到 ${n} 個狀態,基線要求 ≥${rule.minStates}(量測覆蓋率被縮水了)`, n }
   }
+  // audit:effects 的覆蓋率門檻
+  if (rule.maxExempt !== undefined || rule.minWorks !== undefined || rule.minControls !== undefined) {
+    const cov = data.meta?.notes?.['覆蓋率'] ?? {}
+    const four = data.meta?.notes?.['四態統計'] ?? {}
+    const works = four.works ?? -1
+    const controls = cov['控制項實例'] ?? -1
+    const exempt = cov['豁免'] ?? -1
+    if (rule.minControls !== undefined && controls < rule.minControls) {
+      return { ok: false, why: `只列舉到 ${controls} 顆控制項實例,基線要求 ≥${rule.minControls}`, n }
+    }
+    if (rule.minWorks !== undefined && works < rule.minWorks) {
+      return {
+        ok: false,
+        why: `只有 ${works} 顆控制項真的觀察到效果,基線要求 ≥${rule.minWorks}(量到的東西變少了)`,
+        n
+      }
+    }
+    if (rule.maxExempt !== undefined && exempt > rule.maxExempt) {
+      return {
+        ok: false,
+        why: `豁免從 ${rule.maxExempt} 顆變成 ${exempt} 顆 —— 豁免是債務,只能持平或下降;新增豁免要同時下修基線數字`,
+        n
+      }
+    }
+    const covWhy = checkEffectsCoverage(data)
+    if (covWhy) return { ok: false, why: covWhy, n }
+  }
   return { ok: true, n, minStates: rule.minStates }
+}
+
+/**
+ * 給人看的額外一行:稽核的「證明強度」摘要。
+ *
+ * 為什麼要印:這個 gate 的另一半價值是讓人看到數字在動 ——
+ * 「134 顆有效果 / 101 顆有結論 / 24 顆豁免」與「12 顆 / 0 筆問題」
+ * 在只看 ✓ 的時候長得一模一樣。
+ */
+export function extraSummary(name) {
+  if (name !== 'audit:effects') return ''
+  try {
+    const f = join(ROOT, 'docs/audit/effects/report.json')
+    if (!existsSync(f)) return ''
+    const d = JSON.parse(readFileSync(f, 'utf8'))
+    const four = d.meta?.notes?.['四態統計'] ?? {}
+    const cov = d.meta?.notes?.['覆蓋率'] ?? {}
+    return ` · 有效果 ${four.works ?? '?'} 顆 / 豁免 ${cov['豁免'] ?? '?'} 顆 / 環境量不到 ${four.unverifiable ?? '?'} 項`
+  } catch {
+    return ''
+  }
 }
 
 /**
@@ -223,7 +318,7 @@ async function main() {
           console.log(C.r(`✗ ${label}  ${fmt(ms)}  —— ${b.why}`))
           return finish(timings, t0, flakyAll, step.name)
         }
-        console.log(C.g(`✓ ${label}  ${fmt(ms)}  ${C.dim(`${b.n} 個狀態 / 0 筆問題(基線 ≥${b.minStates})`)}`))
+        console.log(C.g(`✓ ${label}  ${fmt(ms)}  ${C.dim(`${b.n} 個狀態 / 0 筆問題(基線 ≥${b.minStates})${extraSummary(step.name)}`)}`))
         continue
       }
     }

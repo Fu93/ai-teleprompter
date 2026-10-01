@@ -141,7 +141,12 @@ function MainApp(): JSX.Element {
             <div className="text-[10px] text-ink-400">Prompt · Transcribe · Coach</div>
           </div>
         </div>
-        <nav className="mt-2 flex-1 space-y-1 px-3">
+        {/*
+          data-effect-scope="nav":側栏是**跨頁面的同一個元件**。
+          沒有這個屬性的話,同一顆「總覽」會在六個頁面上各被算成一顆控制項 ——
+          效果稽核的覆蓋率會冒出 42 筆「沒登記」的假問題,而真正的缺口在裡面被洗掉。
+        */}
+        <nav data-effect-scope="nav" className="mt-2 flex-1 space-y-1 px-3">
           {NAV.map((item) => (
             <button
               key={item.id}

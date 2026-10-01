@@ -43,12 +43,13 @@ export function useGlassRefraction(
     const w = Math.max(1, window.innerWidth)
     const h = Math.max(1, window.innerHeight)
     // 折射半徑跟隨形態:藥丸是 rounded-full(半徑 = 高的一半,320×48 時為 24)、
-    // 展開/貼鏡是 rounded-2xl(16px)。用 data 屬性而不是 class 名稱,三個形態都認得。
+    // 展開/貼鏡是 .overlay-radius(20px,見 global.css 的註解)。用 data 屬性而不是
+    // class 名稱,三個形態都認得。
     const surface = document.querySelector('[data-overlay-surface]')
     const kind = surface?.getAttribute('data-overlay-surface')
-    const radius = kind === 'pill' ? Math.round(h / 2) : 16
+    const radius = kind === 'pill' ? Math.round(h / 2) : 20
     // 參數隨半徑縮放(比例,不是常數):
-    //  - 藥丸 48px 高 → bezel 13 / 位移 10;展開 16px 圓角 → bezel 9 / 位移 7。
+    //  - 藥丸 48px 高 → bezel 13 / 位移 10;展開 20px 圓角 → bezel 11 / 位移 9。
     //  - 舊版固定 18/14,對 48px 高的膠囊等於把位移推到整條上下直邊上,
     //    外觀就是「裡面一個發亮的長方形框」—— 與 SDF 幾何的接縫是同一個症狀。
     // 過程記錄(同一個指標坑了兩次):

@@ -4,12 +4,7 @@ import { getScene, resolveScene, ConversationTracker, buildPanicSystemPrompt, pi
 import { listAllScenes } from './packs'
 import { buildPanicPrompt, parseRescueResponse, computeConfidence, structuredFallback } from './context-engine/panicAi'
 import { pushTranscript, getRecentContext, clearContext } from './liveContext'
-import {
-  createTurnYieldState,
-  evaluateTurnYield,
-  recordTurnYield,
-  resetTurnYieldState
-} from './context-engine/turnYield'
+import { createTurnYieldGate } from './context-engine/turnYield'
 import {
   checkDeadAir,
   checkInterrupt,
@@ -36,9 +31,13 @@ let panicInFlight = false
 const conversation = new ConversationTracker(6)
 
 // turn-yield(Phase B):對方講完問句 → 提示「該你說話了」
-const turnYieldState = createTurnYieldState()
-let turnYieldTimer: ReturnType<typeof setTimeout> | null = null
-let turnYieldPending: { kind: 'turn' | 'peer_silence'; question: boolean } | null = null
+//
+// 「評估 → 1.2s 防抖 → 送出 → 送出成功才記冷卻」整條流程都在純函式 gate 裡
+// (見 context-engine/turnYield.ts 對「送達才記冷卻」的說明)。這裡只負責
+// 「到底送不送得出去」的判斷 —— 那是唯一需要摸 Electron 視窗的部分。
+const turnYieldGate = createTurnYieldGate({
+  deliver: (payload) => sendTurnYield(payload.kind, payload.question)
+})
 
 // 即時教練:語速/填充詞/搶話/冷場/獨白(Phase B+)
 const coachingState = createCoachingState()
@@ -94,50 +93,30 @@ function deliverRescue(payload: RescuePayload): void {
   state.overlayWindow?.webContents.send(IPC.PanicRescue, payload)
 }
 
-function sendTurnYield(kind: 'turn' | 'peer_silence', question: boolean): void {
-  if (!state.settings.overlay.turnYield) return
-  if (!state.overlayWindow || state.overlayWindow.isDestroyed()) return
+/** 送出 turn-yield 訊號。**回傳是否真的送達** —— 送不到就不能記冷卻,
+ *  否則使用者那句問話會被「從來沒顯示過的提示」擋掉 25 秒。 */
+function sendTurnYield(kind: 'turn' | 'peer_silence', question: boolean): boolean {
+  if (!state.settings.overlay.turnYield) return false
+  if (!state.overlayWindow || state.overlayWindow.isDestroyed()) return false
   state.overlayWindow.webContents.send(IPC.TurnYieldSignal, { kind, question, at: Date.now() })
-}
-
-function cancelTurnYield(): void {
-  turnYieldPending = null
-  if (turnYieldTimer) {
-    clearTimeout(turnYieldTimer)
-    turnYieldTimer = null
-  }
+  return true
 }
 
 /** 會話邊界:清空語音上下文與即時回饋狀態(Record 起停、新場次呼叫) */
 function resetSessionContext(): void {
   clearContext()
   conversation.turns.length = 0
-  resetTurnYieldState(turnYieldState)
-  cancelTurnYield()
+  turnYieldGate.reset()
   resetCoachingState(coachingState)
   for (const k of Object.keys(coachingCounts) as CoachingKind[]) {
     delete coachingCounts[k]
   }
 }
 
-/** 對方新段落 → 問句/長段評估;1.2s 防抖後提示浮層(等可能接續的後半句)。
- *  turn 問句優先於 peer_silence(長段)——被問倒比「對方停頓」更值得提示 */
+/** 對方新段落 → 問句/長段評估;防抖與冷卻記帳都在純函式 gate 內。 */
 function evaluateTurnYieldForSegment(text: string): void {
   if (!state.settings.overlay.turnYield) return // 關閉時不評估也不記冷卻
-  const now = Date.now()
-  const result = evaluateTurnYield(turnYieldState, text, now)
-  if (!result) return
-  recordTurnYield(turnYieldState, result, now)
-  // turn 優先:已有 pending 時只升級不降級(peer_silence 不覆蓋 turn)
-  if (turnYieldPending?.kind === 'turn' && result.kind === 'peer_silence') return
-  turnYieldPending = { kind: result.kind, question: result.question }
-  if (turnYieldTimer) clearTimeout(turnYieldTimer)
-  turnYieldTimer = setTimeout(() => {
-    turnYieldTimer = null
-    if (!turnYieldPending) return
-    sendTurnYield(turnYieldPending.kind, turnYieldPending.question)
-    turnYieldPending = null
-  }, 1200)
+  turnYieldGate.push(text)
 }
 
 async function handlePanic(): Promise<void> {
@@ -214,7 +193,7 @@ export function pushLiveTranscript(text: string, speaker: 'me' | 'them' | 'unkno
   } else if (speaker === 'me') {
     conversation.add('self', text)
     // 我方發言:取消未發出的提示(你已在回話;顯示中的提示由 UI 層收掉)
-    cancelTurnYield()
+    turnYieldGate.cancel()
     onMeSegmentForCoaching(text)
   }
   return true

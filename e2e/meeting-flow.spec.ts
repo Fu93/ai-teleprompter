@@ -16,13 +16,14 @@
  *  4. 對方講完 0.5s 我插話 → coaching interrupt「打斷對方」
  *  5. 全場靜音 ≥8s         → coaching dead_air「冷場中」
  */
-import { test, expect, _electron as electron } from '@playwright/test'
-import type { ElectronApplication, Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
+import type { Page } from '@playwright/test'
+import { launchApp as launchMain } from './helpers/launch'
+import { waitOverlayFeedbackReady } from './helpers/turnYield'
 
-async function launchApp(): Promise<{ app: ElectronApplication; main: Page }> {
-  const app = await electron.launch({ args: ['.'], timeout: 60_000 })
-  const main = await app.firstWindow()
-  await main.waitForLoadState('domcontentloaded')
+/** 共用 helper 會篩出真正的主視窗(有側欄的那個),見 helpers/launch.ts */
+async function launchApp(): Promise<{ app: Awaited<ReturnType<typeof launchMain>>['app']; main: Page }> {
+  const { app, main } = await launchMain()
   return { app, main }
 }
 
@@ -53,6 +54,10 @@ test('模擬會議:六訊號逐段觸發並截圖', async () => {
 
     // 兩個即時回饋功能強制開啟(持久化設定可能被使用者關過)
     await main.evaluate(() => window.api.setSettings({ overlay: { turnYield: true, coaching: true } }))
+    // 等浮層真的套用兩個開關再開始編排。否則第一發可能送在 renderer 還沒
+    // 訂閱 listener 的空窗期,而 turn-yield 的 1.2s 防抖又不會補送 ——
+    // 訊號就憑空消失。完整病因見 helpers/turnYield.ts。
+    await waitOverlayFeedbackReady(overlay!, { turnYield: true, coaching: true })
 
     // dead_air 從這裡就開始「被觀察」,而不是等到步驟 5。
     //
