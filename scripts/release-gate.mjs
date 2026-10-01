@@ -279,7 +279,8 @@ async function main() {
   const timings = []
   const flakyAll = []
 
-  console.log(C.b('\n發布閘門 —— 七個步驟,任何一項紅燈就停\n'))
+  // 步驟數用動態計數:STEPS 增減時橫幅跟著變,不再出現「寫七個、跑十個」的漂移。
+  console.log(C.b(`\n發布閘門 —— ${STEPS.length} 個步驟,任何一項紅燈就停\n`))
   console.log(C.dim('（稽核全部在 AI_TP_AUDIT=1 下執行,量的是開著除錯橋的版本）\n'))
 
   for (let i = 0; i < STEPS.length; i++) {

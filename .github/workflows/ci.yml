@@ -33,8 +33,9 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
 
-      # 封鎖套件 = package.json 的 test:e2e(16 個 spec,單一來源避免兩處清單漂移):
+      # 封鎖套件 = package.json 的 test:e2e(18 個 spec,單一來源避免兩處清單漂移):
       # 含資料安全(backup)、關閉守衛(confirm-close)、崩潰復原(error-boundary)、
+      # 設定持久化(settings-persistence)、逐字稿存成講稿(transcript-to-script)、
       # 完整使用者旅程(user-journey/blindspot)等回歸。meeting-flow 不在此列 ——
       # 它自我宣告為時序敏感的演示 spec,由下一步 best-effort 執行、不擋 merge。
       - name: E2E (blocking suite)
@@ -52,4 +53,40 @@ jobs:
           path: |
             test-results/
             docs/screenshots/
+          retention-days: 7
+
+  audit:
+    # 六支 UI/UX 稽核(ui/deep/states/edge/journey/effects)也擋 merge:
+    # 只在本地 release-gate 跑的話,push/PR 弄壞覆蓋率(新增按鈕沒登記、狀態數縮水)
+    # 時 CI 仍是綠的。腳本自己設 AI_TP_AUDIT=1 與 AI_TP_E2E=1(各 audit-*.mjs 檔頭)。
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # 稽核用 electron.launch({ args: ['.'] }) 啟動的是 out/ 建置產物
+      - name: Build (audits launch the built app)
+        run: npm run build
+
+      # fixtures/audit 不入庫(gitignore);沒有 fixture 的話錄音探針會變 unverifiable,
+      # works 數掉到基線以下。make-audio-fixture 離線:有 SAPI 用真語音,沒有就用合成波形。
+      - name: Generate audio fixture
+        run: npm run make-audio-fixture
+
+      - name: UI/UX audits (blocking)
+        run: npm run audit
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: audit-artifacts
+          path: docs/audit/
           retention-days: 7

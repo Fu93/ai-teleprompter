@@ -28,25 +28,32 @@
 
 ## 二、尚未完成
 
-1. **跑第一次稽核**(需要 `npm run build` + 約 3~5 分鐘)。預期會紅,紅的是:
-   - 我按原始碼推斷的 key 與實際 DOM 名稱對不上的地方(例如浮層標題的收斂規則、設定頁 select 的可及名稱)
-   - 每個「列舉到但沒登記」的控制項(這是清單不完整,不是產品缺陷)
-   我會以第一次的輸出修清單,而不是放寬規則。
-2. **`stepSettingsExtra` 中 `測試連線` 的斷言**:目前假設「對不存在的埠會跳失敗 toast」。Toast 文案
-   尚未實測,若文案不含「失敗/錯誤/無法」會被誤報成 `dead-ui` —— 跑到就修。
-3. **`release-gate.mjs` 接線**:`STEPS` 尚未加入 `audit:journey` / `audit:effects`;`BASELINE` 還沒有這兩支;
-   `checkAuditBaseline` 需要擴充成能讀 `meta.notes`(effects 要同時滿足 `dead = 0`、`覆蓋率.沒有探針 = 0`、
-   `覆蓋率.探針沒跑到 = 0`,並設 `works` 下限與 `豁免` 上限)。
-4. **`ci.yml` 接線**:稽核(ui/deep/states/edge/effects)拆成獨立 job 平行跑(現有 job timeout 45 分鐘,直接加會撐爆);
-   `test:e2e` 封鎖清單補上 `transcript-to-script`、`settings-persistence`(實測存在的效能迴歸,見下)。
-5. **`package.json`**:新增 `make-audio-fixture` 指令。
+> 2026-10-01 對帳:1、2、3、5、7 與 6(a–c)已在後續輪次完成(證據見 CHANGELOG 與下述檔案);
+> 4 由本輪 CI 接線完成。真正還開著的只剩 6(d) 與 8。
+
+1. ~~跑第一次稽核~~ ✅ 已完成 — 後續跑了多輪,`audit:effects` 連續三次 0 筆(見 CHANGELOG「收斂」一則)。
+2. ~~`stepSettingsExtra` 中 `測試連線` 的斷言~~ ✅ 已完成 — audit-effects.mjs 已改為讀回按鈕下方紅字
+   (`testError`)、對「失敗文案真的變了」做斷言,不再猜 toast 文案。
+3. ~~`release-gate.mjs` 接線~~ ✅ 已完成 — `STEPS` 已含 `audit:journey` / `audit:effects`;`BASELINE` 兩支都有
+   (`minStates` 131、`minWorks`、`minControls`、`maxExempt`);`checkAuditBaseline` 已擴充讀 `meta.notes`
+   (覆蓋率對帳、四態統計、豁免上限)。
+4. ~~`ci.yml` 接線~~ ✅ 已完成(2026-10-01)— 新增獨立 `audit` job:`npm ci` → `build` →
+   `make-audio-fixture` → `npm run audit`,六支依序跑、全部擋 merge(未拆平行;job 自己的
+   45 分鐘 timeout 足夠,之後要縮時間再拆 matrix);`test:e2e` 封鎖清單已補上
+   `transcript-to-script`、`settings-persistence`(16 → 18 個 spec)。
+5. ~~`package.json` 新增 `make-audio-fixture` 指令~~ ✅ 已完成。
 6. **負向驗證**(四條,這個專案的核心習慣):
-   a. 加一顆不登記的按鈕 → 必須出現 `no-effect-probe`
-   b. 移除一顆已登記的控制項 → 必須出現 `probe-not-found`(清單→列舉方向;**目前尚未實作這一條**,需要補)
-   c. 把某顆探針的 onClick 改成 no-op → 必須 `dead`
-   d. 拿掉 `--use-file-for-fake-audio-capture` → 錄音探針必須從 works 變成 unverifiable(而不是繼續綠)
-7. **文件**:`README.md` / `CHANGELOG.md` 的統計數字與「七個步驟」等陳舊敘述。
-8. **已知設計缺口**(要誠實列進已知限制):列舉目前只在**單一視窗尺寸**(1280×800)下做;
+   a. ~~加一顆不登記的按鈕 → 必須出現 `no-effect-probe`~~ ✅ — 規則已改嚴(「列舉有、登記沒有 → 紅燈」,
+      不管有沒有探針),並真的抓到漏登記十幾輪的「Ollama 位址」(見 CHANGELOG)。
+   b. ~~移除已登記控制項 → `probe-not-found`~~ ✅ 已實作(audit-effects.mjs 的 `probe-not-found` 分支 +
+      effect-inventory.mjs 的對帳規則),並以「拿掉 `scripts/dirty` 狀態 → `scripts|button|儲存` 立刻紅」驗證過。
+   c. ~~探針 onClick 改 no-op → `dead`~~ ✅ — `dead-ui` 偵測在實際輪次抓到過真實案例
+      (`practice|button|完成回答,取得反饋`)。
+   d. **尚未驗證**:拿掉 `--use-file-for-fake-audio-capture` → 錄音探針必須從 works 變成
+      unverifiable(而不是繼續綠)。
+7. ~~文件統計數字~~ ✅ 已完成(2026-10-01)— README 單元測試數(377 → 407)、release-gate 橫幅
+   「七個步驟」(改為動態 `${STEPS.length}`)都已對齊;CHANGELOG 現況數字本就正確。
+8. **已知設計缺口**(維持開著,要誠實列進已知限制):列舉目前只在**單一視窗尺寸**(1280×800)下做;
    響應式隱藏的控制項不會被列舉到。audit-states 已經有雙尺寸的做法可以移植。
 
 ## 三、驗證方式
