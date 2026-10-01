@@ -98,6 +98,22 @@ function deliverRescue(payload: RescuePayload): void {
 function sendTurnYield(kind: 'turn' | 'peer_silence', question: boolean): boolean {
   if (!state.settings.overlay.turnYield) return false
   if (!state.overlayWindow || state.overlayWindow.isDestroyed()) return false
+  // **浮層必須真的在畫面上。** 隱藏不等於銷毀:setOverlayVisible(false) 走的是
+  // win.hide(),視窗與 renderer 都活著,useTurnYield 照樣 setHint() —— 然後
+  // useTurnYield.ts 的 HINT_DISPLAY_MS(6 秒)在沒人看的狀態裡走完。
+  //
+  // 所以「視窗存在」是**不足以**當作送達證據的:webContents.send() 不會回報
+  // 有沒有 listener,而隱藏時就算 listener 在、訊號也進了 DOM,使用者依然看不到。
+  // 症狀與「浮層不存在」完全一樣(那句話不見了,而且 25 秒內不會再提示),
+  // 卻是常見得多的一種:使用者按熱鍵把浮層收掉是「我不提詞」的正常動作。
+  //
+  // 與 main 端其他環境訊號路徑同形(見 ipc.ts 的 playPause / speedUp / speedDown):
+  // 「未顯示時忽略」。差別在這裡有冷卻,所以「忽略」必須真的回報沒送到。
+  if (!state.overlayWindow.isVisible()) return false
+  // 註:頁面還沒 mount 時 useTurnYield 也還沒註冊 listener(preload 的
+  // onTurnYield 是在 useEffect 裡才 ipcRenderer.on)。那個時間窗很窄,而且
+  // 沒有乾淨的主行程訊號能判斷「renderer 已就緒」—— 真的要把這個洞補滿,
+  // 需要的是 renderer 回報 ready,不是再加一個猜測。
   state.overlayWindow.webContents.send(IPC.TurnYieldSignal, { kind, question, at: Date.now() })
   return true
 }

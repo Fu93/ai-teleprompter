@@ -58,6 +58,18 @@ test('模擬會議:六訊號逐段觸發並截圖', async () => {
     // 訂閱 listener 的空窗期,而 turn-yield 的 1.2s 防抖又不會補送 ——
     // 訊號就憑空消失。完整病因見 helpers/turnYield.ts。
     await waitOverlayFeedbackReady(overlay!, { turnYield: true, coaching: true })
+    // **把浮層叫出來。**
+    //
+    // 浮層以 `show: false` 建立(createOverlayWindow,沒有 ready-to-show→show),
+    // 預設就是隱藏的;而 Playwright 讀得到 win.hide() 之後的 DOM。所以這支測試
+    // 原本是在一個使用者**永遠看不到的視窗**裡驗「提示有沒有出現」。
+    //
+    // sendTurnYield 現在會檢查 isVisible():對隱藏浮層回報「沒送到」,因為
+    // webContents.send() 不會回報有沒有 listener,而隱藏時就算 listener 在、
+    // 訊號也進了 DOM,6 秒的 HINT_DISPLAY_MS 一樣會在沒人看的狀態裡走完 ——
+    // 然後那句話就被自己的 25 秒冷卻擋掉了。加上這行之後這支測試才真的在
+    // 量使用者遇到的情境;截圖也才真的拍得到東西。
+    await main.evaluate(() => window.api.overlayShow({ title: '會議', content: '測試內容' }))
 
     // dead_air 從這裡就開始「被觀察」,而不是等到步驟 5。
     //
