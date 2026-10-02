@@ -36,6 +36,42 @@ async function launch(): Promise<{ app: ElectronApplication; main: Page; overlay
 
 const SIZE = '各位好,今天要跟大家介紹我們最新的產品,以及接下來三個月的計畫。'
 
+/**
+ * 視窗尺寸斷言,容許 ±1px 的量化誤差。
+ *
+ * 為什麼需要它(這是 CI 上真的紅過一次才寫的):
+ *   `window.innerHeight` 回報的是瀏覽器**內容區**的高度,而 Windows 視窗邊框
+ *   與 DPI 縮放會讓它落在設計值或設計值+1。實測同一個 commit:本機三次全量到
+ *   38,GitHub runner 上量到 39 —— 產品碼算出的目標是 `Math.round(PILL_BASE.h * 0.8)`,
+ *   與環境無關,差異 100% 來自 Chromium 對視窗高度的量化。
+ *
+ *   所以「精確等於」量的是「這台電腦怎麼量化視窗」,不是「產品的尺寸對不對」。
+ *   真缺陷(滑桿沒生效、倍率算錯、尺寸差很多)仍然會紅 —— 放寬的是 ±1px 的雜訊,
+ *   不是整個斷言。
+ *
+ *   誤報與漏報的取捨:曾經有過「隱藏時不該有提示」那條斷言,在修好與沒修好的
+ *   程式裡都會通過 —— 那種「抓不到東西卻長得像防線」的斷言比沒有更糟。
+ *   這條不一樣:它量的是有明確契約的數值,±1px 是環境邊界而不是「量不到」。
+ */
+async function expectWinSize(
+  overlay: Page,
+  expected: { w: number; h: number },
+  tolerance = 1
+): Promise<void> {
+  const actual = await overlay.evaluate(() => ({
+    w: window.innerWidth,
+    h: window.innerHeight
+  }))
+  expect(
+    Math.abs(actual.w - expected.w),
+    `實際寬度 ${actual.w},預期 ${expected.w}(±${tolerance})`
+  ).toBeLessThanOrEqual(tolerance)
+  expect(
+    Math.abs(actual.h - expected.h),
+    `實際高度 ${actual.h},預期 ${expected.h}(±${tolerance})`
+  ).toBeLessThanOrEqual(tolerance)
+}
+
 test('藥丸大小滑桿:數值、換算說明、真實視窗尺寸三者一致', async () => {
   test.setTimeout(90_000)
   const { app, main, overlay } = await launch()
@@ -49,9 +85,7 @@ test('藥丸大小滑桿:數值、換算說明、真實視窗尺寸三者一致'
     await overlay.locator('[title*="收合成藥丸"]').click()
     await overlay.waitForTimeout(1_400)
 
-    const winSize = (): Promise<string> =>
-      overlay.evaluate(() => `${window.innerWidth}x${window.innerHeight}`)
-    expect(await winSize()).toBe('320x48')
+    await expectWinSize(overlay, { w: 320, h: 48 })
 
     // 側欄 → 設定頁
     await main.evaluate(() => {
@@ -77,19 +111,19 @@ test('藥丸大小滑桿:數值、換算說明、真實視窗尺寸三者一致'
     expect(await slider.inputValue()).toBe('1.2')
     expect(await helpText()).toContain('384×58')
     expect((await main.evaluate(() => window.api.getSettings())).overlay.pillScale).toBe(1.2)
-    expect(await winSize()).toBe('384x58')
+    await expectWinSize(overlay, { w: 384, h: 58 })
 
     // 上端 1.3×
     for (let i = 0; i < 4; i++) await main.keyboard.press('ArrowRight')
     await overlay.waitForTimeout(1_200)
     expect(await slider.inputValue()).toBe('1.3')
-    expect(await winSize()).toBe('416x62')
+    await expectWinSize(overlay, { w: 416, h: 62 })
 
     // 下端 0.8×:仍然要是真膠囊(半徑 = 高度一半),不是圓角矩形
     for (let i = 0; i < 10; i++) await main.keyboard.press('ArrowLeft')
     await overlay.waitForTimeout(1_200)
     expect(await slider.inputValue()).toBe('0.8')
-    expect(await winSize()).toBe('256x38')
+    await expectWinSize(overlay, { w: 256, h: 38 })
     const geo = await overlay.evaluate(() => {
       const el = document.querySelector('[data-overlay-surface="pill"]')
       if (!el) return null
