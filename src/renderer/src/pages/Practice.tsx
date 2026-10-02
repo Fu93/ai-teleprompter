@@ -26,6 +26,8 @@ import { encodeWav } from '../lib/audio/wav'
 import {
   createPendingTracker,
   drainPending,
+  GenerationGate,
+  OrderedTranscript,
   STT_FAILURE_BANNER_THRESHOLD,
   type DrainResult
 } from '../lib/transcriptionQueue'
@@ -76,8 +78,13 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
    *  雙擊會重複送 AI 評分/重複寫入練習紀錄(按鈕 disabled 依賴 re-render,同 tick 內擋不住) */
   const finishingRef = useRef(false)
   const finishingRunRef = useRef(false)
+  const finishAnswerOperationRef = useRef(0)
+  const finishRunOperationRef = useRef(0)
   const startAttemptRef = useRef(0)
   const answerIdRef = useRef(0)
+
+  /** 每輪練習的世代；結束/重開後忽略舊的 AI 與 IndexedDB 回覆。 */
+  const runGenerationRef = useRef(new GenerationGate())
   // 在飛的辨識請求由 lib/transcriptionQueue 追蹤(與 Record 頁同一份實作)。
   // 型別標在 useRef 上,而非 new Map<...>() 的泛型位置 ——
   // 原寫法少了 Map 的收尾 >,esbuild 解析失敗後把它當成比較運算式,
@@ -107,7 +114,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
   const whisperRef = useRef<WhisperClient | null>(null)
   const segmenterRef = useRef<AudioSegmenter | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
-  const segsRef = useRef<string[]>([])
+  const segsRef = useRef(new OrderedTranscript())
   const answersRef = useRef<PracticeAnswer[]>([])
   answersRef.current = answers
 
@@ -285,6 +292,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
 
   useEffect(() => {
     return () => {
+      runGenerationRef.current.invalidate()
       startAttemptRef.current += 1
       answerIdRef.current += 1
       segmenterRef.current?.stop()
@@ -317,8 +325,19 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     }
   }
 
-  const onSegment = async (audio: Float32Array, sr: number, answerId: number): Promise<void> => {
-    if (!settings) return
+  const onSegment = async (
+    audio: Float32Array,
+    sr: number,
+    answerId: number,
+    segmentOrder: number
+  ): Promise<void> => {
+    if (answerId !== answerIdRef.current) return
+    if (!settings) {
+      const readyChunks = segsRef.current.skip(segmentOrder)
+      setCurTranscript(segsRef.current.toString())
+      for (const chunk of readyChunks) void window.api.pushTranscript({ text: chunk, speaker: 'me' })
+      return
+    }
     // 先取出來再進 try:catch 看不到 try 之前的窄化,而且「連不上」要說 Ollama
     // 還是雲端 API 完全取決於這一個值(見 describeError 的 ErrorContext)
     const sttEngine = settings.stt.engine
@@ -339,12 +358,15 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         if (!res.ok) throw new Error(res.error ?? '辨識失敗')
         text = res.text ?? ''
       }
+      if (answerId !== answerIdRef.current) return
+      const readyChunks = text.trim()
+        ? segsRef.current.resolve(segmentOrder, text.trim())
+        : segsRef.current.skip(segmentOrder)
+      setCurTranscript(segsRef.current.toString())
+      for (const chunk of readyChunks) {
+        void window.api.pushTranscript({ text: chunk, speaker: 'me' })
+      }
       if (text.trim()) {
-        if (answerId !== answerIdRef.current) return
-        segsRef.current = [...segsRef.current, text.trim()]
-        setCurTranscript(segsRef.current.join(''))
-        // 餵 main:panic(Alt+P)有作答上下文、coaching 教練提示來源
-        void window.api.pushTranscript({ text: text.trim(), speaker: 'me' })
         // 成功一次就代表辨識通了:清掉失敗累積,橫幅自動消失
         sttFailStreakRef.current = 0
         if (sttNotifiedRef.current) {
@@ -354,6 +376,11 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       }
     } catch (err) {
       if (answerId === answerIdRef.current) {
+        const readyChunks = segsRef.current.skip(segmentOrder)
+        setCurTranscript(segsRef.current.toString())
+        for (const chunk of readyChunks) {
+          void window.api.pushTranscript({ text: chunk, speaker: 'me' })
+        }
         segFailRef.current = true
         sttFailStreakRef.current += 1
         const ctx = sttEngine === 'cloud' ? { provider: 'cloud-api' as const } : undefined
@@ -371,7 +398,9 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
   }
 
   const queueAnswerTranscription = (audio: Float32Array, sr: number, answerId: number): void => {
-    pendingRef.current.track(answerId, onSegment(audio, sr, answerId))
+    // VAD 片段依音訊時間同步保留槽位；雲端辨識回覆可能亂序抵達。
+    const segmentOrder = segsRef.current.reserve()
+    pendingRef.current.track(answerId, onSegment(audio, sr, answerId, segmentOrder))
   }
 
   const startListening = async (): Promise<void> => {
@@ -401,7 +430,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       if (settings?.stt.engine === 'local') await ensureWhisper()
       if (attempt !== startAttemptRef.current) return
       const answerId = ++answerIdRef.current
-      segsRef.current = []
+      segsRef.current = new OrderedTranscript()
       segFailRef.current = false
       setCurTranscript('')
       const startedAt = Date.now()
@@ -460,6 +489,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
 
   const startPractice = async (): Promise<void> => {
     if (!settings) return
+    const generation = runGenerationRef.current.next()
     if (!position.trim()) {
       toast.error('請填寫職位或情境，例如「產品經理」')
       return
@@ -483,6 +513,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
           content: `為應徵「${position.trim()}」的${type}設計 ${count} 道面試題。輸出 JSON 字串陣列，例如 ["題目1","題目2"]。題目要具體、由淺入深。`
         }
       ])
+      if (!runGenerationRef.current.isCurrent(generation)) return
       const qs = extractJson<string[]>(raw).filter((q) => typeof q === 'string' && q.trim())
       if (qs.length === 0) throw new Error('AI 沒有產出題目，請再試一次或換模型')
       setQuestions(qs)
@@ -495,23 +526,25 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       overallCacheRef.current = null
       setPhase('run')
     } catch (err) {
-      toast.error(describeError(err, { provider: aiProvider }))
+      if (runGenerationRef.current.isCurrent(generation)) toast.error(describeError(err, { provider: aiProvider }))
     } finally {
-      setBusy(null)
+      if (runGenerationRef.current.isCurrent(generation)) setBusy(null)
     }
   }
 
   const finishAnswer = async (): Promise<void> => {
     if (finishingRef.current) return
     finishingRef.current = true
+    const operation = ++finishAnswerOperationRef.current
     try {
       await finishAnswerInner()
     } finally {
-      finishingRef.current = false
+      if (operation === finishAnswerOperationRef.current) finishingRef.current = false
     }
   }
 
   const finishAnswerInner = async (): Promise<void> => {
+    const generation = runGenerationRef.current.current()
     const answerId = answerIdRef.current
     const answerStart = curStart
     const answerEndedAt = Date.now()
@@ -525,7 +558,22 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     try {
       result = await drainPending(pending, 65_000)
     } finally {
-      setDraining(false)
+      if (runGenerationRef.current.isCurrent(generation)) setDraining(false)
+    }
+    // 世代閘門必須在**每一個副作用之前**,不是之後才檢查。
+    // drainPending 最多等 65 秒;這段時間裡使用者可能按了重新開始
+    // (reset → runGenerationRef.invalidate)。若把檢查寫在下面,重置後才抵達的
+    // 逾時回覆仍會:對**新**一輪的 segsRef 呼叫 finalize(提前釋放新場次還在飛的
+    // 槽位)、把舊逐字稿 push 進 main 的 panic/coaching 上下文(新場次會引用它)。
+    // 這正是 GenerationGate 要消滅的那類污染,只是從另一條路鑽進來。
+    if (!runGenerationRef.current.isCurrent(generation)) return
+    // A timed-out ASR promise may resolve later. Once this answer is finalized, its
+    // callbacks must not alter the transcript while feedback or the next answer starts.
+    if (answerIdRef.current === answerId) answerIdRef.current += 1
+    const lateChunks = segsRef.current.finalize()
+    if (lateChunks.length > 0) {
+      setCurTranscript(segsRef.current.toString())
+      for (const chunk of lateChunks) void window.api.pushTranscript({ text: chunk, speaker: 'me' })
     }
     // 逾時或有段落失敗 ⇒ 這份逐字稿不完整。分數照算(否則整題白費),
     // 但旗標必須跟答案一起存下去,否則事後只看得到一個分數。
@@ -534,7 +582,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       toast.error('語音辨識逾時，先用目前收到的逐字稿評分——這次的逐字稿可能少了結尾')
     }
     const q = questions[qIndex]
-    const transcript = segsRef.current.join('')
+    const transcript = segsRef.current.toString()
     if (!transcript.trim()) {
       toast.error('沒有聽到回答內容')
       return
@@ -560,6 +608,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
           content: `面試題目：${q}\n應徵職位/情境：${position.trim()}（${type}）\n應徵者的回答逐字稿：\n${transcript}${rateLine}\n\n請評估此回答並輸出 JSON：{"score":0到100整數,"content":"內容面反饋（切題度、觀點、例證，2-3句）","structure":"結構面反饋（邏輯條理，2句）","delivery":"表達面反饋（語速與流暢度，對照個人語速基準，2句）","betterAnswer":"80-150字的示範回答"}`
         }
       ])
+      if (!runGenerationRef.current.isCurrent(generation)) return
       const fb = extractJson<PracticeFeedback>(raw)
       const answer: PracticeAnswer = {
         question: q,
@@ -570,6 +619,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       }
       setAnswers((a) => [...a, answer])
     } catch (err) {
+      if (!runGenerationRef.current.isCurrent(generation)) return
       toast.error(describeError(err, { provider: aiProvider }))
       // 反饋失敗仍保留回答文字
       setAnswers((a) => [
@@ -582,21 +632,23 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         }
       ])
     } finally {
-      setBusy(null)
+      if (runGenerationRef.current.isCurrent(generation)) setBusy(null)
     }
   }
 
   const finishRun = async (): Promise<void> => {
     if (finishingRunRef.current) return
     finishingRunRef.current = true
+    const operation = ++finishRunOperationRef.current
     try {
       await finishRunInner()
     } finally {
-      finishingRunRef.current = false
+      if (operation === finishRunOperationRef.current) finishingRunRef.current = false
     }
   }
 
   const finishRunInner = async (): Promise<void> => {
+    const generation = runGenerationRef.current.current()
     stopSpeaking()
     let overall = overallCacheRef.current ?? ''
     let overallFailed = false
@@ -613,15 +665,18 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
             content: `以下是應徵「${position.trim()}」的完整面試練習紀錄。請給一段 150-250 字的整體總評：最大優點、最大弱點、三個具體練習建議。\n\n${recap}`
           }
         ])
+        if (!runGenerationRef.current.isCurrent(generation)) return
         overallCacheRef.current = overall
       } catch (err) {
+        if (!runGenerationRef.current.isCurrent(generation)) return
         overall = ''
         overallFailed = true
         toast.error(`整體總評未能產生，練習紀錄仍會保存。${describeError(err, { provider: settings.ai.provider === 'ollama' ? 'ollama' : 'openai-compatible' })}`)
       } finally {
-        setBusy(null)
+        if (runGenerationRef.current.isCurrent(generation)) setBusy(null)
       }
     }
+    if (!runGenerationRef.current.isCurrent(generation)) return
     const runData: PracticeRun = {
       position: position.trim(),
       type,
@@ -634,9 +689,15 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     try {
       id = await db.practiceRuns.add(runData)
     } catch (err) {
+      if (!runGenerationRef.current.isCurrent(generation)) return
       // 寫入失敗(IndexedDB 滿/隱私模式)要有聲:留在 run 階段讓使用者重試,
       // 而不是靜默丟掉整輪練習(與 Record 存講稿、Calibration 套用同一標準)。
       toast.error(`練習紀錄儲存失敗,尚未存檔。${describeError(err)}`)
+      return
+    }
+    if (!runGenerationRef.current.isCurrent(generation)) {
+      // IndexedDB add 在取消與完成同時競態時不可取消；刪掉已寫入的過期那筆。
+      await db.practiceRuns.delete(id)
       return
     }
     setRun({ ...runData, id })
@@ -657,7 +718,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     } else {
       setQIndex((i) => i + 1)
       setCurTranscript('')
-      segsRef.current = []
+      segsRef.current = new OrderedTranscript()
     }
   }
 
@@ -697,8 +758,16 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
   }
 
   const reset = (): void => {
+    runGenerationRef.current.invalidate()
     startAttemptRef.current += 1
+    setBusy(null)
+    setDraining(false)
     answerIdRef.current += 1
+    finishAnswerOperationRef.current += 1
+    finishRunOperationRef.current += 1
+    finishingRef.current = false
+    finishingRunRef.current = false
+    advancingRef.current = false
     sttFailStreakRef.current = 0
     sttNotifiedRef.current = false
     setSttFailed(false)

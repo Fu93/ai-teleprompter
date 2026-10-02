@@ -22,9 +22,15 @@
  * 執行:npm run make-audio-fixture
  */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { AUDIO_FIXTURE, AUDIO_FIXTURE_SENTENCE, FIXTURE_DIR, audioFixtureStatus } from './lib/fake-media.mjs'
+import {
+  AUDIO_FIXTURE,
+  AUDIO_FIXTURE_SENTENCE,
+  FIXTURE_DIR,
+  audioFixtureStatus,
+  parseWavHeader
+} from './lib/fake-media.mjs'
 
 const SAMPLE_RATE = 16000
 
@@ -104,6 +110,59 @@ function tryWindowsSapi(outPath) {
   }
 }
 
+/**
+ * 兩段式假麥克風:把語音從中間剪開,中間與尾端各插一段靜音。
+ *
+ * 為什麼需要這個（除了「錄音要有聲音」之外的第二個理由）:
+ *   VAD 是在**靜音**時收掉一段的（minSilenceMs）。而 `--use-fake-device-for-media-stream`
+ *   與 voice-zh.wav 都是連續語音,整段只會被切出**一段** —— 麥克風與系統音訊
+ *   併發辨識時的「完成順序 ≠ 送出順序」這個情況根本不會發生,e2e 只能測到
+ *   一段、變成一個「測不到亂序的綠燈」。中段插靜音讓 VAD 自然切兩段,
+ *   亂序的前提才真正成立。
+ *
+ * 插多長:1.2s 中段（遠大於預設 minSilenceMs）,0.6s 尾端（讓第二段有收尾）。
+ */
+const MID_SILENCE_SEC = 1.2
+const TAIL_SILENCE_SEC = 0.6
+export const TWO_SEG_FIXTURE = join(FIXTURE_DIR, 'voice-2seg.wav')
+
+function makeTwoSegFixture() {
+  const buf = readFileSync(AUDIO_FIXTURE)
+  const parsed = parseWavHeader(buf)
+  if (!parsed.ok) {
+    console.log(`   voice-zh.wav 不合格(${parsed.why}),略過兩段式 fixture`)
+    return
+  }
+  // 這個 fixture 固定為 16bit mono(encodeWav 與 SAPI 輸出一致);不符就不硬幹
+  if (parsed.channels !== 1) {
+    console.log(`   voice-zh.wav 是 ${parsed.channels} 聲道,略過兩段式 fixture(需要 mono)`)
+    return
+  }
+  // 這個專案的 WAV 全部是標準 44-byte 標頭,data 從 44 開始（見 encodeWav）
+  const end = Math.min(44 + parsed.dataSize, buf.length)
+  const frames = Math.floor((end - 44) / 2)
+  if (frames < 4) {
+    console.log('   voice-zh.wav 的樣本太少,略過兩段式 fixture')
+    return
+  }
+  const samples = new Float32Array(frames)
+  for (let i = 0; i < frames; i++) samples[i] = buf.readInt16LE(44 + i * 2) / 0x8000
+
+  const cut = Math.floor(frames / 2)
+  const midFrames = Math.floor(SAMPLE_RATE * MID_SILENCE_SEC)
+  const tailFrames = Math.floor(SAMPLE_RATE * TAIL_SILENCE_SEC)
+  const combined = new Float32Array(cut + midFrames + (frames - cut) + tailFrames)
+  combined.set(samples.subarray(0, cut), 0)
+  combined.set(samples.subarray(cut), cut + midFrames)
+
+  writeFileSync(TWO_SEG_FIXTURE, encodeWav(combined))
+  console.log(`\n✓ ${TWO_SEG_FIXTURE}`)
+  console.log(
+    `   兩段式 · ${(combined.length / SAMPLE_RATE).toFixed(1)}s · 中段靜音 ${MID_SILENCE_SEC}s · 尾端靜音 ${TAIL_SILENCE_SEC}s`
+  )
+  console.log('   e2e/practice-generation.spec.ts 用它讓 VAD 自然切出兩段(亂序的前提)。')
+}
+
 function main() {
   mkdirSync(FIXTURE_DIR, { recursive: true })
 
@@ -126,6 +185,8 @@ function main() {
     `${(st.bytes / 1024).toFixed(1)} KB · ${st.format.sampleRate}Hz ${st.format.bits}bit ` +
     `${st.format.channels === 1 ? 'mono' : 'stereo'} · 振幅 ${st.format.amplitude[0]}..${st.format.amplitude[1]}`)
   console.log('   audit:effects 會把這一段當成麥克風輸入。')
+
+  makeTwoSegFixture()
 }
 
 main()

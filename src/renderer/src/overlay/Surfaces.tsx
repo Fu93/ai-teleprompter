@@ -6,6 +6,7 @@ import type { FollowChunk } from '../lib/follow'
 import { PhraseVisuals } from '../lib/teleprompter/constants'
 import type { EngineState } from '../lib/teleprompter/engine'
 import type { ScriptModel } from '../lib/teleprompter/scriptModel'
+import { tokenGapAt } from '../lib/teleprompter/modeTransforms'
 
 export const MODES: Array<{ id: OverlayDisplayMode; label: string; icon: typeof AlignJustify }> = [
   { id: 'scroll', label: '連續捲動', icon: AlignJustify },
@@ -215,11 +216,15 @@ export function BulletSurface({
 export function LensSurface({
   model,
   state,
-  displayMode
+  displayMode,
+  suppressBottom
 }: {
   model: ScriptModel
   state: EngineState
   displayMode: OverlayDisplayMode
+  /** 貼鏡提示(lensHint)顯示的 6 秒內收起底部預讀行 —— 提示與預讀是絕對定位
+   *  的同一段高度,疊印在一起兩行都讀不了(提示是暫態,預讀下一輪還會回來)。 */
+  suppressBottom?: boolean
 }): JSX.Element {
   if (displayMode === 'bullet') {
     const bullet = model.bullets[state.bulletIndex]
@@ -234,22 +239,28 @@ export function LensSurface({
             {bullet.subPoints[0]}
           </div>
         )}
-        <div className="mt-auto truncate pb-1.5 text-[11px] text-white/72" style={{ opacity: 0.62 }}>
-          下一點:{next?.title ?? '(結束)'}
-        </div>
+        {!suppressBottom && (
+          <div className="mt-auto truncate pb-1.5 text-[11px] text-white/72" style={{ opacity: 0.62 }}>
+            下一點:{next?.title ?? '(結束)'}
+          </div>
+        )}
       </div>
     )
   }
 
   if (displayMode === 'karaoke') {
     const words = model.karaokeWordChunks[state.karaokeChunkIndex] ?? []
+    const spacing = model.karaokeTokenSpacing[state.karaokeChunkIndex]
     const nextChunk = model.karaokeChunks[state.karaokeChunkIndex + 1]
     return (
       <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
-        <div className="flex flex-wrap gap-x-1.5 font-semibold leading-snug reading-shadow" style={{ fontSize: 19 }}>
+        {/* 詞距只留在原文有空白的邊界:逐字切出來的中文字序列若套 gap,
+            字與字之間會被拉開 6px,整行讀起來像被拆散。 */}
+        <div className="flex flex-wrap font-semibold leading-snug reading-shadow" style={{ fontSize: 19 }}>
           {words.map((w, i) => (
             <span
               key={i}
+              className={tokenGapAt(spacing, i + 1) ? 'mr-1.5' : undefined}
               style={{
                 color:
                   i === state.karaokeWordIndex
@@ -263,9 +274,11 @@ export function LensSurface({
             </span>
           ))}
         </div>
-        <div className="mt-auto truncate pb-1.5 text-[11px] text-white/72" style={{ opacity: 0.62 }}>
-          下一詞組:{nextChunk ?? '(結束)'}
-        </div>
+        {!suppressBottom && (
+          <div className="mt-auto truncate pb-1.5 text-[11px] text-white/72" style={{ opacity: 0.62 }}>
+            下一詞組:{nextChunk ?? '(結束)'}
+          </div>
+        )}
       </div>
     )
   }
@@ -296,16 +309,18 @@ export function LensSurface({
           </span>
         ))}
       </div>
-      <div className="mt-auto space-y-0.5 pb-1.5">
-        <div className="truncate text-[12px] text-white/72" style={{ opacity: 0.62 }}>
-          下一句:{nextSentence ?? '—'}
-        </div>
-        {upcoming && (
-          <div className="truncate text-[11px] text-white/72" style={{ opacity: 0.38 }}>
-            再下一句:{upcoming}
+      {!suppressBottom && (
+        <div className="mt-auto space-y-0.5 pb-1.5">
+          <div className="truncate text-[12px] text-white/72" style={{ opacity: 0.62 }}>
+            下一句:{nextSentence ?? '—'}
           </div>
-        )}
-      </div>
+          {upcoming && (
+            <div className="truncate text-[11px] text-white/72" style={{ opacity: 0.38 }}>
+              再下一句:{upcoming}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -320,12 +335,14 @@ export function KaraokeSurface({
   fontSize: number
 }): JSX.Element {
   const words = model.karaokeWordChunks[state.karaokeChunkIndex] ?? []
+  const spacing = model.karaokeTokenSpacing[state.karaokeChunkIndex]
   const totalChunks = model.karaokeChunks.length
 
   return (
     <div className="flex min-h-0 flex-1 flex-col justify-center px-7 py-4 select-none">
+      {/* 同 LensSurface:詞距只留在原文有空白的邊界(見 karaokeTokenSpacing) */}
       <div
-        className="flex flex-wrap gap-x-2 gap-y-0.5 font-semibold"
+        className="flex flex-wrap gap-y-0.5 font-semibold"
         style={{ fontSize, lineHeight: PhraseVisuals.LINE_HEIGHT }}
       >
         {words.map((w, i) => {
@@ -334,7 +351,7 @@ export function KaraokeSurface({
           return (
             <span
               key={i}
-              className="transition-colors duration-100"
+              className={cn('transition-colors duration-100', tokenGapAt(spacing, i + 1) && 'mr-2')}
               style={{
                 color: active ? '#fff' : done ? 'var(--color-accent-300)' : 'var(--color-ink-600)',
                 textShadow: active

@@ -33,6 +33,13 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
 
+      # 假麥克風 fixture 不入庫(.gitignore),而 practice-generation.spec.ts 靠
+      # voice-2seg.wav 讓 VAD 自然切出兩段 —— 沒有它,那條 spec 會**永遠 skip**,
+      # 於是「多了一條測試」與「多了一條永遠綠的空測試」長得一模一樣。
+      # 與 audit job 的同一步驟對稱;離線產生(有 SAPI 用真語音,沒有用合成波形)。
+      - name: Generate audio fixture (required by practice-generation e2e)
+        run: npm run make-audio-fixture
+
       # 封鎖套件 = package.json 的 test:e2e(18 個 spec,單一來源避免兩處清單漂移):
       # 含資料安全(backup)、關閉守衛(confirm-close)、崩潰復原(error-boundary)、
       # 設定持久化(settings-persistence)、逐字稿存成講稿(transcript-to-script)、
