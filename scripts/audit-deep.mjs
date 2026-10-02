@@ -879,18 +879,40 @@ async function main() {
     await overlay.locator('.glass-pill button[title="關閉"]').first().click().catch(() => {})
     await sleep(800)
 
-    // 貼鏡(420x170)裡的救援卡:卡片比視窗高的實際受害者。
-    // 這一版把信心/來源搬進標題列就是為了它,所以一定要有狀態證明它没被裁掉。
+    // 貼鏡(420x170)裡的暫態覆蓋層。
+    //
+    // 救援卡是卡片比視窗高的實際受害者;這一版把信心/來源搬進標題列就是為了它。
+    // 但這一版同時加了另外兩件事,所以三種暫態都必須各有狀態:
+    //   1. 貼鏡底部的預讀行(下一句/下一詞組)會在任一暫態提示出現時收起
+    //      (suppressBottom)—— 「疊印在一起兩行都讀不了」是它要消滅的缺陷;
+    //   2. coaching 提示在貼鏡形態原本漏送,這一版補上;
+    //   3. turn-yield 與 coaching 同時出現時是一條 flex-col 兩層 pill。
+    // 三者都發生在 420×170 這個會被裁掉的視窗裡 —— 沒有狀態就是沒量過。
     {
-      const state = 'overlay/lens@transient-panic'
+      let lensPrevShot = `overlay-lens-${LENS_SIZE.w}x${LENS_SIZE.h}.png`
       await clickOverlayButton('貼鏡模式', '退出')
       await sleep(1600)
-      const before = fileHash(join(OUT, `overlay-lens-${LENS_SIZE.w}x${LENS_SIZE.h}.png`))
-      if (await emit({ kind: 'panic', text: '（稽核）先回應問題核心,再補一個具體例子' })) {
+      for (const [name, args] of [
+        ['turn', { kind: 'turn', text: 'peer_silence' }],
+        ['coaching', { kind: 'coaching', coachingKind: 'fast', text: '（稽核）語速偏快' }],
+        ['panic', { kind: 'panic', text: '（稽核）先回應問題核心,再補一個具體例子' }]
+      ]) {
+        const state = `overlay/lens@transient-${name}`
+        const before = fileHash(join(OUT, lensPrevShot))
+        if (!(await emit(args))) {
+          report.unreached(state, 'debug:emit-signal 被拒絕(DEBUG 與 AUDIT 都沒開)')
+          continue
+        }
+        // 2600ms 與展開形態同理:useCoaching 有 2s 保險防抖,
+        // 間隔太短會量到「上一個狀態」而記成假缺陷。
         await sleep(2600)
-        const { hash } = await auditShot(overlay, state, 'overlay-lens-transient-panic')
+        const { hash } = await auditShot(overlay, state, `overlay-lens-transient-${name}`)
         if (report.expectStateChange(state, before, hash)) report.measured(state)
+        lensPrevShot = `overlay-lens-transient-${name}.png`
         await drainRejections(state)
+        // 救援卡是 z-30 的不透明卡,留著會蓋住下一輪的狀態 —— 先收掉
+        await overlay.locator('.glass-pill button[title="關閉"]').first().click().catch(() => {})
+        await sleep(600)
       }
     }
     // 收尾:回到展開形態,不讓後面的斷言看到一個帶著救援卡的畫面

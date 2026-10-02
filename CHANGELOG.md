@@ -7,6 +7,149 @@
 
 ## [Unreleased]
 
+### 深度驗證這一輪的七塊改動:抓到三個真缺陷,其中一個的證明力是三次才建立起來的
+
+這一輪的工作樹上有 17 檔、581 行未提交的改動(VAD 語音時長語意、Record 時間戳、
+逐字稿亂序重組、Practice 非同步世代、浮層暫態提示避讓、Karaoke 逐詞切分、Scripts 草稿同步)。
+每一塊都先讀程式碼與時序推演,再以測試收口。**六條待證的假設裡,三條是真的、
+兩條是預測錯了、一條是已知限制。**
+
+#### 真缺陷 1:Practice 的世代閘門擺在副作用之後(最嚴重)
+
+`finishAnswerInner` 裡的 `finalize()` / `setCurTranscript()` / `pushTranscript()`
+排在 `isCurrent(generation)` 檢查**之前**。
+
+`drainPending` 最多等 65 秒,這段時間裡使用者可以離開頁面(unmount 會 invalidate)。
+於是重置後才抵達的逾時回覆仍然會:對**新**一輪的 `segsRef` 呼叫 `finalize()`
+(提前釋放新場次還在飛的槽位),並把舊逐字稿 `pushTranscript` 進 main 的
+panic/coaching 上下文 —— 新場次會引用到上一輪的內容。
+
+**這正是 `GenerationGate` 要消滅的那類污染,只是從另一條路鑽進來。**
+閘門寫了,但擺錯了位置,等於沒有。
+
+修法:把世代檢查提到**每一個副作用之前**。
+
+證明力:`practiceGeneration.test.ts`(讀原始碼、斷言閘門位置)。這條測試寫完時
+**確實是紅的** —— 閘門在 offset 1129、`finalize()` 在 922,紅在正確的那一步。
+
+#### 真缺陷 2:句首標點自己吃一格 280ms 的 tick
+
+`tokenizeKaraokeChunk` 的 `TRAILING_PUNCT && tokens.length > wordStart`:標點位於
+**詞首**時條件不成立,落到 `emit(ch)` 產生一個獨立的符號 token。
+
+- 修前:`"，你好世界"` → `["，","你","好","世","界"]`(“，”獨自亮一格)
+- 修後:`["，你","好","世","界"]`(與開引號同命運,掛到下一塊開頭)
+
+同時把比較對象從「本詞起點」改成「整條 chunk 的長度」—— 這樣跨詞的
+`"你好 世界。"` 也會把句號掛到前一個詞的尾巴,才對得起換氣的語意。
+
+#### 真缺陷 3:`karaokeTokenSpacing` 缺值時英文詞距整個消失
+
+`Surfaces.tsx` 原本寫 `model.karaokeTokenSpacing[i] ?? []`。資料一旦缺漏,
+**每一個**邊界都變成「沒有詞距」:英文逐詞高亮整串黏在一起、看不到分隔,
+**而且沒有任何錯誤訊息**。
+
+那是靜默降級,比明顯壞掉更難察覺。改成 `tokenGapAt(spacing, i)`:缺資料時
+回到舊語意(每個詞都有詞距)—— 多一點詞距只是醜,退回不可讀才是災難。
+
+#### 預測錯的兩條(記下來,因為它們長得像缺陷)
+
+- **`Math.min(start, end)` 不是遮蔽,是防禦性冗餘。** 曾懷疑它會靜默產生零長度
+  段落讓該段從統計蒸發。推演後證偽:`leading + trailing ≤ audio.length/sr`
+  (兩者是 buffer 內互斥的部分,中間夾著 speech),所以 `start ≤ end` 恆成立,
+  `min` 永遠夾不到。程式碼維持原樣。
+- **Dashboard 混用新舊語意是真的**(新 session 用 VAD 時長、舊的走 `end - start`
+  fallback,卻平均在一起),但回溯修正會動到稽核的種子資料。**記為已知限制**,
+  不在本輪修。
+
+#### 貼鏡形態的暫態提示從來沒有被量測過
+
+這一輪在貼鏡(LENS_SIZE 420×170)加了 coaching pill 與 `suppressBottom`,
+但 `audit-deep` 只宣告了 `overlay/lens@transient-panic` 一個狀態 ——
+turn-yield 與 coaching 這兩條路徑**沒有任何狀態證明**。
+
+420×170 正是一個會把卡片裁掉的視窗大小。補上 `transient-turn` 與
+`transient-coaching`(三種暫態逐一量、逐一清掉救援卡殘留),
+`audit:deep.minStates` 由 40 調高到 42 並在 BASELINE 註明來由。
+
+#### e2e:兩段式假麥克風,以及一次「綠燈但測不到東西」
+
+新增 `e2e/practice-generation.spec.ts` 驗逐字稿依**音訊槽位順序**組裝。
+
+要讓 VAD 自然切出兩段,需要「語音—靜音—語音」的 WAV:`make-audio-fixture`
+現在會一併產生 `voice-2seg.wav`(中段插 1.2s 靜音讓 VAD 收段)。
+原本的 `--use-fake-device-for-media-stream` 是連續合成訊號,整段只切出一段 ——
+**亂序根本不會發生,測試會變成一個「測不到東西的綠燈」。**
+
+**這條 spec 的證明力是三次才建立起來的,過程本身就是記錄:**
+
+1. 第一次寫完就綠。把 `resolve()` 變異成依完成順序 —— **還是綠**。
+   原因:變異只壞了推送順序,而 `toString()` 照槽位讀,送評的字串不變。
+2. 換成真正的回歸(`toString()` 依完成序)—— **還是綠**。
+   原因:STT 延遲 1200ms 不足以讓後段搶先,**根本沒有製造出亂序**。
+3. 把第 1 段延遲拉到 6.5s —— 終於紅了,但**紅在未變異的程式上**。
+   診斷後確認是**測試時序**問題:延遲超過了 `finalize()` 的時機,
+   測到的是「逾時路徑」不是「亂序路徑」。
+4. 插樁印出 `reserve`/`resolve` 的實際次序,確認 `OrderedTranscript` 表現正確
+   (槽位 0/1/2 依序保留,resolve 以 1→2→0 亂序到達,最終 chunks 順序正確)。
+5. 延遲調成 4.5s,讓完成序變成 2 → 1 → 3:**確定亂序,且全部在停止錄音之前落地**。
+6. 最後驗紅綠:未變異**綠**、變異成完成順序**紅**。**這才有證明力。**
+
+#### 誠實揭露:計畫中的「競態 e2e」沒有做,也做不到
+
+計畫原本要寫「drain 逾時 → 按重新開始 → 舊回覆抵達」的 e2e。實作時發現
+**真實 UI 上不可達**:`再練一輪` 只在 done 階段渲染,run/draining 階段按不到;
+離開頁面則被 App 的 leave guard 擋下。硬要重現就得繞過產品 UI 直接改 React 狀態 ——
+那測的是測試夾具,不是產品。
+
+所以競態那一半留在**原始碼層級的不變量測試**(`practiceGeneration.test.ts`),
+e2e 只驗整合層面。**不留一條抓不到東西卻長得像防線的斷言。**
+
+#### 推送前又抓到一個:新 e2e 在 CI 上會永遠 skip
+
+閘門本地全綠之後,準備推送前再掃一輪,抓到這個:
+
+`fixtures/audit/` 是 gitignore 的產物目錄,而 `practice-generation.spec.ts` 依賴
+其中的 `voice-2seg.wav`。CI 的 **e2e job 沒有跑 `make-audio-fixture`**(只有 audit job 有),
+於是那條 spec 在 CI 上會**永遠 skip** —— 而 skip 過的測試在報告上與「通過」
+長得一模一樣。
+
+**「多了一條測試」與「多了一條永遠綠的空測試」長得一模一樣**,這是本專案記錄過
+最貴的失敗模式,而它剛剛發生在我自己身上。
+
+兩層修法:
+
+- `ci.yml` 的 e2e job 補上 `make-audio-fixture`(與 audit job 對稱);
+- 更根本的是 **spec 自己補**:缺 fixture 就當場跑一次產生器,而不是 skip。
+  產生是離線的(有 SAPI 用真語音,沒有用合成波形),約一秒。
+  實測:手動刪掉 fixture 後單跑,e2e 仍然綠 —— 因為它自己產生了。
+
+只有連產生都失敗才 skip,那時訊息明說「這個環境產不出 fixture,亂序路徑沒有被量到
+(不是「測過了」)」。
+
+#### 另一個:檔頭註解在說謊
+
+`practiceGeneration.test.ts` 的檔頭宣稱競態的執行期證明「由 e2e 以『注入逾時回覆
+→ 重置 → 斷言新場次逐字稿乾淨』提供」。**但那條 e2e 不存在,而且做不到**
+(上一節已經說明真實 UI 上不可達)。實際上 `practice-generation.spec.ts` 驗的是
+**槽位順序**,與這裡的競態無關。
+
+量測層說謊 —— 與本專案反覆記載的問題同型,這次出現在自己寫的註解裡。
+改成明寫「這條測試證明不了執行期競態,那一格刻意留白」,並說明
+`practice-generation.spec.ts` 覆蓋的是另一件事。
+
+順帶刪掉檔頭裡重複出現兩次的同一段(寫入時的瑕疵)。
+
+#### 驗證
+
+| 項目 | 結果 |
+|---|---|
+| `typecheck` | 0 errors |
+| 單元測試 | **431 通過 / 39 檔**(新增 9 條:modeTransforms 5、practiceGeneration 4) |
+| e2e | 新增 `practice-generation.spec.ts`(紅綠已驗;刪掉 fixture 後仍綠 = 自己會產生) |
+| `audit:deep.minStates` | 40 → 42(新增兩個貼鏡轉態狀態,附來由註解) |
+| `npm run release` | **10/10 全通過**,總計 17m16s |
+
 ### 把覆蓋閘門的兩個開著的口收掉,然後閘門自己抓到了三件事
 
 計畫對帳清單上還開著的 6(d)(負向驗證:抽掉假麥克風)與 8(列舉只在單一尺寸),這一則收口。

@@ -14,3 +14,6 @@ docs/audit/
 
 # 稽核用的假裝置 fixture(產生物,由 npm run make-audio-fixture 產生)
 fixtures/audit/
+
+# 一次性 UI 目檢的捕掃產物(每次重新產生,不進版控)
+tmp-ui-audit/

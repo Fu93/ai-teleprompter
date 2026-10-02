@@ -40,7 +40,10 @@ const npx = isWin ? 'npx.cmd' : 'npx'
 // ---------------------------------------------------------------------------
 const BASELINE = {
   'audit:ui': { file: 'docs/audit/report.json', minStates: 6 },
-  'audit:deep': { file: 'docs/audit/deep/report.json', minStates: 40 },
+  // 40 → 42(2026-10-02):貼鏡形態原本只量了 panic 一種暫態。turn-yield 與 coaching
+  // 這兩條路徑都發生在 420×170 這個會被裁掉的視窗裡(turn-yield 會讓底部預讀行收起、
+  // coaching 是這一版才補上的),沒有狀態就是沒量過。此輪決定:接受 42。
+  'audit:deep': { file: 'docs/audit/deep/report.json', minStates: 42 },
   'audit:states': { file: 'docs/audit/states/report.json', minStates: 48 },
   'audit:edge': { file: 'docs/audit/edge/report.json', minStates: 9, kind: 'combos' },
   'audit:journey': { file: 'docs/audit/journey/report.json', minStates: 8 },
