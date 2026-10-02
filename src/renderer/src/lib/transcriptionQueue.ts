@@ -123,3 +123,77 @@ export function createPendingTracker<K>(): PendingTracker<K> {
     size: (key) => map.get(key)?.size ?? 0
   }
 }
+
+/** 識別最新的非同步流程；舊流程的回覆可用 token 檢查後安全忽略。 */
+export class GenerationGate {
+  private generation = 0
+
+  next(): number {
+    this.generation += 1
+    return this.generation
+  }
+
+  invalidate(): void {
+    this.generation += 1
+  }
+
+  current(): number {
+    return this.generation
+  }
+
+  isCurrent(token: number): boolean {
+    return token === this.generation
+  }
+}
+
+/**
+ * 將非同步 ASR 結果依照音訊分段送出順序組回逐字稿，而非依 API 完成順序。
+ * reserve() 必須在發出請求前同步呼叫；較晚回覆可先暫存，最終讀取仍按槽位排序。
+ */
+export class OrderedTranscript {
+  private readonly chunks: Array<string | null | undefined> = []
+  private nextToEmit = 0
+
+  reserve(): number {
+    this.chunks.push(undefined)
+    return this.chunks.length - 1
+  }
+
+  resolve(index: number, text: string): string[] {
+    if (index < 0 || index >= this.chunks.length || this.chunks[index] !== undefined) return []
+    this.chunks[index] = text
+    return this.takeReady()
+  }
+
+  skip(index: number): string[] {
+    if (index < 0 || index >= this.chunks.length || this.chunks[index] !== undefined) return []
+    this.chunks[index] = null
+    return this.takeReady()
+  }
+
+  /** Release resolved trailing chunks after a bounded wait expires. */
+  finalize(): string[] {
+    for (let i = this.nextToEmit; i < this.chunks.length; i++) {
+      if (this.chunks[i] === undefined) this.chunks[i] = null
+    }
+    return this.takeReady()
+  }
+
+  toString(): string {
+    const ready: string[] = []
+    for (let i = 0; i < this.chunks.length && this.chunks[i] !== undefined; i++) {
+      const chunk = this.chunks[i]
+      if (typeof chunk === 'string') ready.push(chunk)
+    }
+    return ready.join('')
+  }
+
+  private takeReady(): string[] {
+    const ready: string[] = []
+    while (this.nextToEmit < this.chunks.length && this.chunks[this.nextToEmit] !== undefined) {
+      const chunk = this.chunks[this.nextToEmit++]
+      if (typeof chunk === 'string') ready.push(chunk)
+    }
+    return ready
+  }
+}

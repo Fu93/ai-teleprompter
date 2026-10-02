@@ -46,6 +46,9 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
         const target = scripts[i]
         if (!target) return false
         setSelectedId(target.id ?? null)
+        // 編輯器渲染的是 draft,不是 selectedId 對應的稿 —— 只設 id 的話,
+        // 清單高亮與編輯器內容會各講各的(目檢截圖量到的不一致)。
+        setDraft({ title: target.title, content: target.content })
         return true
       }),
     [scripts]
@@ -138,9 +141,12 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
 
   const save = async (): Promise<boolean> => {
     if (selectedId == null) return false
+    // 存進 DB 的標題是「trim 後空則回填未命名講稿」;編輯器要跟著對齊,
+    // 否則清單顯示「未命名講稿」而輸入框仍是空的,兩邊各講各的
+    const storedTitle = draft.title.trim() || '未命名講稿'
     try {
       await db.scripts.update(selectedId, {
-        title: draft.title.trim() || '未命名講稿',
+        title: storedTitle,
         content: draft.content,
         updatedAt: Date.now()
       })
@@ -150,6 +156,7 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
       return false
     }
     setDirty(false)
+    if (draft.title !== storedTitle) setDraft((d) => ({ ...d, title: storedTitle }))
     await refresh(selectedId)
     return true
   }

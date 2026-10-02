@@ -96,17 +96,22 @@ function toTurns(segments: TranscriptSegment[]): Turn[] {
     const end = Math.max(seg.start, seg.end)
     const last = turns[turns.length - 1]
     const gap = last ? start - last.end : Number.POSITIVE_INFINITY
+    const intervalSec = Math.max(0, end - start)
+    const activeSpeechSec = Math.min(intervalSec, Math.max(0, seg.speechDurationSec ?? intervalSec))
     if (last && last.speaker === seg.speaker && gap <= GAP_THRESHOLD_SEC) {
+      const uniqueIntervalSec = Math.max(0, end - Math.max(start, last.coveredUntil))
+      // Keep VAD-measured voiced duration (excluding silence), while avoiding double-counting
+      // the portion of overlapping same-speaker audio already covered by the previous segment.
+      last.speechSec += intervalSec > 0 ? (activeSpeechSec * uniqueIntervalSec) / intervalSec : 0
       last.end = Math.max(last.end, end)
       last.text += ` ${seg.text}`
-      last.speechSec += Math.max(0, end - Math.max(start, last.coveredUntil))
       last.coveredUntil = Math.max(last.coveredUntil, end)
     } else {
       turns.push({
         speaker: seg.speaker,
         start,
         end,
-        speechSec: end - start,
+        speechSec: activeSpeechSec,
         coveredUntil: end,
         text: seg.text
       })

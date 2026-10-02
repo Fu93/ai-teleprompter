@@ -660,7 +660,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
                 className="input w-28"
               />
               <span className="text-xs text-ink-400">cm</span>
-              <button className="btn-outline ml-auto text-xs" disabled={manualDistance == null} onClick={() => goToStep(1)}>
+              <button className="btn-outline ml-auto whitespace-nowrap text-xs" disabled={manualDistance == null} onClick={() => goToStep(1)}>
                 <Ruler size={13} /> 用手動距離繼續
               </button>
             </div>

@@ -355,6 +355,8 @@ export interface TranscriptSegment {
   text: string
   start: number // 秒
   end: number
+  /** 實際高於 VAD 門檻的發聲時長；舊資料缺少時以 end - start 估算 */
+  speechDurationSec?: number
 }
 
 export interface MeetingSession {

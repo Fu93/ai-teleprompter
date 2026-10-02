@@ -1,8 +1,17 @@
 // 能量 VAD + 音訊分段器：把 MediaStream 切成一段段語音（Float32 @ 16kHz）
 // 不依賴第三方 VAD 模型，在 mic 與系統音訊 loopback 上都能用。
 
+export interface AudioSegmentMetadata {
+  /** 有聲 frame 數，不包含前置、尾端或段內靜音 */
+  speechDurationSec: number
+  /** 音訊 buffer 起點到第一個有聲 frame 的偏移 */
+  leadingSilenceSec: number
+  /** 最後一個有聲 frame 到音訊 buffer 終點的偏移 */
+  trailingSilenceSec: number
+}
+
 export interface SegmenterOptions {
-  onSegment: (audio: Float32Array, sampleRate: number) => void
+  onSegment: (audio: Float32Array, sampleRate: number, metadata: AudioSegmentMetadata) => void
   onLevel?: (rms: number) => void // 0~1，供 UI 顯示音量
   sampleRate?: number
   /** RMS 高於此視為語音（0~1） */
@@ -30,6 +39,7 @@ export class AudioSegmenter {
   private current: Float32Array[] = []
   private currentLen = 0
   private speechSamples = 0
+  private leadingSilenceSamples = 0
   private silenceRun = 0
   private preroll: Float32Array[] = []
   private prerollLen = 0
@@ -73,6 +83,7 @@ export class AudioSegmenter {
         this.inSpeech = true
         this.current = [...this.preroll]
         this.currentLen = this.prerollLen
+        this.leadingSilenceSamples = this.prerollLen
         this.preroll = []
         this.prerollLen = 0
       }
@@ -108,6 +119,7 @@ export class AudioSegmenter {
 
   private finishSegment(): void {
     this.inSpeech = false
+    const trailingSilenceSamples = this.silenceRun
     this.silenceRun = 0
     const total = this.currentLen
     // 判斷最短語音只計高於 VAD 門檻的 samples；尾端靜音與 preroll 不能
@@ -119,11 +131,16 @@ export class AudioSegmenter {
         merged.set(chunk, off)
         off += chunk.length
       }
-      this.onSegment(merged, this.sampleRate)
+      this.onSegment(merged, this.sampleRate, {
+        speechDurationSec: this.speechSamples / this.sampleRate,
+        leadingSilenceSec: this.leadingSilenceSamples / this.sampleRate,
+        trailingSilenceSec: trailingSilenceSamples / this.sampleRate
+      })
     }
     this.current = []
     this.currentLen = 0
     this.speechSamples = 0
+    this.leadingSilenceSamples = 0
   }
 
   /** 強制結束當前段（停止前呼叫） */
@@ -141,6 +158,7 @@ export class AudioSegmenter {
       this.current = []
       this.currentLen = 0
       this.speechSamples = 0
+      this.leadingSilenceSamples = 0
       this.silenceRun = 0
       this.preroll = []
       this.prerollLen = 0

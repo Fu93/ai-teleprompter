@@ -100,6 +100,32 @@ describe('buildSessionReport', () => {
     expect(r.longestMyTurnSec).toBe(6)
   })
 
+  it('採用 VAD 發聲時長，排除片段前後的靜音', () => {
+    const r = buildSessionReport([
+      { ...seg('me', '我說了十秒', 0.5, 12), speechDurationSec: 10 },
+      { ...seg('them', '對方說了五秒', 14, 20), speechDurationSec: 5 }
+    ])
+    expect(r.mySec).toBe(10)
+    expect(r.theirSec).toBe(5)
+    expect(r.talkRatio).toBeCloseTo(2 / 3)
+    expect(r.longestMyTurnSec).toBe(10)
+    expect(r.myCpm).toBe(30)
+  })
+
+  it('舊逐字稿沒有 VAD metadata 時仍以時間區間估算', () => {
+    const r = buildSessionReport([seg('me', '我說了四秒', 0, 4)])
+    expect(r.mySec).toBe(4)
+    expect(r.myCpm).toBe(75)
+  })
+
+  it('VAD metadata 不可超過片段區間，且重疊發言不重複計時', () => {
+    const r = buildSessionReport([
+      { ...seg('me', '前段', 0, 4), speechDurationSec: 4 },
+      { ...seg('me', '重疊段', 2, 6), speechDurationSec: 4 }
+    ])
+    expect(r.mySec).toBe(6)
+  })
+
   it('冷場統計(>5 秒的間隙)', () => {
     const r = buildSessionReport([
       seg('me', '開場', 0, 10),

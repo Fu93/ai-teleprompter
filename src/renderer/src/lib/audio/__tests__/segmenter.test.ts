@@ -55,5 +55,40 @@ describe('AudioSegmenter', () => {
     impl.handleFrame(silence)
     expect(onSegment).toHaveBeenCalledOnce()
     expect(onSegment.mock.calls[0][0]).toBeInstanceOf(Float32Array)
+    expect(onSegment.mock.calls[0][2]).toEqual({
+      speechDurationSec: 0.02,
+      leadingSilenceSec: 0,
+      trailingSilenceSec: 0.02
+    })
+  })
+
+  it('量出語音時長並分離前置與尾端靜音', () => {
+    const onSegment = vi.fn()
+    const segmenter = new AudioSegmenter({
+      sampleRate: 1_000,
+      threshold: 0.1,
+      prerollMs: 20,
+      minSpeechMs: 10,
+      minSilenceMs: 20,
+      onSegment
+    })
+    const impl = internals(segmenter)
+    const silence = new Float32Array(10)
+    const speech = new Float32Array(10).fill(0.5)
+
+    impl.handleFrame(silence)
+    impl.handleFrame(silence)
+    impl.handleFrame(silence) // preroll capped to 20 ms
+    impl.handleFrame(speech)
+    impl.handleFrame(speech)
+    impl.handleFrame(silence)
+    impl.handleFrame(silence)
+
+    expect(onSegment).toHaveBeenCalledOnce()
+    expect(onSegment.mock.calls[0][2]).toEqual({
+      speechDurationSec: 0.02,
+      leadingSilenceSec: 0.02,
+      trailingSilenceSec: 0.02
+    })
   })
 })

@@ -23,7 +23,7 @@ import { aiChat, extractJson, resolvedModelName } from '../lib/ai'
 import { toast } from '../lib/toast'
 import { describeError } from '../lib/describeError'
 import { buildSessionReport, sortTranscriptSegments } from '../lib/session-intelligence'
-import { AudioSegmenter } from '../lib/audio/segmenter'
+import { AudioSegmenter, type AudioSegmentMetadata } from '../lib/audio/segmenter'
 import { WhisperClient, WHISPER_MODELS, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { encodeWav } from '../lib/audio/wav'
 import { registerAuditControl } from '../lib/auditBridge'
@@ -277,7 +277,8 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
     speaker: 'me' | 'them',
     sessionId: number,
     sessionStartedAt: number,
-    segmentEndedAt: number
+    segmentEndedAt: number,
+    metadata: AudioSegmentMetadata
   ): Promise<void> => {
     if (!settings) return
     try {
@@ -300,12 +301,15 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       }
       if (!text.trim() || sessionId !== sessionIdRef.current) return
       // 時間戳取自音訊分段完成時，不是 ASR 回應時間；雲端延遲不應改寫語音發生時間。
-      const end = Math.max(0, (segmentEndedAt - sessionStartedAt) / 1000)
+      const bufferEnd = Math.max(0, (segmentEndedAt - sessionStartedAt) / 1000)
+      const end = Math.max(0, bufferEnd - metadata.trailingSilenceSec)
+      const start = Math.max(0, bufferEnd - audio.length / sr + metadata.leadingSilenceSec)
       const seg: TranscriptSegment = {
         speaker,
         text: text.trim(),
-        start: Math.max(0, end - audio.length / sr),
-        end
+        start: Math.min(start, end),
+        end,
+        speechDurationSec: metadata.speechDurationSec
       }
       // ASR requests from mic and system audio run concurrently; completion order is
       // not speech order. Keep the live transcript and persisted report chronological.
@@ -343,11 +347,16 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
   }
 
   /** 精確追蹤每個 VAD flush/segmenter 送出的轉錄 Promise，停止時才不靠段落數猜測是否完成。 */
-  const queueTranscription = (audio: Float32Array, sr: number, speaker: 'me' | 'them'): void => {
+  const queueTranscription = (
+    audio: Float32Array,
+    sr: number,
+    speaker: 'me' | 'them',
+    metadata: AudioSegmentMetadata
+  ): void => {
     const sessionId = sessionIdRef.current
     const sessionStartedAt = sessionStartedAtRef.current
     const segmentEndedAt = Date.now()
-    const job = transcribeSegment(audio, sr, speaker, sessionId, sessionStartedAt, segmentEndedAt)
+    const job = transcribeSegment(audio, sr, speaker, sessionId, sessionStartedAt, segmentEndedAt, metadata)
     // 送出就算一次「有偵測到語音」——不管結果成功或失敗。
     // 停止時靠它分辨「真的沒說話」與「說了但辨識失敗」。
     sttAttemptedRef.current += 1
@@ -460,7 +469,7 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
         }
         streamsRef.current.mic = stream
         segmentersRef.current.mic = new AudioSegmenter({
-          onSegment: (a, sr) => queueTranscription(a, sr, 'me'),
+          onSegment: (a, sr, metadata) => queueTranscription(a, sr, 'me', metadata),
           onLevel: setMicLevel,
           threshold: 0.01
         })
@@ -470,7 +479,7 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
         const stream = streamsRef.current.sys
         if (!stream) throw new Error('系統音訊擷取已中止，請重新開始')
         segmentersRef.current.sys = new AudioSegmenter({
-          onSegment: (a, sr) => queueTranscription(a, sr, 'them'),
+          onSegment: (a, sr, metadata) => queueTranscription(a, sr, 'them', metadata),
           onLevel: setSysLevel,
           threshold: 0.018
         })
@@ -668,10 +677,16 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
     const aiProvider = settings.ai.provider
     setAiBusyId(s.id)
     try {
-      const transcript = s.segments
-        .map((seg) => `[${seg.speaker === 'me' ? '我' : '對方'}] ${seg.text}`)
-        .join('\n')
-        .slice(-8000)
+      const transcript = (() => {
+        const full = s.segments
+          .map((seg) => `[${seg.speaker === 'me' ? '我' : '對方'}] ${seg.text}`)
+          .join('\n')
+        // 頭尾組合而不是只取尾段:長會議的開頭(議程、結論)與結尾(決定事項)
+        // 都要進摘要,中段才可犧牲。只取 slice(-8000) 時前半場會被靜默丟掉,
+        // 使用者看到的摘要不知不覺漏掉了會議的結論段。
+        if (full.length <= 8000) return full
+        return `${full.slice(0, 6000)}\n…(中略)…\n${full.slice(-2000)}`
+      })()
       const raw = await aiChat(settings, [
         {
           role: 'system',

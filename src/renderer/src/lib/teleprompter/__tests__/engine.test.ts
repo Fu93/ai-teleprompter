@@ -15,6 +15,7 @@ function makeModel(overrides: Partial<ScriptModel> = {}): ScriptModel {
     ],
     karaokeChunks: ['a b', 'c'],
     karaokeWordChunks: [['a', 'b'], ['c']],
+    karaokeTokenSpacing: [[false, true], [false]],
     bullets: [
       { title: '要點一', subPoints: [] },
       { title: '要點二', subPoints: ['細節'] },

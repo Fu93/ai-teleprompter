@@ -828,7 +828,14 @@ export default function OverlayApp(): JSX.Element {
           </div>
         </div>
         {/* 角落吸附的按鈕改放在上方工具列的空白處(見下方註解) */}
-        <LensSurface model={model} state={state} displayMode={displayMode} />
+        <LensSurface
+          model={model}
+          state={state}
+          displayMode={displayMode}
+          // 預讀行與所有暫態提示是絕對定位的同一段高度:任一條出現都先收起,
+          // 否則 turn-yield / coaching 會直接疊印在「下一句」上(與 lensHint 同型缺陷)
+          suppressBottom={(lensHint || !!turnYieldHint || !!coachingHint) && panicPhase === 'idle'}
+        />
         {/* 角落吸附:貼到螢幕上緣,離鏡頭軸線最近。
             原本是 absolute top-9 浮在正文上方,實測把第一行提詞文字整行蓋住;
             改成把正文往下讓位(pt-8)又會把底部的「下一句」擠出 170px 的視窗。
@@ -845,9 +852,20 @@ export default function OverlayApp(): JSX.Element {
             把這條貼到攝影機 5cm 內 — 眼神會自然對準鏡頭,錄起來不像看稿
           </div>
         )}
-        {turnYieldHint && panicPhase === 'idle' && (
-          <div className="pointer-events-none absolute inset-x-3 bottom-8 z-10 flex items-center justify-center gap-1.5 rounded-full bg-sky-500/20 px-3 py-1 text-[10px] font-medium text-sky-300">
-            <MessageCircleQuestion size={11} /> {turnYieldText}
+        {panicPhase === 'idle' && (turnYieldHint || coachingHint) && (
+          <div className="pointer-events-none absolute inset-x-3 bottom-8 z-10 flex flex-col items-center gap-1.5">
+            {turnYieldHint && (
+              <div className="flex items-center justify-center gap-1.5 rounded-full bg-sky-500/20 px-3 py-1 text-[10px] font-medium text-sky-300">
+                <MessageCircleQuestion size={11} /> {turnYieldText}
+              </div>
+            )}
+            {/* 教練提示在藥丸與展開分支都會出現,貼鏡原本漏了 ——
+                語速過快/填充詞/冷場恰好在最像簡報的場景無聲。樣式對齊另外兩形態。 */}
+            {coachingHint && (
+              <div className="flex items-center justify-center gap-1.5 rounded-full bg-amber-500/20 px-3 py-1 text-[10px] font-medium text-amber-300">
+                <Gauge size={11} /> {coachingHint.message}
+              </div>
+            )}
           </div>
         )}
         {panicPhase !== 'idle' && (
@@ -862,6 +880,19 @@ export default function OverlayApp(): JSX.Element {
       </div>
     )
   }
+
+  // 跟讀狀態條:文字與可見性抽成變數,內容 / title 屬性共用一份 ——
+  // 兩處各寫一次三元式遲早分叉,而截斷後沒有 title 就是看不到全文
+  const followBarText =
+    followStatus === 'idle'
+      ? followNotice || ''
+      : followMsg ||
+        (followStatus === 'listening'
+          ? lastHeard || '聆聽中…'
+          : followStatus === 'error'
+            ? '跟讀啟動失敗'
+            : '')
+  const followBarVisible = followStatus !== 'idle' || !!followNotice
 
   return (
     <div
@@ -892,7 +923,12 @@ export default function OverlayApp(): JSX.Element {
                     : 'bg-ink-600'
             )}
           />
-          <span className="max-w-[130px] truncate text-xs font-medium text-white/72">
+          <span
+            className="max-w-[130px] truncate text-xs font-medium text-white/72"
+            // 藥丸分支同欄位有 title;這裡沒有就是「截斷了但看不到全文」
+            // (專案自己的 truncated-no-label 規則,講稿標題可長到 130px 裝不下)
+            title={payload.title || '提詞浮層'}
+          >
             {payload.title || '提詞浮層'}
           </span>
         </div>
@@ -1116,15 +1152,8 @@ export default function OverlayApp(): JSX.Element {
             <div className="pointer-events-none absolute bottom-1.5 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-3 py-1 text-[10px] text-white/72">
               {followStatus === 'loading' && <Loader2 size={10} className="animate-spin" />}
               {followStatus === 'listening' && <AudioLines size={10} className="text-emerald-400" />}
-              <span className="max-w-[280px] truncate">
-                {followStatus === 'idle'
-                  ? followNotice
-                  : followMsg ||
-                    (followStatus === 'listening'
-                      ? lastHeard || '聆聽中…'
-                      : followStatus === 'error'
-                        ? '跟讀啟動失敗'
-                        : '')}
+              <span className="max-w-[280px] truncate" title={followBarText || undefined}>
+                {followBarText}
               </span>
             </div>
           ) : null}
@@ -1142,7 +1171,14 @@ export default function OverlayApp(): JSX.Element {
           且不透明),被蓋住的提示文字就變成一個真的會被稽核抓到的遮擋缺陷。
           救援永遠比提醒重要,而提示條本來就會重播。 */}
       {panicPhase === 'idle' && (turnYieldHint || coachingHint) && (
-        <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex flex-col items-center gap-2">
+        <div
+          // 跟讀狀態條佔著 bottom 1.5–30px:提示 pill 從 bottom-4 起跳會與它疊印,
+          // 兩者都是暫態,同時出現時兩行都讀不了 → 條存在時提示上移避讓
+          className={cn(
+            'pointer-events-none absolute inset-x-4 z-20 flex flex-col items-center gap-2',
+            followBarVisible ? 'bottom-12' : 'bottom-4'
+          )}
+        >
           {turnYieldHint && (
             <div className="flex items-center justify-center gap-2 rounded-full bg-sky-500/25 px-4 py-2 text-xs font-medium text-sky-200 shadow-lg">
               <MessageCircleQuestion size={14} className="shrink-0" />

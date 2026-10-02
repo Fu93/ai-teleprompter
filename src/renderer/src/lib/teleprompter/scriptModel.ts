@@ -24,6 +24,8 @@ export interface ScriptModel {
   phrases: Phrase[][]
   karaokeChunks: string[]
   karaokeWordChunks: string[][]
+  /** 與 karaokeWordChunks 對齊:true = 該詞之前在原文裡有空白(渲染層的詞距來源) */
+  karaokeTokenSpacing: boolean[][]
   bullets: OverlayBullet[]
 }
 
@@ -31,7 +33,7 @@ const chunker = createSemanticChunker()
 
 export function buildScriptModel(content: string): ScriptModel {
   const processed = chunker.processScript(content ?? '')
-  const { chunks, wordChunks } = buildKaraokeChunks(content ?? '')
+  const { chunks, wordChunks, spacing } = buildKaraokeChunks(content ?? '')
   const generated = generateBullets(content ?? '')
   const bullets: OverlayBullet[] =
     generated.length > 0
@@ -44,6 +46,7 @@ export function buildScriptModel(content: string): ScriptModel {
     phrases: processed.phrases,
     karaokeChunks: chunks,
     karaokeWordChunks: wordChunks,
+    karaokeTokenSpacing: spacing,
     bullets
   }
 }
