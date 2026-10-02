@@ -1,7 +1,7 @@
 /**
  * audit-states.mjs — 互動狀態稽核:量「不是預設狀態」的畫面。
  *
- * 執行:npm run build && AI_TP_E2E=1 node scripts/audit-states.mjs
+ * 執行:npm run build && npm run audit:states
  * 輸出:docs/audit/states/report.json + docs/audit/states/*.png
  *
  * 為什麼需要這一支:

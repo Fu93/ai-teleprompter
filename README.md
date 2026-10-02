@@ -48,7 +48,7 @@
 ```bash
 npm install
 npm run dev        # 開發（兩視窗熱重載）
-npm test           # 414 單元測試
+npm test           # 單元測試
 npm run test:e2e   # Playwright e2e 封鎖套件(先 npm run build;與 CI 同一份清單)
 npm run dist       # NSIS 安裝包
 ```

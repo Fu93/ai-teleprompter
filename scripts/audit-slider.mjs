@@ -5,9 +5,13 @@
 // 視覺上會是滑塊浮在軌道上方或被切掉。這裡把滑桿單獨截一張,
 // 用像素分析確認:(1) 軌道存在且 4px (2) 滑塊是完整 18px 的圓。
 //
-// 執行:AI_TP_E2E=1 node .audit/probe-slider.mjs
+// 執行:npm run build && node scripts/audit-slider.mjs
 import { _electron as electron } from 'playwright-core'
 import { mkdirSync } from 'fs'
+
+process.env.AI_TP_E2E = '1'
+process.env.AI_TP_AUDIT = '1'
+delete process.env.AI_TP_DEBUG
 
 mkdirSync('docs/audit', { recursive: true })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
