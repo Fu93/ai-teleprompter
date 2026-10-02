@@ -16,7 +16,7 @@
  *
  * ── 這支做什麼 ──
  *
- * 以子程序跑一次 audit:effects,帶著兩種破壞,然後**斷言報告真的變紅**:
+ * 以子程序跑一次 audit:effects,帶著三種破壞,然後**斷言報告真的變紅**:
  *
  *   drop-registry:抽掉登記表的幾筆 → 必須出現 no-effect-probe
  *     對應到「刪掉一筆登記,稽核不會變紅」那個真的發生過的洞。
@@ -24,7 +24,15 @@
  *   skip-probes:讓選定的探針不給任何結論 → 必須出現 probe-not-run
  *     與「某段量測程式碼從來沒執行過」的可觀察結果完全相同。
  *
- * 兩種破壞同時注入、一次執行(跑一次約 4-5 分鐘)。
+ *   drop-fake-audio:抽掉假麥克風 WAV 旗標 → 錄音探針必須落進
+ *     state-unreached(前置條件未備妥),而**不是**繼續綠或被記成 dead。
+ *     對應計畫 6(d):靜音無法區分「收音壞了」與「沒人說話」—— 若量測端
+ *     缺了前置還硬跑,燒完 24 秒輪詢後把一顆好按鈕記成 dead,等於把
+ *     「環境缺前置」說謊成「產品壞了」;反過來,若探針對旗標缺席無感,
+ *     它就是一顆對自己的前提不負責的綠燈。斷言兩頭:旗標真的沒掛上
+ *     (meta 的「實際啟動含假麥克風」= false)且探針真的退場(state-unreached)。
+ *
+ * 三種破壞同時注入、一次執行(跑一次約 4-5 分鐘)。
  *
  * ⚠️ 破壞只動量測端,不碰產品、不需要重新建置 —— 所以它可以排在 CI 的
  * schedule 上(而不是每次 push),也可以在改完量測邏輯時手動跑一次。
@@ -45,7 +53,7 @@ const REPORT = 'docs/audit/effects/report.json'
 const BACKUP = 'docs/audit/effects/report.selftest-backup.json'
 const isWin = process.platform === 'win32'
 const node = isWin ? 'node.exe' : 'node'
-const MODE = 'drop-registry,skip-probes'
+const MODE = 'drop-registry,skip-probes,drop-fake-audio'
 
 function runAudit() {
   return new Promise((resolve) => {
@@ -112,6 +120,38 @@ try {
   }
   if (!check2) exitCode = 1
 
+  // 檢查三:假麥克風旗標被抽掉時,錄音探針必須誠實退場(計畫 6(d))
+  //
+  // 斷言兩頭:
+  //   a) 破壞真的生效 —— meta 的「實際啟動含假麥克風」必須是 false。
+  //      這個值由 audit-effects 從**實際啟動 args** 推導;若某次重構讓
+  //      破壞不再生效(旗標又被掛回來),這裡會紅,而不是讓整個檢查空轉。
+  //   b) 探針真的退場 —— `record|button|開始聆聽` 必須以 state-unreached
+  //      出現在問題清單,且理由是「假麥克風未掛上」。若它繼續 works,
+  //      就不會有 unreached 紀錄,檢查會紅;若它被記成 dead(環境缺前置
+  //      誤報成產品缺陷),同樣不會是 unreached,檢查也會紅。
+  const audioDropIntent = sabotage['假麥克風旗標已抽掉'] === true
+  const audioDropEffective = sabotage['實際啟動含假麥克風'] === false
+  const recordRetreat = problems.filter(
+    (p) =>
+      p.kind === 'state-unreached' &&
+      String(p.page).includes('開始聆聽') &&
+      String(p.text).includes('假麥克風')
+  )
+  const check3 = audioDropIntent && audioDropEffective && recordRetreat.length > 0
+  console.log(
+    `${check3 ? '✓' : '✗'} 檢查三(抽掉假麥克風 → 錄音探針退場): ` +
+      `意圖=${audioDropIntent} 實際生效=${audioDropEffective} → 抓到 ${recordRetreat.length} 筆 state-unreached`
+  )
+  if (!check3) {
+    console.log(
+      '    期望:meta.實際啟動含假麥克風=false,且 report|button|開始聆聽 以 state-unreached 出現' +
+        '(理由含「假麥克風未掛上」)。works 或 dead 都算失敗 —— 前者是對前提不負責的綠燈,' +
+        '後者是把量測端缺前置誤報成產品缺陷。'
+    )
+  }
+  if (!check3) exitCode = 1
+
   console.log(
     '\n' +
       (exitCode === 0
@@ -119,7 +159,7 @@ try {
         : '**閘門抓不住上面某一種破壞。** 這代表它對那種失敗是盲的,\n' +
             '而那份「0 筆問題」的綠燈正是靠這種盲區撐出來的。')
   )
-  console.log('(問題總數不作為判斷依據 —— 工作樹裡別人的紅燈與這兩項無關)')
+  console.log('(問題總數不作為判斷依據 —— 工作樹裡別人的紅燈與這三項無關)')
   console.log(`完整問題清單:${JSON.stringify(problems.map((p) => p.kind))}`)
 } catch (err) {
   console.error('self-test 失敗:', err.message)

@@ -228,6 +228,19 @@ const SELFTEST_SKIP = SELFTEST.includes('skip-probes')
 const REGISTRY = SELFTEST.includes('drop-registry')
   ? buildRegistry(CONTROLS.filter((c) => !SELFTEST_DROP.has(baseKey(c.key))))
   : buildRegistry()
+
+/**
+ * 假麥克風是否真的掛上了啟動參數。
+ * 由**實際的 args** 推導(不是由 self-test 開關推導):探針的前置條件檢查
+ * 要對「這一輪真的用什麼環境量」負責 —— 之後不管誰、為了什麼原因把
+ * `--use-file-for-fake-audio-capture` 拿掉,錄音探針都會誠實地降級成
+ * unreachable(前置條件未備妥),而不是燒完 24 秒輪詢後把一顆好按鈕記成 dead。
+ * 靜音無法區分「收音壞了」與「沒人說話」—— 見 fake-media.mjs 的旗標說明。
+ * (宣告在模組層、賦值在 launch():上面的 self-test note 不讀這個值 ——
+ *  它在 launch 之前執行,讀到的是初始值而不是這一輪的實況。)
+ */
+let FAKE_AUDIO_ARMED = true
+
 // 把自己破壞了什麼寫進報告,self-test 才不用在另一支腳本裡重算一遍 ——
 // 兩處各算一次,改了一處就會出現「self-test 壞掉」與「self-test 空轉」
 // 長得一樣的情況,而那正是這個專案反覆吃虧的地方。
@@ -235,7 +248,11 @@ if (SELFTEST) {
   report.note('self-test 破壞', {
     mode: SELFTEST,
     抽掉登記項: [...SELFTEST_DROP],
-    探針不給結論: [...SELFTEST_SKIP]
+    探針不給結論: [...SELFTEST_SKIP],
+    // drop-fake-audio 是「抽掉啟動旗標」而不是「抽掉清單項」,沒有清單可列。
+    // 「旗標真的被抽掉」由 launch() 之後覆寫的「實際啟動含假麥克風」證明,
+    // 這裡只記破壞的意圖;實況在 main() 啟動後補記。
+    假麥克風旗標已抽掉: SELFTEST.includes('drop-fake-audio')
   })
 }
 
@@ -256,8 +273,10 @@ function blocked(name, reason) {
 
 async function launch() {
   // 假裝置:這一輪最重要的環境改動。理由與「證明了什麼、沒證明什麼」見 fake-media.mjs。
-  const args = ['.', ...fakeMediaArgs({})
-  ]
+  // self-test 的 drop-fake-audio 破壞:抽掉假麥克風 WAV 旗標(計畫 6(d) 的負向驗證),
+  // 錄音探針必須因此落進 unverifiable,而不是繼續綠。
+  const args = ['.', ...fakeMediaArgs(SELFTEST.includes('drop-fake-audio') ? { audio: null } : {})]
+  FAKE_AUDIO_ARMED = args.some((a) => String(a).startsWith('--use-file-for-fake-audio-capture'))
   const app = await electron.launch({ args, timeout: 60_000 })
   let main
   for (let i = 0; i < 60 && !main; i++) {
@@ -2405,29 +2424,39 @@ async function stepRecord(app, main, stt, llm) {
   // (c) 開始聆聽 → mock 辨識有收到音訊、逐字稿真的出現
   const pStart = probe(key('record', 'button', '開始聆聽'), '錄音')
   const sessionsBefore = await countOf(main, 'sessions')
-  const started = await clickText(main, '開始聆聽')
-  if (started !== true) {
-    pStart.unreachable('找不到「開始聆聽」')
+  // 前置條件:假麥克風沒掛上(或被 self-test 抽掉)時,**不點**。
+  // 旗標不在 = 假裝置餵靜音 = VAD 不會切段 = mock 收到 0 bytes,這個結果
+  // 與「收音壞了」完全同形 —— 點下去等 24 秒再記 dead,是把量測端缺前置
+  // 誤報成產品缺陷的正確做法的反面。unreachable 的語意正是為此存在的。
+  if (!FAKE_AUDIO_ARMED) {
+    pStart.unreachable(
+      '假麥克風未掛上(--use-file-for-fake-audio-capture 缺席):靜音無法區分「收音壞了」與「沒人說話」,這一輪不驗錄音'
+    )
   } else {
-    // 輪詢而不是睡固定 7 秒:語音是**分段**送出的(每段幾秒 + 一個猜測窗),
-    // 而「幾秒才送到第一段」不是產品的常數而是管線的參數。
-    // 上一輪睡 7 秒就斷言,量到 0 bytes —— 那是一顆好按鈕被時序記成 dead。
-    const NEEDLE = stt.text.slice(0, 8)
-    let bytes = 0
-    let text = ''
-    let appeared = false
-    for (let i = 0; i < 80 && !appeared; i++) {
-      bytes = stt.audioBytes()
-      text = await domText(main, 'main')
-      appeared = bytes > 0 && text.includes(NEEDLE)
-      if (!appeared) await sleep(300)
-    }
-    if (appeared) {
-      pStart.works(`mock 辨識收到 ${bytes} bytes 音訊,逐字稿出現「${NEEDLE}…」`, EVIDENCE.DATA)
+    const started = await clickText(main, '開始聆聽')
+    if (started !== true) {
+      pStart.unreachable('找不到「開始聆聽」')
     } else {
-      pStart.dead(
-        `開始聆聽後等了 24 秒:mock 收到 ${bytes} bytes、逐字稿${text.includes(NEEDLE) ? '有' : '沒有'}出現`
-      )
+      // 輪詢而不是睡固定 7 秒:語音是**分段**送出的(每段幾秒 + 一個猜測窗),
+      // 而「幾秒才送到第一段」不是產品的常數而是管線的參數。
+      // 上一輪睡 7 秒就斷言,量到 0 bytes —— 那是一顆好按鈕被時序記成 dead。
+      const NEEDLE = stt.text.slice(0, 8)
+      let bytes = 0
+      let text = ''
+      let appeared = false
+      for (let i = 0; i < 80 && !appeared; i++) {
+        bytes = stt.audioBytes()
+        text = await domText(main, 'main')
+        appeared = bytes > 0 && text.includes(NEEDLE)
+        if (!appeared) await sleep(300)
+      }
+      if (appeared) {
+        pStart.works(`mock 辨識收到 ${bytes} bytes 音訊,逐字稿出現「${NEEDLE}…」`, EVIDENCE.DATA)
+      } else {
+        pStart.dead(
+          `開始聆聽後等了 24 秒:mock 收到 ${bytes} bytes、逐字稿${text.includes(NEEDLE) ? '有' : '沒有'}出現`
+        )
+      }
     }
   }
 
@@ -3482,6 +3511,38 @@ async function stepSettingsExtra(app, main, llm) {
     if (typeof clip === 'string' && clip.includes('ollama')) pCopy.works(`剪貼簿拿到「${clip.slice(0, 30)}…」`, EVIDENCE.DATA)
     else pCopy.dead(`按了複製但剪貼簿是「${String(clip).slice(0, 30)}」—— 使用者貼出來貼不到指令`)
   }
+
+  // 「重查」(PreflightCard 的重新檢查鈕):效果 = 重跑金鑰讀取與 Ollama 探測。
+  // 用 mock 的 /api/tags 計數器驗 —— 點擊後計數必須增加,那是資料層證據;
+  // 按鈕上的「檢查中」spinner 是 UI 的自我宣稱,不算數。
+  // 前置:先清掉 pCopy 留下的 preflight.models 覆寫 —— 覆寫活著時 probeOllama
+  // 根本不出網(見 lib/preflight.ts),計數不動是量測端自己的環境,不是鈕壞了。
+  const pRecheck = probe(idKey('settings', 'preflight-recheck'), '設定')
+  await main.evaluate((url) => {
+    window.__auditForce?.('preflight.models', null)
+    return window.api.setSettings({ ai: { provider: 'ollama', ollama: { baseUrl: url } } })
+  }, llm.origin)
+  await sleep(900)
+  const recheckBtn = main.locator('[data-effect-id="preflight-recheck"]').first()
+  if (!(await recheckBtn.isVisible().catch(() => false))) {
+    pRecheck.unreachable('準備度卡片的重查鈕沒有渲染(卡片在這個狀態回 null?)')
+  } else {
+    const tagsBefore2 = llm.tagsCalls?.() ?? 0
+    await recheckBtn.click()
+    let retagged = false
+    for (let i = 0; i < 40 && !retagged; i++) {
+      retagged = (llm.tagsCalls?.() ?? 0) > tagsBefore2
+      if (!retagged) await sleep(250)
+    }
+    if (retagged) {
+      pRecheck.works(
+        `點擊後 mock 收到 /api/tags ${llm.tagsCalls() - tagsBefore2} 次(重新探測真的發生了)`,
+        EVIDENCE.DATA
+      )
+    } else {
+      pRecheck.dead(`按了重查但 mock 的 /api/tags 計數停在 ${tagsBefore2} —— 沒有任何重新探測`)
+    }
+  }
 }
 
 // 6.7 對話框與 toast
@@ -4144,6 +4205,17 @@ async function stepInventory(app, main, stt, llm) {
       })
       await sleep(2000)
     }
+    if (st.seed === 'preflightNoModel') {
+      // 「Ollama 裝好了,但還沒有任何模型」—— 唯一長著「複製指令」鈕的世界。
+      // preflight-issues 的 ollamaDown 世界只有「下載 Ollama」,兩者互斥
+      // (稽核覆寫 store 只有一份),所以這個世界要自己宣告,見 STATES 的註解。
+      await main.evaluate(async () => {
+        await window.api.setSettings({ ai: { provider: 'ollama' }, stt: { engine: 'local' } })
+        localStorage.removeItem('ai-tp.preflight.dismissed')
+        window.__auditForce?.('preflight.models', [])
+      })
+      await sleep(2000)
+    }
     if (st.seed === 'sttCloud') {
       /**
        * 雲端辨識的三個欄位只在 `engine === 'cloud'` 時渲染。
@@ -4350,12 +4422,60 @@ async function stepInventory(app, main, stt, llm) {
       await gotoViaSidebar(main, '總覽')
       await sleep(600)
     }
-    if (st.seed === 'preflightIssues') {
-      // ollamaDown 是全域覆寫,留著它會讓後面每一個狀態的準備度卡片都報一樣的問題。
+    if (st.seed === 'preflightIssues' || st.seed === 'preflightNoModel') {
+      // ollamaDown / models 覆寫是全域的,留著它會讓後面每一個狀態的準備度卡片都報一樣的問題。
+      // (傳 null 現在的語意是「解除覆寫」—— 見 PreflightCard 的 preflight.models 控制項。)
       await main.evaluate(() => window.__auditForce?.('preflight.models', null))
       await sleep(400)
     }
   }
+
+  // ── 窄視窗列舉:已知設計缺口 8 的收口 ──
+  //
+  // 計畫文件的誠實清單寫著:「列舉目前只在單一視窗尺寸下做;響應式隱藏的控制項
+  // 不會被列舉到。」audit-states 早就跑雙尺寸(預設 + 下限 960×640,那是
+  // createMainWindow 的 minWidth/minHeight),這裡把同一做法移植過來:
+  // 在下限尺寸把六個主視窗頁面重列舉一次,以 `size@960` 狀態標籤併進同一份
+  // enumerated。控制項「寬尺寸存在、窄尺寸被響應式隱藏」兩邊都會進 states[];
+  // 若有控制項**只在窄尺寸出現**,下面的對帳規則(no-effect-probe / probe-not-run)
+  // 會變紅 —— 那正是這個閘門要抓的東西,而不是先默默把涵蓋放行。
+  //
+  // 探針不需要重跑:對帳要回答的是「登記的控制項被量過沒」。探針的結論來自
+  // 寬尺寸下的行為量測;尺寸只是它出現與否的其中一個變因,不是另一種效果。
+  console.log('\n── 窄視窗列舉 960×640(收口設計缺口 8)…')
+  // 上一個狀態(crash/screen)把整棵樹換成了崩潰畫面 —— ErrorBoundary 不會因為
+  // crash.clear 自動復原(那正是它的設計:復原必須是使用者的明確動作)。
+  // 寬尺寸的各狀態都排在它之前所以沒人踩到;窄尺寸列舉排在它後面,
+  // **必須先重載**,否則六頁全部導航失敗,整段補掃靜默作廢
+  // (與第 498 行的崩潰復原同一做法:crash.clear + reload)。
+  await main.reload().catch(() => {})
+  await sleep(1200)
+  await main.setViewportSize({ width: 960, height: 640 }).catch(() => {})
+  await sleep(900)
+  let narrowTotal = 0
+  for (const [pageId, label] of [
+    ['dashboard', '總覽'],
+    ['scripts', '提詞講稿'],
+    ['record', '錄音轉錄'],
+    ['practice', '面試練習'],
+    ['calibration', '個人化校準'],
+    ['settings', '設定']
+  ]) {
+    if (!(await gotoViaSidebar(main, label))) {
+      blocked(`size@960:${pageId}`, `960×640 下導航到「${label}」失敗`)
+      continue
+    }
+    await sleep(700)
+    const n = await scan(main, pageId, null, 'size@960')
+    narrowTotal += n
+    statesSeen.push({ state: 'size@960', controls: n })
+  }
+  report.note('列舉尺寸', {
+    主尺寸: '1180×780(各狀態原生命列舉)',
+    窄尺寸: `960×640(createMainWindow 下限;size@960 六頁共列舉 ${narrowTotal} 顆)`
+  })
+  await main.setViewportSize({ width: 1180, height: 780 }).catch(() => {})
+  await sleep(600)
 
   // ── 對帳 ──
   const enumeratedKeys = [...enumerated.keys()]
@@ -4527,13 +4647,24 @@ async function main_() {
   report.note('mock 服務', { stt: stt.origin, llm: llm.origin })
 
   const audio = audioFixtureStatus()
-  report.note('假裝置', fakeMediaSummary({}))
+  report.note('假裝置', fakeMediaSummary(SELFTEST.includes('drop-fake-audio') ? { audio: null } : {}))
   if (!audio.ok) {
     console.log(`⚠️ 假麥克風 fixture 不可用:${audio.why}`)
     console.log('   錄音相關的探針會配成 unverifiable,而不是默默通過。')
   }
 
   const { app, main } = await launch()
+  // launch 之後覆寫:此時 FAKE_AUDIO_ARMED 已由**實際 args** 推導完成。
+  // self-test 對「破壞真的生效」的斷言來自這裡,不是來自破壞的意圖。
+  if (SELFTEST) {
+    report.note('self-test 破壞', {
+      mode: SELFTEST,
+      抽掉登記項: [...SELFTEST_DROP],
+      探針不給結論: [...SELFTEST_SKIP],
+      假麥克風旗標已抽掉: SELFTEST.includes('drop-fake-audio'),
+      實際啟動含假麥克風: FAKE_AUDIO_ARMED
+    })
+  }
 
   try {
     // 資料層從乾淨的狀態開始。

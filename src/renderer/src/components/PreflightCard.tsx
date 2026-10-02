@@ -178,7 +178,11 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
   // 不划算。註冊在 effect 裡,卸載時取消,語意與 registry 的設計一致。
   useEffect(() => {
     const offModels = registerAuditControl('preflight.models', (arg) => {
-      setAuditOllama(Array.isArray(arg) ? (arg as string[]) : null)
+      // 陣列 = 假裝有那些模型;其他(null / 缺省)= **解除覆寫**,恢復真的去查。
+      // 原寫法把 null 映射成 setAuditOllama(null) —— 那是「active + 空模型」,
+      // 不是解除:稽核端把覆寫「清掉」之後,probeOllama 依然不出網,而
+      // setAuditOllama 檔頭寫的「undefined = 恢復真的去查」透過橋永遠到不了。
+      setAuditOllama(Array.isArray(arg) ? (arg as string[]) : undefined)
       return true
     })
     const offDown = registerAuditControl('preflight.ollamaDown', (arg) => {
@@ -237,6 +241,8 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
         </span>
         <button
           type="button"
+          // 穩定身分:可見文字會在「重查/檢查中」之間擺動,效果覆蓋率對帳需要不隨狀態變的 key
+          data-effect-id="preflight-recheck"
           className="btn-ghost shrink-0 text-[11px]"
           onClick={() => setCheckVersion((v) => v + 1)}
           title="重新檢查 Ollama 與安全儲存中的 API 金鑰"
@@ -335,6 +341,7 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
         </button>
         <button
           type="button"
+          data-effect-id="preflight-recheck"
           className="btn-ghost shrink-0 text-[11px]"
           onClick={() => {
             setCheckVersion((v) => v + 1)

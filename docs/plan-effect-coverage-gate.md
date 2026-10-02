@@ -49,12 +49,23 @@
       effect-inventory.mjs 的對帳規則),並以「拿掉 `scripts/dirty` 狀態 → `scripts|button|儲存` 立刻紅」驗證過。
    c. ~~探針 onClick 改 no-op → `dead`~~ ✅ — `dead-ui` 偵測在實際輪次抓到過真實案例
       (`practice|button|完成回答,取得反饋`)。
-   d. **尚未驗證**:拿掉 `--use-file-for-fake-audio-capture` → 錄音探針必須從 works 變成
-      unverifiable(而不是繼續綠)。
+   d. ~~拿掉 `--use-file-for-fake-audio-capture` → 錄音探針必須從 works 變成
+      unverifiable(而不是繼續綠)~~ ✅ 已完成(2026-10-02)— `audit-selftest.mjs` 加入第三種破壞
+      `drop-fake-audio`:`fakeMediaArgs({audio:null})` 抽掉旗標,audit-effects 由**實際啟動 args**
+      推導 `FAKE_AUDIO_ARMED`,錄音探針在旗標缺席時以 `state-unreached` 誠實退場
+      (理由:靜音無法區分「收音壞了」與「沒人說話」,不點、不燒 24 秒、不記 dead)。
+      selftest 斷言兩頭:「破壞真的生效」(meta.實際啟動含假麥克風=false)且「探針真的退場」。
+      實測:檢查三 ✓(意圖=true 實際生效=true → 抓到 1 筆 state-unreached)。
+      附帶修好一個真實的量測缺陷:旗標缺席時原本會燒完 24 秒輪詢後把好按鈕記成 `dead`,
+      即「環境缺前置」說謊成「產品壞了」。
 7. ~~文件統計數字~~ ✅ 已完成(2026-10-01)— README 單元測試數(377 → 407)、release-gate 橫幅
    「七個步驟」(改為動態 `${STEPS.length}`)都已對齊;CHANGELOG 現況數字本就正確。
-8. **已知設計缺口**(維持開著,要誠實列進已知限制):列舉目前只在**單一視窗尺寸**(1280×800)下做;
-   響應式隱藏的控制項不會被列舉到。audit-states 已經有雙尺寸的做法可以移植。
+8. ~~**已知設計缺口**:列舉只在單一視窗尺寸下做~~ ✅ 已完成(2026-10-02)— audit-states 的雙尺寸
+   做法(預設 1180×780 + 下限 960×640)已移植到 audit:effects 的覆蓋率對帳:狀態列舉迴圈結束後,
+   以 `size@960` 狀態標籤把六個主視窗頁面在下限尺寸重列舉一次,併進同一份 enumerated
+   (掃描前必須先 reload —— 最後一個狀態是 crash/screen,ErrorBoundary 不會因 crash.clear 復原)。
+   探針不重跑:對帳回答的是「登記的控制項被量過沒」,尺寸只是出現與否的變因;
+   只在窄尺寸出現的控制項會被 no-effect-probe / probe-not-run 規則抓出來。
 
 ## 三、驗證方式
 

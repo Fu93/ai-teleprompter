@@ -60,7 +60,10 @@ const BASELINE = {
     minStates: 131,
     minWorks: 130,
     minControls: 100,
-    maxExempt: 24
+    // 24 → 25(2026-10-02):preflight 輪新增的 preflight-action / preflight-dismiss
+    // 兩個豁免族當時沒有同步這裡,閘門重跑時就會紅 —— 這正是這個門檻的用途:
+    // 逼著把「豁免又多了一顆」變成有意識的決定,而不是靜默爬升。此輪決定:接受 25。
+    maxExempt: 25
   }
 }
 

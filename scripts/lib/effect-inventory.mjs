@@ -160,6 +160,12 @@ export const STATES = [
   { id: 'settings/ollama-connected', page: 'settings', nav: 'settings', seed: 'ollamaConnected' },
   // 準備度卡片的「複製指令」只在有可複製項目的時候存在。
   { id: 'settings/preflight-issues', page: 'settings', nav: 'settings', seed: 'preflightIssues' },
+  // 「Ollama 裝好了但一個模型都沒有」是唯一長著「複製指令」鈕的卡片世界
+  // (ollamaDown 的世界只有下載鈕)。之前 preflight-copy 之所以「有被列舉到」,
+  // 是踩在覆寫清理的錯誤上:__auditForce('preflight.models', null) 的舊語意是
+  // 「active + 空模型」而不是解除 —— 殘留的覆寫碰巧讓後續狀態長著複製鈕。
+  // 覆寫語意修正後,這個世界必須被**宣告**出來,而不是靠殘留。
+  { id: 'settings/preflight-no-model', page: 'settings', nav: 'settings', seed: 'preflightNoModel' },
   { id: 'overlay/expanded', page: 'overlay', nav: 'overlay', seed: 'overlay' },
   { id: 'overlay/pill', page: 'overlay', nav: 'overlay', seed: 'overlayPill' },
   // 播放中才會出現「暫停」(靜止時是「播放」)。
@@ -195,6 +201,7 @@ export const CONTROLS = [
   // 上一版這裡四個都寫 dashboard —— 探針與登記表各自說得通,只是它們在講
   // 不同的東西,而那種錯法不會自己浮出來。
   { key: idKey('settings', 'preflight-toggle'), step: 'settings', note: '展開後真的列出每一項' },
+  { key: idKey('settings', 'preflight-recheck'), step: 'settings', note: '重查:重跑金鑰讀取與 Ollama 探測(mock 的 /api/tags 計數必須增加)。標籤會在「重查/檢查中」之間擺,所以用穩定 id 當身分' },
   { key: idKey('settings', 'preflight-copy'), step: 'settings', note: '複製指令,剪貼簿真的拿到那段指令(以稽核橋製造「有指令可複製」的狀態)' },
   { key: idKey('settings', 'preflight-action'), step: 'settings', exempt: { category: EXEMPT_CATEGORY.BROWSER_ENGINE, reason: '這一族包含「下載 Ollama」(會叫出外部瀏覽器)與「前往設定」;導航類由 dashboard 其他卡片與 preflight-compact 覆蓋' } },
   { key: idKey('settings', 'preflight-dismiss'), step: 'settings', exempt: { category: EXEMPT_CATEGORY.BROWSER_ENGINE, reason: '只出現在非擋路項目上,效果是把偏好寫進 localStorage;本機啟動時 OCR 與 Ollama 都可能缺席' } },

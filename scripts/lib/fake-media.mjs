@@ -135,8 +135,19 @@ export function fakeMediaArgs(opts = {}) {
 /**
  * 一次講清楚「這一輪的假裝置狀態」。
  * 放進報告的 notes:讀報告的人不必去猜這份數字是在什麼環境下量的。
+ * opts.audio === null 與 fakeMediaArgs 同語意:刻意不掛假麥克風旗標
+ * (self-test 的 drop-fake-audio),summary 必須如實說「沒有」,否則
+ * 報告的環境說明會與啟動參數互相矛盾。
  */
 export function fakeMediaSummary(opts = {}) {
+  if (opts.audio === null) {
+    return {
+      假麥克風: '沒有 — 這一輪刻意不掛 --use-file-for-fake-audio-capture(self-test 破壞)',
+      假攝影機: '合成彩條圖(沒有人臉)',
+      人臉fixture: existsSync(opts.face ?? FACE_FIXTURE) ? '有' : `沒有(${FACE_FIXTURE})`,
+      桌面擷取: opts.desktopTitle ? `自動選來源「${opts.desktopTitle}」` : '未啟用'
+    }
+  }
   const audio = audioFixtureStatus()
   const face = existsSync(opts.face ?? FACE_FIXTURE)
   return {

@@ -7,6 +7,31 @@
 
 ## [Unreleased]
 
+### 把覆蓋閘門的兩個開著的口收掉,然後閘門自己抓到了三件事
+
+計畫對帳清單上還開著的 6(d)(負向驗證:抽掉假麥克風)與 8(列舉只在單一尺寸),這一則收口。
+收口的過程本身又證明了一次「綠燈必須被弄紅過」——
+
+- **6(d) `drop-fake-audio`**:`audit-selftest` 加入第三種破壞 —— 抽掉
+  `--use-file-for-fake-audio-capture` 旗標,斷言錄音探針**誠實退場**(`state-unreached`,
+  理由:靜音無法區分「收音壞了」與「沒人說話」),而不是繼續綠或被記成 dead。
+  audit-effects 現在由**實際啟動 args** 推導 `FAKE_AUDIO_ARMED`;旗標缺席時探針不點、
+  不燒 24 秒輪詢、不把環境缺前置誤報成產品缺陷。selftest 實測:三項檢查全綠。
+- **8 雙尺寸列舉**:audit-states 的做法移植過來 —— 狀態列舉後,以 `size@960` 標籤把
+  六個主視窗頁面在下限 960×640 重列舉一次,併進同一份對帳(掃描前必須 reload:
+  最後一個狀態是崩潰畫面,ErrorBoundary 不會自己復原)。
+- **閘門立刻抓到三件事**(全部是修改過程中真實產生的):
+  1. `settings|id:preflight-recheck` 沒登記 —— 上一則加入 PreflightCard 的「重查」鈕
+     沒有登記也沒有探針。已補:`data-effect-id` 穩定身分 + 登記 + 用 mock 的
+     `/api/tags` 計數驗真實效果(點擊後計數必須增加;spinner 是 UI 自我宣稱,不算數)。
+  2. **覆寫清理從來沒有生效過**:`__auditForce('preflight.models', null)` 的舊語意是
+     「active + 空模型」而不是解除 —— `setAuditOllama` 檔頭寫的「undefined = 恢復真的去查」
+     透過橋永遠到不了。控制項改為「非陣列 = 解除」。`preflight-copy` 之所以「曾被列舉到」,
+     正是踩在這個殘留上 —— 覆寫修好後它立刻以 `probe-not-found` 現形,
+     誠實的修法是把那個世界宣告成狀態(`settings/preflight-no-model`),而不是靠殘留。
+  3. **發布閘門的豁免基線漂移**:豁免 25 顆 vs `maxExempt: 24` —— preflight 輪加了兩個
+     豁免族但沒同步基線。此輪有意識地接受 25 並在 BASELINE 註明來由。
+
 ### 修補（全庫徹查:12 個會咬人的缺口 + 2 次白花的系統呼叫）
 
 兩輪全庫審查(未提交的 22 檔改動逐行審,再補完浮層/引擎/主程序/音訊其餘約 8,000 行)的收穫。
