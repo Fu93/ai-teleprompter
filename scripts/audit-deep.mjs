@@ -718,6 +718,99 @@ async function main() {
         } else {
           report.measured(`${state}(${toolbar.total} 顆全部有短標籤)`)
         }
+
+        /**
+         * 工具列的鍵盤提示必須是**真的按得到的那一顆**(2026-10-03 第二輪新增)。
+         *
+         * 抓的是 P1-E:title 原本寫「暫停(空白鍵)」,但浮層是 `showInactive()`
+         * 顯示的(刻意不搶焦點,否則會打斷正在簡報的那個程式)—— 空白鍵只在
+         * **浮層自己有焦點**時才送到這裡。於是那個括號裡的捷徑在真實使用情境
+         * 下多半不成立,而永遠成立的那一顆(全域 playPause)從未出現在工具列上。
+         *
+         * 三個方向都要驗,否則「把字改成對的」與「把字刪掉」會互相抵消:
+         *   (a) 提到**本地鍵**(空白鍵 / ← / →)的,title 必須同時指名真正全域的
+         *       那一顆 —— 否則使用者會拿一個試不成功的鍵去操作。
+         *   (b) title 裡出現的每一個和弦都必須是**設定裡真的熱鍵**,不是寫死的
+         *       預設值。使用者改過熱鍵之後,寫死的字就是過期字。
+         *   (c) 播放/暫停那一顆必須指名 playPause —— 它是這個 App 裡唯一
+         *       「浮層沒有焦點也一定按得到」的鍵。
+         */
+        const keyHints = await overlay
+          .evaluate(() => {
+            const shell = document.querySelector('[data-toolbar-shell]')
+            if (!shell) return null
+            return [...shell.querySelectorAll('button')]
+              .map((b) => (b.getAttribute('title') || '').replace(/\s+/g, ' ').trim())
+              .filter(Boolean)
+          })
+          .catch(() => null)
+        // 設定的真值:以 main 的設定為準,不是以 renderer 的預設值為準。
+        const realHotkeys = await main
+          .evaluate(async () => {
+            const s = await window.api.getSettings().catch(() => null)
+            return s?.hotkeys ?? null
+          })
+          .catch(() => null)
+        if (!keyHints || keyHints.length === 0) {
+          report.unreached('overlay/expanded@toolbar-key-hints', '讀不到工具列按鈕的 title')
+        } else if (!realHotkeys) {
+          report.unreached('overlay/expanded@toolbar-key-hints', '讀不到設定裡的熱鍵(無法判斷哪一顆才是真的)')
+        } else {
+          const norm = (k) => String(k || '').replaceAll('Control', 'Ctrl')
+          const configured = new Set(Object.values(realHotkeys).map(norm).filter(Boolean))
+          // 和弦的樣式:(Alt|Ctrl|Shift|Super)+ 之後接一個鍵名
+          // 和弦的樣式:(Alt|Ctrl|Shift|Super)+ 之後接一個鍵名。
+          // ⚠️ 結束集合必須把 **括號** 也排除:title 寫的是「Alt+P)」,
+          // 若只排除左括號,量到的和弦會變成「Alt+P)」而與設定裡的「Alt+P」
+          // 對不上 —— 那不是產品壞了,是我的規則量錯了(第一版就這樣紅了一次)。
+          const chord = /(Alt|Ctrl|Shift|Super)\+[^\s()（）;；,，、]+/g
+          const localOnly = /(空白鍵|←|→)/
+          const missingGlobal = []
+          const staleChords = []
+          for (const t of keyHints) {
+            // (a) 提到本地鍵卻沒有名指全域的那一顆
+            if (localOnly.test(t) && !/(Alt|Ctrl|Shift|Super)\+/.test(t)) missingGlobal.push(t)
+            // (b) title 裡的和弦不在設定裡 = 寫死的字
+            for (const c of t.match(chord) || []) {
+              if (!configured.has(norm(c))) staleChords.push(`${t.slice(0, 18)}…:${c}`)
+            }
+          }
+          // (c) 播放/暫停必須指名 playPause
+          const playT = keyHints.find((t) => /^(播放|暫停)/.test(t))
+          const wantPlay = norm(realHotkeys.playPause)
+          const playOk = playT ? playT.includes(wantPlay) : false
+
+          if (missingGlobal.length) {
+            report.add(
+              'overlay-local-key-without-global',
+              'overlay/expanded@toolbar-key-hints',
+              `${missingGlobal.length} 顆提到本地鍵卻沒有同時指名全域鍵:${missingGlobal
+                .map((t) => t.slice(0, 24))
+                .join('、')} —— 浮層用 showInactive() 顯示、不搶焦點,本地鍵多半按不到`
+            )
+          }
+          if (staleChords.length) {
+            report.add(
+              'overlay-stale-hotkey-label',
+              'overlay/expanded@toolbar-key-hints',
+              `title 裡有設定中不存在的和弦:${staleChords.join('、')} —— 使用者改過熱鍵之後,這些字就是寫死的過期字`
+            )
+          }
+          if (!playT) {
+            report.unreached('overlay/expanded@toolbar-key-hints', '工具列上找不到播放/暫停那一顆')
+          } else if (!playOk) {
+            report.add(
+              'overlay-stale-hotkey-label',
+              'overlay/expanded@toolbar-key-hints',
+              `播放/暫停的 title 是「${playT}」,沒有指到設定裡的 playPause(${wantPlay}) —— 它是唯一「浮層沒焦點也按得到」的那顆鍵`
+            )
+          }
+          if (!missingGlobal.length && !staleChords.length && playOk) {
+            report.measured(
+              `overlay/expanded@toolbar-key-hints(${keyHints.length} 顆 title 的和弦都對得上設定:${[...configured].join('、')})`
+            )
+          }
+        }
       }
 
       /**

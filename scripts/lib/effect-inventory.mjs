@@ -405,6 +405,20 @@ export const CONTROLS = [
   { key: key('settings', 'select', '語言'), step: 'settings', note: '寫進 stt.language' },
   { key: key('settings', 'select', '本地模型'), step: 'settings', note: '寫進 stt.localModel' },
 
+  // ───────────── 側欄:熱鍵衝突提示 ─────────────
+  // 這一顆是**條件式**的:它只在 conflicts.length > 0 時才渲染,也就是
+  // 「某顆全域熱鍵被別的程式搶走、註冊失敗」的時候。同一台機器上,
+  // 前一個 Electron 實例還沒釋放熱鍵就會讓它出現 —— 實測同一份程式碼
+  // 連跑兩次稽核,一次有、一次沒有。
+  //
+  // 它在這裡而不是「隨便找個探針量一下」的原因:
+  //   - 覆蓋率規則分得很清楚 ——「登記了但這輪沒出現」不是問題(那正是
+  //     條件式控制項的正常狀態),「出現在畫面上卻沒登記」才是洞。
+  //   - 要可靠地量它,得先**人為製造**一個衝突(自己占用同一組熱鍵),
+  //     那是在測量端做文章,量到的不是產品。
+  // 所以誠實地登記它,並寫明它為什麼在這個環境裡不必有探針。
+  { key: idKey('hotkeys', 'hotkey-conflict'), step: 'dashboard', exempt: { category: EXEMPT_CATEGORY.REAL_DESKTOP, reason: '只在真的有熱鍵被別的程式占用時才渲染(同一台機器連跑兩次稽核結果不同)。要量它必須先自己占用同一組全域熱鍵,那是量測端做文章;它的行為(導航到設定頁)由 settings 頁的熱鍵下拉覆蓋' } },
+
   // ───────────── 浮層 ─────────────
   { key: key('overlay', 'button', '播放'), step: 'overlay', note: '捲動位置真的前進' },
   { key: key('overlay', 'button', '暫停'), step: 'overlay', note: '捲動位置真的停住' },

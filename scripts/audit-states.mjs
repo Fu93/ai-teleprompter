@@ -864,6 +864,128 @@ async function phaseStructure(main) {
   }
 }
 
+/**
+ * A7 熱鍵註冊失敗的**告知範圍**(2026-10-03 第二輪新增)。
+ *
+ * 這一條抓的是 P1-D:警示原本只長在設定頁,而**使用者的第一眼是側欄**。
+ * 側欄每一頁都在無條件白紙黑字寫著 `Ctrl+Alt+T 顯示 / 隱藏浮層`,於是在
+ * 「那顆鍵被別的程式搶走」的機器上,App 的兩個畫面講了兩件互相矛盾的話:
+ * 一個在承諾,一個在道歉 —— 而使用者先看到的是承諾那個。
+ *
+ * 為什麼必須自己製造衝突(而不是等真的衝突):乾淨的機器上
+ * `appInfo().hotkeyConflicts` 永遠是空陣列,於是這條規則在 CI 上永遠綠燈 ——
+ * 而「永遠綠燈」正是這個專案寫過的教訓(見 P1-2 的 aria-label 註解)。
+ * 所以用稽核橋 `app.hotkeyConflicts` 覆寫(熱鍵的清單只存在 main 那一處
+ * 判定裡,這裡不會去真的占用 OS 熱鍵 —— 那才是量測端做文章)。
+ *
+ * 量的是**三個承諾點**,不是「有沒有警告」:
+ *   1. 側欄那一行必須改成「註冊失敗」而不是繼續承諾功能
+ *   2. 總覽頁的熱鍵 footer 必須出現衝突註記(它是第二個無條件寫出組合的地方)
+ *   3. 衝突鈕按下之後要真的到得了設定頁(有告知但到不了,等於沒告知)
+ * 順便驗**收回**:覆寫清空後警示必須跟著消失 —— 留在畫面上的過期警告會讓人
+ * 去查一個已經修好的問題,比沒有警告更糟(這是 hotkeys.ts 頭上寫的理由)。
+ */
+async function phaseHotkeys(main) {
+  const label = 'structure/hotkey-conflict'
+  // 先把世界弄成「有衝突」。toggleOverlay 是側欄與總覽頁都會寫出來的那一顆,
+  // 用它當衝突名單才量得到真正的失效:只塞一個不相干的組合,兩處都照樣
+  // 寫著「顯示 / 隱藏浮層」,那正是這個缺陷的形狀。
+  const applied = await main.evaluate(async () => {
+    // 用「設定裡真正的 toggleOverlay」當衝突名單,不要寫死字串:
+    // 寫死的話,預設值一改,這條規則會安靜地開始量一個不相干的組合 ——
+    // 而它的失效症狀(兩處都還在承諾)看起來跟真的量到一模一樣。
+    const settings = await window.api.getSettings().catch(() => null)
+    const key = settings?.hotkeys?.toggleOverlay ?? 'Control+Alt+T'
+    const r = await window.__auditForce?.('app.hotkeyConflicts', [key])
+    return { ok: r?.ok === true, error: r?.error ?? null, key }
+  })
+  if (!applied.ok) {
+    report.unreached(label, `app.hotkeyConflicts 稽核橋未生效(${applied.error ?? 'ok=false'})—— 熱鍵衝突這一格完全沒量到`)
+    return
+  }
+  await sleep(700)
+
+  await goto(main, 'dashboard')
+  const seen = await main
+    .evaluate(() => {
+      const txt = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim()
+      const sidebar = document.querySelector('aside')
+      const notice = document.querySelector('[data-hotkey-conflict]')
+      const btn = document.querySelector('[data-effect-id="hotkey-conflict"]')
+      const footerNote = document.querySelector('main [data-hotkey-conflict]')
+      return {
+        // 側欄那一行:在衝突狀態下必須**否認**功能,而不是照舊承諾
+        sidebarText: txt(sidebar),
+        noticeText: txt(notice),
+        noticeInSidebar: !!(notice && sidebar?.contains(notice)),
+        footerNote: !!footerNote,
+        hasButton: !!btn,
+        buttonText: txt(btn).slice(0, 30)
+      }
+    })
+    .catch(() => null)
+  if (!seen) {
+    report.unreached(label, '讀不到側欄／總覽頁的熱鍵區塊')
+    return
+  }
+
+  const problems = []
+  if (!seen.noticeInSidebar) {
+    problems.push('側欄仍然在無條件承諾熱鍵功能(沒有 data-hotkey-conflict)')
+  } else if (/註冊失敗|沒有註冊成功/.test(seen.noticeText) === false && seen.sidebarText.includes('顯示 / 隱藏浮層')) {
+    // 只掛屬性、不改文案是最容易犯的半套修法:警示長在旁邊,而那一行照舊
+    // 寫著「顯示 / 隱藏浮層」—— 使用者還是會照著按。
+    problems.push(`側欄的警示文字沒有否認功能:${JSON.stringify(seen.noticeText.slice(0, 40))}`)
+  }
+  if (!seen.footerNote) problems.push('總覽頁的熱鍵 footer 沒有標出衝突(它照樣把組合寫給使用者)')
+  if (!seen.hasButton) problems.push('側欄沒有「到設定頁修改」的出口(有告知但到不了)')
+
+  if (problems.length) {
+    for (const p of problems) report.add('hotkey-conflict-undisclosed', label, p)
+    return
+  }
+
+  // 出口真的到得了設定頁:clickEffectId 的身分是 data-effect-id,不靠文案
+  const before = await main.evaluate(() => location.hash)
+  const clicked = await main
+    .click('[data-effect-id="hotkey-conflict"]', { timeout: 5000 })
+    .then(() => null)
+    .catch((e) => e.message.split('\n')[0])
+  if (clicked) {
+    report.add('hotkey-conflict-unreachable', label, `衝突鈕點不到:${clicked}`)
+  } else {
+    await sleep(900)
+    const after = await main.evaluate(() => location.hash)
+    if (after.includes('settings') && after !== before) {
+      report.measured(`${label}(側欄/總覽頁都告知,衝突鈕導航 ${before} → ${after})`)
+    } else {
+      report.add('hotkey-conflict-unreachable', label, `按了衝突鈕但 hash 是 ${after}(預期 #/settings)`)
+    }
+  }
+
+  // 收回:過期警示比沒有警示更糟
+  const cleared = await main.evaluate(async () => {
+    const r = await window.__auditForce?.('app.hotkeyConflicts', null)
+    return r?.ok === true
+  })
+  if (!cleared) {
+    report.unreached(label, 'app.hotkeyConflicts(null) 沒有生效 —— 過期警示這一格沒量到')
+    return
+  }
+  await sleep(700)
+  const stale = await main.evaluate(() => ({
+    notice: !!document.querySelector('[data-hotkey-conflict]'),
+    button: !!document.querySelector('[data-effect-id="hotkey-conflict"]')
+  }))
+  if (stale.notice || stale.button) {
+    report.add(
+      'hotkey-conflict-stale',
+      label,
+      `衝突清單清空後畫面上還留著警示(notice=${stale.notice}, button=${stale.button})—— 過期的警告會讓人去查一個已經修好的問題`
+    )
+  }
+}
+
 // ───────────────────────── main ─────────────────────────
 async function main_() {
   const srcLen = guardSerializable(domAudit, 'domAudit')
@@ -918,6 +1040,8 @@ async function main_() {
   // 兩個尺寸各跑一次只會讓報告多一倍同樣的結論。
   console.log('\nA6 結構不變量(首用卡片唯一性 / 設定頁目錄)…')
   await phaseStructure(main)
+  console.log('A7 熱鍵註冊失敗的告知範圍…')
+  await phaseHotkeys(main)
 
   const problems = report.finish(join(OUT, 'report.json'))
   console.log(`\n輸出: ${OUT}/`)

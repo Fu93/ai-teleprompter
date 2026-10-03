@@ -39,10 +39,16 @@ export const BLOCKING_SPECS = [
   'settings-persistence.spec.ts',
   'backup.spec.ts',
   'scripts-import.spec.ts',
+  // 講稿不能因為使用者忘了按「儲存」而消失。特別是 Ctrl+S:它沒有接的時候
+  // 症狀是「什麼事都沒發生」,使用者會合理地以為自己存過了(見檔頭)
+  'script-autosave.spec.ts',
   'transcript-to-script.spec.ts',
   // 錄音中退出不能靜默清空整場會議(before-quit 會繞過視窗守衛,
   // autoInstallOnAppQuit 又讓「更新完退出」是常見路徑 —— 見 quit-flush.spec.ts 檔頭)
   'quit-flush.spec.ts',
+  // 錄影提詞原本一道守衛都沒有(關窗/離頁/退出前 flush/阻擋睡眠全部缺席),
+  // 而它的資料是整段攢在記憶體裡的 —— 見 e2e/video-recording.spec.ts 檔頭
+  'video-recording.spec.ts',
   'practice-generation.spec.ts',
   'preflight.spec.ts',
   'mic-denied.spec.ts',

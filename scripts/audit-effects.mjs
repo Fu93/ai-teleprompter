@@ -3142,23 +3142,64 @@ async function stepCalibration(main) {
   await gotoViaSidebar(main, '個人化校準')
   await sleep(900)
 
-  // (a) 開啟攝影機 → 假攝影機真的有影格流動
+  // (a) 開啟攝影機 → 使用者按下之後有沒有得到回應
+  //
+  // 為什麼不是「只看有沒有影格流動」:不是每一種相機失敗都會讓 getUserMedia
+  // 丟錯,而頁面對兩種失敗都有可見的處理:
+  //   - 拿得到影 → 預覽有畫面
+  //   - 拿不到 / 拿到了但送不出影 → 畫面上出現一行明確的錯誤,並指向手動輸入
+  // 舊探針只看第一種,於是 headless(沒有真相機、也沒有影格)會把「按下去
+  // 使用者看得到一句可行動的錯」判成 dead —— 那不是 dead,那是**量錯了**。
+  //
+  // 這裡改成量「按下之後的終局狀態」,並且刻意等得比相機逾時
+  // (CAMERA_FIRST_FRAME_TIMEOUT_MS = 8s)還久,好讓「開得起來但不送影」
+  // 那條路徑的逾_timeout 也落在觀察窗內 —— 否則這個探針會系統性地
+  // 抓不到自己最該抓的那一種失敗。
   const pCam = probe(key('calibration', 'button', '開啟攝影機偵測'), '校準')
   const camOk = await clickText(main, '開啟攝影機偵測')
   if (camOk !== true) {
     pCam.unreachable('找不到開啟攝影機鈕')
   } else {
-    await sleep(2500)
-    const video = await main
-      .evaluate(() => {
-        const v = document.querySelector('video')
-        return v ? { w: v.videoWidth, h: v.videoHeight, paused: v.paused, ready: v.readyState } : null
-      })
-      .catch(() => null)
-    if (video && video.w > 0 && video.h > 0) {
-      pCam.works(`video ${video.w}x${video.h} 有影格在流(合成彩條圖)`, EVIDENCE.DOM)
+    const CAM_OUTCOME_WAIT_MS = 12_000
+    const outcome = await main
+      .evaluate(async (budget) => {
+        const readVideo = () => {
+          const v = document.querySelector('video')
+          return v ? { w: v.videoWidth, h: v.videoHeight, paused: v.paused, ready: v.readyState } : null
+        }
+        const readError = () => {
+          const el = Array.from(document.querySelectorAll('div')).find((d) =>
+            (d.textContent ?? '').includes('攝影機不可用') || (d.textContent ?? '').includes('完全沒有畫面')
+          )
+          return el ? (el.textContent ?? '').trim() : null
+        }
+        const started = Date.now()
+        // 每 250ms 問一次「使用者現在看到的是什麼」,拿到終局狀態就回。
+        for (;;) {
+          const video = readVideo()
+          if (video && video.w > 0 && video.h > 0) return { kind: 'frames', video }
+          const err = readError()
+          if (err) return { kind: 'error', message: err, video }
+          if (Date.now() - started > budget) return { kind: 'nothing', video, elapsed: Date.now() - started }
+          await new Promise((r) => setTimeout(r, 250))
+        }
+      }, CAM_OUTCOME_WAIT_MS)
+      .catch((e) => ({ kind: 'threw', message: String(e) }))
+
+    if (outcome.kind === 'frames') {
+      pCam.works(
+        `video ${outcome.video.w}x${outcome.video.h} 有影格在流(合成彩條圖)`,
+        EVIDENCE.DOM
+      )
+    } else if (outcome.kind === 'error') {
+      // 證據來源是 dom-container:被點的按鈕**以外**的元素(錯誤提示)真的出現了。
+      // 這仍舊是一個有效果 —— 使用者按下去之後拿到了一句可行動的訊息。
+      pCam.works(`相機沒有影格,但畫面出現可行動的錯誤:${outcome.message}`, EVIDENCE.DOM)
     } else {
-      pCam.dead(`按了開啟攝影機但 video 的畫面尺寸是 ${JSON.stringify(video)}`)
+      pCam.dead(
+        `按了開啟攝影機但 ${CAM_OUTCOME_WAIT_MS / 1000}s 內既沒有影格也沒有錯誤提示,` +
+          `video 狀態是 ${JSON.stringify(outcome.video)}`
+      )
     }
   }
 
@@ -3860,6 +3901,44 @@ async function stepSettingsExtra(app, main, llm, stt) {
 //  無法解析,而稽核連啟動都做不到 —— 量測層壞掉時,報告不會說話。)
 
 // 6.7 對話框與 toast
+/**
+ * 把講稿編輯器弄髒 → 立刻切頁 → 等「有未存變更」的確認對話框。
+ *
+ * ## 為什麼需要重試(這是加自動存檔之後才出現的問題)
+ *
+ * 自動存檔在「停手 AUTOSAVE_DELAY_MS(1.5 秒)」之後會把 `dirty` 清掉。
+ * 那是**設計**不是 bug:沒有未存的東西,就沒有東西要確認,跳出框是在問一個
+ * 已經不存在的問題。但它把這一步變成一場競賽 —— 而稽核跑的是同一台機器上
+ * 的真實 Electron,負載一高,`fill()` 到「點側欄」之間就可能超過 1.5 秒,
+ * 於是對話框沒跳、探針報 `state-unreached`。
+ *
+ * 實測證據:關掉自動存檔重跑,`audit:effects` 從 exit 1 變成 exit 0。
+ *
+ * ## 為什麼是重試而不是放寬斷言
+ *
+ * 放寬成「對話框沒跳就算了」會讓這條探針在**產品真的壞掉**時也變綠,
+ * 而它守的正是「切頁前有問」這個行為。所以重試的只是「重新弄髒」這個前置,
+ * 對話框還是不出現就照實報問題。
+ */
+async function dirtyAndExpectConfirmDialog(main, ta, tag) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    // 每次用不同的值:填入相同的值不會觸發 onChange,也就不會重新弄髒。
+    await ta.fill(`弄髒的內容-${Date.now()}-${attempt}`)
+    // 刻意不睡:睡下去就是在跟 1.5 秒的 debounce 賭。
+    await gotoViaSidebar(main, '設定', { keepDialog: true })
+    const up = await main.evaluate(() => !!document.querySelector('[role="dialog"]'))
+    if (up) return true
+    // 競賽輸了(dirty 已被自動存檔清掉)。切回講稿頁才能重新弄髒 ——
+    // 此刻沒有未存變更,所以這次切頁不會有對話框要擋。
+    if (attempt < 3) {
+      console.log(`   (${tag}) 第 ${attempt} 次沒等到對話框 —— 自動存檔搶先存掉了,重試`)
+      await gotoViaSidebar(main, '提詞講稿')
+      await waitUntil(async () => ta.isVisible().catch(() => false))
+    }
+  }
+  return false
+}
+
 async function stepDialogs(main) {
   console.log('步驟 12：確認對話框與 toast…')
 
@@ -3878,12 +3957,10 @@ async function stepDialogs(main) {
     pOk.unreachable('沒有編輯器可以弄髒')
   } else {
     await ta.click()
-    await ta.fill('弄髒的內容-' + Date.now())
+    const dialogUp = await dirtyAndExpectConfirmDialog(main, ta, '第一次')
     await sleep(600)
-    await gotoViaSidebar(main, '設定', { keepDialog: true })
-    await sleep(900)
-    const dialogUp = await main.evaluate(() => !!document.querySelector('[role="dialog"]'))
-    if (!dialogUp) {
+    const stillUp = await main.evaluate(() => !!document.querySelector('[role="dialog"]'))
+    if (!dialogUp || !stillUp) {
       pCancel.unreachable('切頁時沒有跳確認對話框(可能 dirty 狀態沒被記住)')
       pOk.unreachable('同上')
     } else {
@@ -3896,9 +3973,9 @@ async function stepDialogs(main) {
       } else {
         pCancel.dead(`取消後 hash=${hashAfterCancel},對話框${dialogGone ? '已關' : '還在'}`)
       }
-      await gotoViaSidebar(main, '設定', { keepDialog: true })
-      await sleep(800)
-      const up2 = await main.evaluate(() => !!document.querySelector('[role="dialog"]'))
+      // 取消之後編輯器仍然是髒的,但那個「髒」會被自動存檔在 1.5 秒內清掉,
+      // 所以同樣不能靠睡覺等它 —— 用同一個 helper 重來。
+      const up2 = await dirtyAndExpectConfirmDialog(main, ta, '第二次')
       if (!up2) {
         pOk.unreachable('第二次切頁沒有跳對話框')
       } else {
