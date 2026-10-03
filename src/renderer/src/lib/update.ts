@@ -17,6 +17,7 @@
  */
 import { create } from 'zustand'
 import type { UpdateDownloadedInfo } from '@shared/types'
+import { registerAuditControl } from './auditBridge'
 
 interface UpdateStore {
   info: UpdateDownloadedInfo | null
@@ -52,4 +53,32 @@ export async function hydrateUpdate(): Promise<void> {
 /** 訂閱即時事件;回傳解除訂閱函式。必須在 hydrateUpdate 之前呼叫,否則中間那段是空窗 */
 export function watchUpdate(): () => void {
   return window.api.onUpdateDownloaded((info) => useUpdate.getState().set(info))
+}
+
+/**
+ * 稽核橋:強制一則「已下載更新」。
+ *
+ * 為什麼需要它(這是這一輪補上的一個洞):
+ *   真實的更新提示要真的下載一個更新才會出現,而稽核環境永遠不會 —— 於是
+ *   「重新啟動以更新」這顆鈕**從來沒有被任何稽核列舉過**。它是一個只存在
+ *   五秒鐘的橫幅,而錯過那五秒鐘就等於這條提示從未被量過。
+ *
+ *   更值得記的是:橫幅搬到 App 層之後它長在**六個頁面上方**,所以「它在不在」
+ *   變成一個每頁都成立的宣稱 —— 那正是 P1-C 的內容(它不該只住在設定頁)。
+ *   沒有這個橋,新的六頁會各自多一筆「沒登記」,而那正是稽核該報的東西。
+ */
+let bridgeInstalled = false
+export function installUpdateBridge(): () => void {
+  if (bridgeInstalled) return () => undefined
+  bridgeInstalled = true
+  return registerAuditControl('update.downloaded', (arg) => {
+    if (arg === null || arg === undefined) {
+      useUpdate.setState({ info: null, dismissed: false })
+      return true
+    }
+    // 版本字串:稽核端傳 '9.9.9-audit' 這類的值。刻意不驗格式 ——
+    // 這個控制項的用途是讓橫幅渲染,不是測 electron-updater 的版本比對。
+    useUpdate.getState().set({ version: String(arg), releaseNotes: '' })
+    return true
+  })
 }

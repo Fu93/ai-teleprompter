@@ -201,6 +201,18 @@ export const STATES = [
    * 「我明明按過了怎麼又響」時唯一能按回去的那顆。
    */
   { id: 'overlay/coaching-muted', page: 'overlay', nav: 'overlay', seed: 'overlayCoachingMuted' },
+  /**
+   * **待安裝更新的橫幅在畫面上**(2026-10-03 第二輪新增)。
+   *
+   * 為什麼需要這一格:兩顆更新按鈕原本**從來沒有被任何宣告狀態渲染過** ——
+   * 更新提示要真的下載一個更新才會出現,而稽核環境永遠不會。它們在登記表裡
+   * (否則稽核會在對帳時報「出現在畫面上卻沒登記」,只是那要等有人真的收到
+   * 一則更新的那天),而「登記了卻沒有一個狀態渲染它」是 probe-not-found。
+   *
+   * 所以用稽核橋 `update.downloaded` 把它排出來,並且宣告成一個狀態 ——
+   * 狀態清單是列舉端的依據,漏了一格,不是頁面漏了(與 scripts/dirty 同理)。
+   */
+  { id: 'update/banner', page: 'dashboard', nav: 'dashboard', seed: 'updateBanner' },
   { id: 'dialog/confirm', page: 'dialog', nav: 'scripts', seed: 'dialog' },
   { id: 'toast/stack', page: 'toast', nav: 'dashboard', seed: 'toast' },
   { id: 'crash/screen', page: 'crash', nav: 'dashboard', seed: 'crash' }
@@ -417,7 +429,23 @@ export const CONTROLS = [
   //   - 要可靠地量它,得先**人為製造**一個衝突(自己占用同一組熱鍵),
   //     那是在測量端做文章,量到的不是產品。
   // 所以誠實地登記它,並寫明它為什麼在這個環境裡不必有探針。
-  { key: idKey('hotkeys', 'hotkey-conflict'), step: 'dashboard', exempt: { category: EXEMPT_CATEGORY.REAL_DESKTOP, reason: '只在真的有熱鍵被別的程式占用時才渲染(同一台機器連跑兩次稽核結果不同)。要量它必須先自己占用同一組全域熱鍵,那是量測端做文章;它的行為(導航到設定頁)由 settings 頁的熱鍵下拉覆蓋' } },
+  { key: idKey('hotkeys', 'hotkey-conflict'), step: 'dashboard', exempt: { category: EXEMPT_CATEGORY.REAL_DESKTOP, reason: '只在真的有熱鍵被別的程式占用時才渲染(同一台機器連跑兩次稽核結果不同)。要量它必須先自己占用同一組全域熱鍵,那是量測端做文章;它的行為(導航到設定頁)由 audit-states 的 A7 那一格驗(那裡有熱鍵衝突的稽核橋)' } },
+
+  // ───────────── 更新待安裝橫幅(App 層,六個頁面共用) ─────────────
+  //
+  // 這一組的登記事先要回答一個問題:「已下載更新」在稽核環境裡**永遠不會**
+  // 自然出現(要真的下載一個更新),所以這兩顆鈿從來沒有被列舉過 ——
+  // 一個只存在五秒鐘的橫幅,錯過那五秒鐘就等於從未被量過。
+  //
+  // 所以不是把它標成豁免(那會把「從未被量過」寫進登記表然後假裝它不存在),
+  // 而是加了一個稽核橋 `update.downloaded` 把它排出來,並且真的量:
+  //   update-banner   : 按下去會 app.relaunch()+quit —— 量它就等於量掉稽核自己,
+  //                     所以誠實地豁免(分類是「會終止稽核視窗本身」那一類)
+  //   update-dismiss  : 「稍後」真的把橫幅收掉,而且換頁之後仍是關閉的
+  //                     (換頁那一步同時證明它不是設定頁專屬的)
+  // 兩顆共用 scope="update" —— 沒有它的話六個頁面會各算成一顆,那是假的。
+  { key: idKey('update', 'update-banner'), step: 'update', exempt: { category: EXEMPT_CATEGORY.DESTRUCTIVE_WINDOW, reason: '「重新啟動以更新」會 app.relaunch()+quit —— 它會終止稽核視窗本身,所以不能按;同一顆橫幅的「真的會出現、而且出現在非設定頁」由 update-dismiss 那條一起量(橫幅沒渲染時那顆鈕按不到,是同一個失效)' } },
+  { key: idKey('update', 'update-dismiss'), step: 'update', note: '「稍後」真的把橫幅收掉,而且換頁之後仍是關閉的(證明它不是設定頁專屬)' },
 
   // ───────────── 浮層 ─────────────
   { key: key('overlay', 'button', '播放'), step: 'overlay', note: '捲動位置真的前進' },

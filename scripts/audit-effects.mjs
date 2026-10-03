@@ -1081,6 +1081,99 @@ async function stepHotkeys(main) {
   }
 }
 
+/**
+ * 更新待安裝橫幅(2026-10-03 第二輪新增)。
+ *
+ * 為什麼要一個新的步驟而不是把它併進設定頁:
+ *   這一輪把橫幅從設定頁搬到 App 層,因為它本來只長在一個使用者幾乎不會為了
+ *   「看看有沒有更新」而開啟的頁面上 —— 而 electron-updater 會在他下次關閉
+ *   App 時默默裝掉它。搬到之後它是一個**跨頁面的橫幅**,而「它到底在不在」
+ *   變成每一頁都在做的宣稱。這一條量那個宣稱。
+ *
+ * 為什麼要先問「有沒有真的下載更新」而不是直接按:
+ *   真實的更新事件在稽核環境不會發生,所以這兩顆鈕**從來沒有被列舉過** ——
+ *   一個只存在五秒鐘的橫幅,錯過那五秒鐘就等於從未被量過。用稽核橋
+ *   `update.downloaded` 把它排出來,量的是「它真的會告知,而且兩顆鈕都有作用」。
+ *
+ * 「重新啟動以更新」這顆按下去會真的 app.relaunch()+quit,結束稽核本身 ——
+ * 所以它登錄為 DESTRUCTIVE_WINDOW 豁免。**因此這一支只量「稍後」**,
+ * 而「橫幅會不會出現」那件事掛在「稍後」這顆上:按不到就是橫幅沒渲染,
+ * 這是同一個失效。
+ */
+async function stepUpdateBanner(main) {
+  console.log('步驟：更新待安裝橫幅(全域)…')
+  const pDismiss = probe(idKey('update', 'update-dismiss'), '更新橫幅')
+
+  // 前置:先確認這顆橫幅真的沒有畫出來(沒有待安裝的更新時它必須不存在)
+  await gotoViaSidebar(main, '總覽')
+  await sleep(500)
+  const before = await main.evaluate(() => !!document.querySelector('[data-update-banner]'))
+  if (before) {
+    // 不是錯,但要講清楚:量到的會是「橫幅已經在」而不是「我們把它排出來」
+    report.note('更新橫幅', '量測開始時橫幅已經在畫面上(前一輪遺留或真的有更新)')
+  }
+
+  const forced = await main.evaluate(async () => {
+    const r = await window.__auditForce?.('update.downloaded', '9.9.9-audit')
+    return r?.ok === true ? { ok: true } : { ok: false, error: r?.error ?? 'ok=false', names: r?.names ?? [] }
+  })
+  if (!forced.ok) {
+    pDismiss.unreachable(
+      `update.downloaded 稽核橋未生效(${forced.error};已註冊=${(forced.names || []).join(',') || '(空)'})`
+    )
+    return
+  }
+  await sleep(600)
+
+  const shown = await main.evaluate(() => {
+    const banner = document.querySelector('[data-update-banner]')
+    return {
+      present: !!banner,
+      text: (banner?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+      buttons: [...document.querySelectorAll('[data-update-banner] button')].map((b) => ({
+        id: b.getAttribute('data-effect-id'),
+        text: (b.textContent || '').trim()
+      }))
+    }
+  })
+  if (!shown.present) {
+    pDismiss.dead(
+      '強制了「已下載更新」但畫面上沒有 [data-update-banner] —— 一則提示長在使用者不去的地方就等於不存在,' +
+        '而 updater 會在他關閉 App 時默默裝掉它'
+    )
+    return
+  }
+  if (!shown.buttons.some((b) => b.id === 'update-dismiss')) {
+    pDismiss.dead(`橫幅只渲染出 ${JSON.stringify(shown.buttons)} —— 使用者沒有可執行的下一步`)
+    return
+  }
+  report.note('更新橫幅（總覽頁）', shown.text)
+
+  // 「稍後」的效果是橫幅真的消失 —— 被點元素**以外**的元素變了,所以是 dom-container
+  await gotoViaSidebar(main, '設定')
+  await sleep(500)
+  const stillThere = await main.evaluate(() => !!document.querySelector('[data-update-banner]'))
+  if (!stillThere) {
+    // 走到設定頁就消失了 = 「跨頁面」這個宣稱不成立(它其實還是只住在設定頁)
+    pDismiss.dead('切到設定頁之後橫幅就不見了 —— 它仍然是設定頁專屬的,而不是全域的')
+  } else {
+    const clicked = await clickEffectId(main, 'update-dismiss')
+    await sleep(500)
+    const after = await main.evaluate(() => !!document.querySelector('[data-update-banner]'))
+    if (clicked !== true) {
+      pDismiss.unreachable(`按不了 update-dismiss(${clicked})`)
+    } else if (after) {
+      pDismiss.dead('按了「稍後」但橫幅還在畫面上 —— 使用者會以為它沒有作用')
+    } else {
+      pDismiss.works('「稍後」真的把橫幅收掉(換頁之後仍維持關閉)', EVIDENCE.DOM)
+    }
+  }
+
+  // 收尾:清掉覆寫,後面的狀態不該繼承這則提示
+  await main.evaluate(() => window.__auditForce?.('update.downloaded', null)).catch(() => {})
+  await sleep(400)
+}
+
 // ─────────────── 4. 浮層:證據全部取自另一個視窗 ───────────────
 
 /**
@@ -4731,6 +4824,21 @@ async function stepInventory(app, main, stt, llm) {
       }
       await sleep(500)
     }
+    if (st.seed === 'updateBanner') {
+      /**
+       * 排出「已下載更新」這則橫幅。
+       *
+       * 與 toast 同一個理由:一則真實的更新事件在稽核環境不會發生,而列舉端
+       * 只認「宣告狀態裡真的渲染出來」。所以這一格是把橫幅造出來,讓兩顆按鈕
+       * 進入列舉 —— 否則它們在登記表裡卻永遠 probe-not-found。
+       *
+       * 用 App 層的稽核橋(不是 main 的 state):橫幅的狀態本來就在 renderer
+       * 的 zustand store(l.update.ts),main 只是補問的來源。
+       */
+      const ok = await forceOk('update.downloaded', '9.9.9-audit')
+      if (!ok.ok) blocked(`狀態:${st.id}`, 'update.downloaded 沒有生效;' + forceWhy(ok))
+      await sleep(600)
+    }
     if (st.seed === 'toast') {
       /**
        * **帶 action 的那一則**,不是沒有 action 的。
@@ -4923,6 +5031,12 @@ async function stepInventory(app, main, stt, llm) {
     // 每一個狀態都要把世界還原,否則下一個狀態會站在上一個的殘留上量測
     // (那會產生「看起來像產品的錯」的假紅燈)。
     if (st.seed === 'crash') await main.evaluate(() => window.__auditForce?.('crash.clear'))
+    // 橫幅是**跨狀態殘留**的:不清掉的話,下一格會站在這一格的橫幅上量測,
+    // 而那會讓每一頁的截圖多出一列綠色橫幅 —— 看起來像產品的錯,不是。
+    if (st.seed === 'updateBanner') {
+      await main.evaluate(() => window.__auditForce?.('update.downloaded', null)).catch(() => {})
+      await sleep(400)
+    }
     if (st.seed === 'preview') await main.evaluate(() => window.__auditForce?.('scripts.preview', false))
     if (st.seed === 'dialog') {
       await clickEffectId(main, 'confirm-cancel')
@@ -5239,6 +5353,9 @@ async function main_() {
       ['熱鍵', () => stepHotkeys(main)],
       ['浮層', () => stepOverlay(app, main)],
       ['總覽', () => stepDashboard(app, main)],
+      // 橫幅在總覽之後:它要靠「切頁之後還在」來證明自己是全域的,
+      // 而前面那些步驟會把主視窗留在各種頁面上。
+      ['更新橫幅', () => stepUpdateBanner(main)],
       ['講稿', () => stepScripts(app, main)],
       ['設定頁開關與連線', () => stepSettingsExtra(app, main, llm, stt)],
       ['個人化校準', () => stepCalibration(main)],

@@ -24,7 +24,7 @@ import { useDebug } from './lib/debug'
 import { registerAuditControl } from './lib/auditBridge'
 import { confirmDialog } from './lib/confirm'
 import { registerNavigator } from './lib/nav'
-import { hydrateUpdate, useUpdate, watchUpdate } from './lib/update'
+import { hydrateUpdate, installUpdateBridge, useUpdate, watchUpdate } from './lib/update'
 import {
   installHotkeyConflictBridge,
   useHotkeyConflicts,
@@ -117,6 +117,8 @@ function UpdateBanner(): JSX.Element | null {
     void hydrateUpdate()
     return off
   }, [])
+  // 稽核橋:讓「沒有更新下載下來」的機器也量得到這顆橫幅(它否則永遠不被列舉)
+  useEffect(() => installUpdateBridge(), [])
   if (!info || dismissed) return null
   return (
     <div
