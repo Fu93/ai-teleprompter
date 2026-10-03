@@ -12,8 +12,9 @@ import {
   pillSizeOf
 } from '@shared/overlayShapes'
 import { toast } from '../lib/toast'
+import { useHotkeyConflicts } from '../lib/hotkeys'
 import { cn, formatDateTime } from '../lib/utils'
-import type { AppSettings, UpdateDownloadedInfo } from '@shared/types'
+import type { AppSettings } from '@shared/types'
 import type { SceneSummary } from '@shared/api'
 import { Segmented } from '../components/Segmented'
 import { BackupSection } from '../components/BackupSection'
@@ -225,10 +226,9 @@ export default function SettingsPage({
   onNavigate?: (page: 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings') => void
 }): JSX.Element {
   const { settings, update } = useSettings()
-  // 更新下載完成:electron-updater 預設在使用者下次退出時自動安裝,
-  // 但「靜默安裝」沒有人知道發生過什麼。橫幅 + 重啟鈕把時機的決定權交回使用者。
-  const [updateInfo, setUpdateInfo] = useState<UpdateDownloadedInfo | null>(null)
-  useEffect(() => window.api.onUpdateDownloaded(setUpdateInfo), [])
+  // 更新待安裝的橫幅已經搬到 App 層(見 App.tsx 的 UpdateBanner 與 lib/update.ts):
+  // 它原本只長在這裡,而使用者幾乎不會為了「看看有沒有更新」進設定頁 ——
+  // 提示長在他不會去的地方,與靜默安裝是同一件事。
   const [testing, setTesting] = useState(false)
   const [aiApiKey, setAiApiKey] = useState('')
   const [sttApiKey, setSttApiKey] = useState('')
@@ -269,7 +269,7 @@ export default function SettingsPage({
    *
    * 這是 audit:effects 抓到的(它量的是「按了之後系統有沒有變」)。
    */
-  const [hotkeyConflicts, setHotkeyConflicts] = useState<string[]>([])
+  const hotkeyConflicts = useHotkeyConflicts()
 
   // 讀取金鑰的保險絲:讀得到就沒有這回事,沒回應時讓欄位自己解鎖(理由見上)。
   useEffect(() => {
@@ -298,35 +298,9 @@ export default function SettingsPage({
    * 效果」會把組合改掉，於是快照與現況對不上 —— 訊息裡明明白白寫著
    * 「有 6 顆」而列出的組合和當下的設定無關。
    */
-  useEffect(() => {
-    let alive = true
-    const load = (): void => {
-      void window.api
-        .appInfo()
-        .then((info) => {
-          if (alive) setHotkeyConflicts(info.hotkeyConflicts ?? [])
-        })
-        .catch(() => {
-          if (alive) setHotkeyConflicts([])
-        })
-    }
-    load()
-    // 熱鍵任一項改變 → main 重新註冊 → 衝突名單可能完全不同了。
-    // 這裡會再問一次而不是只靠 mount 時那一次:registerHotkeys() 在
-    // SettingsSet 之後才跑(見 ipc.ts),所以衝突是「使用者改完之後」才發生的。
-    //
-    // 為什麼延遲 400ms:main 要先 unregisterAll + 重新註冊六顆 OS 層熱鍵,
-    // 立刻去問會拿到**舊的**衝突名單 —— 使用者已經修好的那幾顆還在警告裡。
-    //
-    // 依賴寫 settings?.hotkeys(物件參考)而不是 JSON 字串:deepMerge 只在
-    // patch **觸及**該鍵時才換掉子物件參考,所以這個 effect 實際上只在熱鍵
-    // 真的變動時重跑,拖字級滑桿不會平白多打一次 IPC。
-    const id = setTimeout(load, 400)
-    return () => {
-      alive = false
-      clearTimeout(id)
-    }
-  }, [settings?.hotkeys])
+  // 熱鍵衝突的取得與新鮮度已經抽到 lib/hotkeys.ts —— 同一份判斷現在有三個
+  // 使用端(這裡、側欄提示、總覽頁 footer),留在這裡就會變成三份會漂移的實作。
+  // watcher 本身由 App.tsx 掛一次(依賴 settings.hotkeys),這裡只讀結果。
 
   // 場景清單(場景情境那張卡片的資料來源)。
   // **這行是被我自己弄丟過的**:加入上面那個 hotkeyConflicts effect 時,
@@ -501,18 +475,6 @@ export default function SettingsPage({
   return (
     <div className="mx-auto max-w-3xl space-y-5 px-8 py-8">
       <h1 className="text-xl font-bold">設定</h1>
-
-      {updateInfo && (
-        // 更新完成但不該靜默:electron-updater 的 autoInstallOnAppQuit 會在
-        // 下次退出時裝掉它,使用者卻會覺得「我只是關個程式,為什麼再打開
-        // 變新版了」。說清楚 + 給一顆立刻重啟的鈕,時機由使用者決定。
-        <div className="flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
-          <span className="flex-1">已下載更新 v{updateInfo.version},重新啟動後安裝。</span>
-          <button className="btn-primary text-xs" onClick={() => void window.api.relaunchApp()}>
-            重新啟動以更新
-          </button>
-        </div>
-      )}
 
       {/* 區塊目錄:九個區塊的單一長捲動頁需要一條索引(見 SETTINGS_SECTIONS) */}
       <nav

@@ -40,6 +40,7 @@ function fakeInfo(over: Partial<Pick<AppInfo, 'audit' | 'e2eEnv'>> = {}): AppInf
     debug: false,
     audit: false,
     hotkeyConflicts: [],
+    updateInfo: null,
     e2eEnv: { mic: 'ok', ollama: 'ok' },
     ...over
   } as AppInfo

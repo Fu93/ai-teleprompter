@@ -179,6 +179,33 @@ export interface Api {
   }>
   /** 錄影存檔:彈出儲存對話框寫入位元組 */
   saveRecording(args: { bytes: Uint8Array; defaultName: string }): Promise<{ ok: boolean; filePath?: string; error?: string }>
+  /** 錄影分片落盤:開始一段(建立暫存檔) */
+  videoRecordingBegin(): Promise<{ ok: boolean; error?: string }>
+  /** 錄影分片落盤:送一片(500ms)。呼叫端必須自己排隊保序,見 Scripts.tsx */
+  videoRecordingChunk(bytes: Uint8Array): Promise<{ ok: boolean; error?: string }>
+  /** 收尾:關檔但不刪,等 save/abort 決定 */
+  videoRecordingFinish(): Promise<{ ok: boolean; bytes: number; error?: string }>
+  /**
+   * 彈存檔對話框並把暫存檔移過去。
+   * 取消對話框**不會**直接丟棄:main 會再問一次,且預設選項是「存到預設資料夾」。
+   */
+  videoRecordingSave(args: { defaultName: string }): Promise<{
+    ok: boolean
+    filePath?: string
+    /** true = 使用者取消另存,改存到預設資料夾 */
+    autoSaved?: boolean
+    /** 可用 app://rec/<previewName> 在 App 內預覽;false 時降級為只給路徑 */
+    previewName?: string
+    previewable?: boolean
+    /** 'discarded' = 使用者明確選擇放棄(不是錯誤) */
+    error?: string
+  }>
+  /** 放棄這段錄影(刪暫存檔) */
+  videoRecordingAbort(): Promise<void>
+  /** 上次錄影中斷留下的未完成檔 */
+  videoRecordingOrphans(): Promise<Array<{ path: string; bytes: number }>>
+  /** 保留(移到影片資料夾)或清除未完成錄影 */
+  videoRecordingResolveOrphans(args: { mode: 'keep' | 'discard' }): Promise<{ ok: boolean; moved?: number; error?: string }>
   /** 錄音/轉錄開始時呼叫:阻止系統睡眠('prevent-app-suspension') */
   powerSaveStart(): Promise<boolean>
   /** 錄音/轉錄結束時呼叫:解除電源阻擋 */

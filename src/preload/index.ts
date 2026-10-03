@@ -70,6 +70,14 @@ const api: Api = {
   appInfo: (): Promise<AppInfo> => ipcRenderer.invoke(IPC.AppInfo),
   saveRecording: (args: { bytes: Uint8Array; defaultName: string }) =>
     ipcRenderer.invoke(IPC.SaveRecording, args),
+  videoRecordingBegin: () => ipcRenderer.invoke(IPC.VideoRecordingBegin),
+  videoRecordingChunk: (bytes: Uint8Array) => ipcRenderer.invoke(IPC.VideoRecordingChunk, bytes),
+  videoRecordingFinish: () => ipcRenderer.invoke(IPC.VideoRecordingFinish),
+  videoRecordingSave: (args: { defaultName: string }) => ipcRenderer.invoke(IPC.VideoRecordingSave, args),
+  videoRecordingAbort: () => ipcRenderer.invoke(IPC.VideoRecordingAbort),
+  videoRecordingOrphans: () => ipcRenderer.invoke(IPC.VideoRecordingOrphans),
+  videoRecordingResolveOrphans: (args: { mode: 'keep' | 'discard' }) =>
+    ipcRenderer.invoke(IPC.VideoRecordingResolveOrphans, args),
   powerSaveStart: () => ipcRenderer.invoke(IPC.PowerSaveStart),
   powerSaveStop: () => ipcRenderer.invoke(IPC.PowerSaveStop),
   windowCaptureIndicator: (s) => ipcRenderer.invoke(IPC.WindowCaptureIndicator, s),

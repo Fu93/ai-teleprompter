@@ -39,7 +39,15 @@ const state = {
    * 所以「熱鍵沒反應」原本是完全靜默的。使用者只能體驗到「按了沒用」,
    * 而診斷快照裡也不會有任何線索。這份清單是讓它變得可見的唯一地方。
    */
-  hotkeyConflicts: [] as string[]
+  hotkeyConflicts: [] as string[],
+  /**
+   * 已下載、待重啟安裝的更新。null = 沒有。
+   *
+   * 為什麼不能只靠 `update-downloaded` 廣播:那是一次性事件,送到時沒人在
+   * 訂閱就永遠丟了 —— 而更新通常在啟動 30 秒後下載完,那時使用者多半在
+   * 總覽頁,訂閱卻原本長在設定頁。存在這裡,任何時候掛載的畫面都能補問。
+   */
+  updateInfo: null as { version: string; releaseNotes: string } | null
 }
 
 /** e2e userData 重導之後、任何模組讀取 settings 之前呼叫(index.ts whenReady 前) */

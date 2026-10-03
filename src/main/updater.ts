@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { appendFileSync } from 'fs'
 import { join } from 'path'
 import { APP_UPDATE_DOWNLOADED } from '@shared/types'
@@ -49,11 +49,20 @@ export function initUpdater(): void {
       autoUpdater.autoInstallOnAppQuit = true
 
       autoUpdater.on('update-downloaded', (info) => {
-        // 廣播給主視窗;浮層使用中不打斷,由使用者在主視窗決定何時重啟
-        state.mainWindow?.webContents.send(APP_UPDATE_DOWNLOADED, {
+        // 先存起來,再廣播。順序不能反:
+        //   廣播是一次性事件,而 renderer 的訂閱是在掛載時才建的。下載完成的
+        //   瞬間往往沒有任何一個訂閱者(更新預設在啟動 30 秒後下載完,那時
+        //   使用者多半在總覽頁),只廣播的話那個提示永遠不會出現,而
+        //   autoInstallOnAppQuit 會在下次退出時默默換版本 —— 正是
+        //   設定頁橫幅的註解要避免的那件事。
+        state.updateInfo = {
           version: info.version,
           releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes.slice(0, 2000) : ''
-        })
+        }
+        const payload = state.updateInfo
+        for (const win of BrowserWindow.getAllWindows()) {
+          win.webContents.send(APP_UPDATE_DOWNLOADED, payload)
+        }
       })
 
       autoUpdater.on('error', (err) => {

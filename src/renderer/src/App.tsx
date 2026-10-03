@@ -24,6 +24,12 @@ import { useDebug } from './lib/debug'
 import { registerAuditControl } from './lib/auditBridge'
 import { confirmDialog } from './lib/confirm'
 import { registerNavigator } from './lib/nav'
+import { hydrateUpdate, useUpdate, watchUpdate } from './lib/update'
+import {
+  installHotkeyConflictBridge,
+  useHotkeyConflicts,
+  watchHotkeyConflicts
+} from './lib/hotkeys'
 
 type PageId = 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings'
 
@@ -37,10 +43,19 @@ const NAV: Array<{ id: PageId; label: string; icon: typeof LayoutDashboard }> = 
 ]
 
 /** 側欄熱鍵提示:跟隨設定動態顯示(自訂熱鍵後文案不再過期) */
-function SidebarHotkeyHint(): JSX.Element {
+function SidebarHotkeyHint({ onNavigate }: { onNavigate: (page: PageId) => void }): JSX.Element {
   const toggleKey = useSettings((s) => s.settings?.hotkeys.toggleOverlay)
+  /** 播放/暫停的全域鍵:浮層工具列會指名它,這裡讓它在主視窗也找得到 */
+  const playKey = useSettings((s) => s.settings?.hotkeys.playPause)
   const load = useSettings((s) => s.load)
   const loaded = useSettings((s) => s.loaded)
+  /**
+   * 註冊失敗的熱鍵。沒有這一行時,側欄在一台 Ctrl+Alt+T 被別的軟體佔走的
+   * 電腦上會白紙黑字寫著「Ctrl+Alt+T 顯示 / 隱藏浮層」,而它按下去什麼都不發生
+   * —— 提示長在設定頁,但一個「按了沒反應」的人不見得會繞到那裡去。
+   */
+  const conflicts = useHotkeyConflicts()
+  const toggleBroken = !!toggleKey && conflicts.includes(toggleKey)
   // 除錯層由其 root 向 main 問 appInfo().debug 後設起來,這裡只讀結果
   const debugReady = useDebug((s) => s.enabled)
   // settings 尚未載入時補一次 load(防外部清除 store);正常啟動流程已載
@@ -49,9 +64,29 @@ function SidebarHotkeyHint(): JSX.Element {
   }, [loaded, load])
   return (
     <div className="space-y-2 border-t border-ink-800 px-5 py-3 text-[11px] text-ink-400">
-      <div>
-        {toggleKey ? `${toggleKey.replaceAll('Control', 'Ctrl')} 顯示 / 隱藏浮層` : '熱鍵未設定:到設定頁設定'}
+      <div className={toggleBroken ? 'text-rose-400' : undefined} data-hotkey-conflict={toggleBroken ? '1' : undefined}>
+        {toggleKey
+          ? toggleBroken
+            ? `${toggleKey.replaceAll('Control', 'Ctrl')} 註冊失敗 —— 按了沒反應`
+            : `${toggleKey.replaceAll('Control', 'Ctrl')} 顯示 / 隱藏浮層`
+          : '熱鍵未設定:到設定頁設定'}
       </div>
+      {playKey && (
+        <div className="text-ink-500">
+          {playKey.replaceAll('Control', 'Ctrl')} 播放 / 暫停
+        </div>
+      )}
+      {conflicts.length > 0 && (
+        <button
+          data-effect-id="hotkey-conflict"
+          // 同上:側欄在每一頁都存在,但這顆鈕只有一顆
+          data-effect-scope="hotkeys"
+          className="w-full cursor-pointer rounded-md border border-rose-450/40 bg-rose-450/15 px-2 py-1 text-left text-[10px] text-rose-300 transition-colors hover:bg-rose-450/25"
+          onClick={() => onNavigate('settings')}
+        >
+          {conflicts.length} 顆熱鍵沒有註冊成功 —— 到設定頁修改
+        </button>
+      )}
       {/* 除錯面板的入口:快捷鍵是 Ctrl+Shift+D,但沒必要讓人先記住它 */}
       {debugReady && (
         <button
@@ -61,6 +96,47 @@ function SidebarHotkeyHint(): JSX.Element {
           除錯面板 · Ctrl+Shift+D
         </button>
       )}
+    </div>
+  )
+}
+
+/**
+ * 更新待安裝的橫幅(全域)。
+ *
+ * 為什麼放在 App 而不是設定頁:原本只有設定頁有,而使用者幾乎不會為了
+ * 「看看有沒有更新」去開設定頁 —— 於是提示長在一個他不會去的地方,
+ * 而 electron-updater 會在他下次關閉 App 時默默裝掉它。
+ * 狀態與補問邏輯在 lib/update.ts。
+ */
+function UpdateBanner(): JSX.Element | null {
+  const info = useUpdate((s) => s.info)
+  const dismissed = useUpdate((s) => s.dismissed)
+  useEffect(() => {
+    // 先訂閱再補問:順序反了的話,中間那段時間到達的事件會被補問蓋掉
+    const off = watchUpdate()
+    void hydrateUpdate()
+    return off
+  }, [])
+  if (!info || dismissed) return null
+  return (
+    <div
+      data-update-banner="1"
+      // 跨頁面的同一個元件:沒有它,這兩顆鈕會在六個頁面上各被算成一顆
+      // (見 effect-inventory 的 scopeOf —— 與側欄 nav 同一個理由)
+      data-effect-scope="update"
+      className="flex items-center gap-3 border-b border-emerald-500/30 bg-emerald-500/10 px-5 py-2.5 text-sm text-emerald-300"
+    >
+      <span className="flex-1">已下載更新 v{info.version},重新啟動後安裝。</span>
+      <button
+        data-effect-id="update-banner"
+        className="btn-primary text-xs"
+        onClick={() => void window.api.relaunchApp()}
+      >
+        重新啟動以更新
+      </button>
+      <button data-effect-id="update-dismiss" className="btn-ghost text-xs" onClick={() => useUpdate.getState().dismiss()}>
+        稍後
+      </button>
     </div>
   )
 }
@@ -77,6 +153,16 @@ function MainApp(): JSX.Element {
   // 但訊息由頁面給 —— 「正在錄音」與「練習進行中」要講的話不同)。
   // 沒有它,錄音中點側欄會把整場會議靜默丟掉:頁面 unmount 只收音源不寫 DB。
   const [leaveGuard, setLeaveGuard] = useState<string | null>(null)
+  const settings = useSettings((s) => s.settings)
+
+  /**
+   * 熱鍵註冊失敗的名單:掛一次,依賴 hotkeys 物件參考(只在真的動到熱鍵時
+   * 才重跑)。為什麼在 App 而不是設定頁:側欄與總覽頁也要讀同一份名單,
+   * 而它們在使用者從未開過設定頁時就已經在做出承諾了。
+   */
+  useEffect(() => watchHotkeyConflicts(), [settings?.hotkeys])
+  /** 稽核橋:讓「沒衝突的機器」也能驗「有衝突時側欄會不會告知」 */
+  useEffect(() => installHotkeyConflictBridge(), [])
 
   const navigate = async (target: PageId): Promise<boolean> => {
     // 同頁點擊(使用者常反射性點側欄當前項)必須直接返回:下面的確認與
@@ -161,7 +247,9 @@ function MainApp(): JSX.Element {
   const render = (): JSX.Element => {
     switch (page) {
       case 'scripts':
-        return <Scripts onDirtyChange={setScriptsDirty} />
+        // 錄影中也有離頁守衛(訊息由頁面上報):沒有它,錄影中點側欄會讓
+        // unmount 直接停掉錄影並丟出存檔對話框 —— 使用者只是想切個頁面
+        return <Scripts onDirtyChange={setScriptsDirty} onGuardChange={setLeaveGuard} />
       case 'record':
         return <Record onGuardChange={setLeaveGuard} />
       case 'practice':
@@ -176,7 +264,9 @@ function MainApp(): JSX.Element {
   }
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full flex-col">
+      <UpdateBanner />
+      <div className="flex min-h-0 flex-1">
       <aside className="flex w-52 shrink-0 flex-col border-r border-ink-800 bg-ink-900">
         <div className="flex items-center gap-2.5 px-5 py-5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-accent-500 to-accent-600 text-white">
@@ -209,9 +299,10 @@ function MainApp(): JSX.Element {
             </button>
           ))}
         </nav>
-        <SidebarHotkeyHint />
+        <SidebarHotkeyHint onNavigate={(p) => void navigate(p)} />
       </aside>
       <main className="flex-1 overflow-y-auto">{render()}</main>
+      </div>
       <ToastHost />
       <ConfirmHost />
       <DebugRoot />

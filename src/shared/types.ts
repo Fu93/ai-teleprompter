@@ -219,6 +219,22 @@ export const IPC = {
   SceneList: 'scene:list',
   CloudTranscribe: 'stt:cloud-transcribe',
   SaveRecording: 'util:save-recording',
+  /**
+   * 錄影分片落盤(見 src/main/videoRecording.ts)。
+   *
+   * 為什麼不是沿用 SaveRecording 一次把整段丟過來:那條路要把整段錄影
+   * 攢在 renderer 記憶體、一次性過 IPC。任何一環失敗就是整段沒了,而且
+   * 視窗被銷毀時 onstop 根本不會跑 —— 分片先寫到磁碟才是 OS 關機 / crash
+   * 之後還找得回來的唯一原因。
+   */
+  VideoRecordingBegin: 'util:video-recording-begin',
+  VideoRecordingChunk: 'util:video-recording-chunk',
+  VideoRecordingFinish: 'util:video-recording-finish',
+  VideoRecordingSave: 'util:video-recording-save',
+  VideoRecordingAbort: 'util:video-recording-abort',
+  /** 啟動時找回上次錄影中斷留下的暫存檔 */
+  VideoRecordingOrphans: 'util:video-recording-orphans',
+  VideoRecordingResolveOrphans: 'util:video-recording-resolve-orphans',
   ShareSimulation: 'system:share-simulation',
   OverlaySnapCorner: 'overlay:snap-corner',
   OverlayRecenter: 'overlay:recenter',
@@ -529,6 +545,15 @@ export interface AppInfo {
    * DebugPanel 的診斷快照與 e2e 的失敗訊息共用同一個來源。
    */
   hotkeyConflicts: string[]
+  /**
+   * 已下載、待重啟安裝的更新。null = 沒有待安裝的更新。
+   *
+   * 為什麼要掛在 AppInfo 上而不只靠 APP_UPDATE_DOWNLOADED 廣播:那個事件是
+   * **一次性**的 —— 送到時沒人在訂(更新通常在啟動 30 秒後下載完,那時
+   * 使用者多半在總覽頁,而訂閱原本長在設定頁 mount 時),晚一點進設定頁
+   * 就永遠看不到了。有了這個欄位,任何時候掛載的畫面都能補問回來。
+   */
+  updateInfo: { version: string; releaseNotes: string } | null
   /**
    * e2e 的環境情境(麥克風、Ollama),由 main 讀環境變數決定。
    *
