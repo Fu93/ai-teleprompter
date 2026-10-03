@@ -74,11 +74,20 @@ async function launchApp(): Promise<{ app: ElectronApplication; main: Page; over
   return { app, main, overlay }
 }
 
+/**
+ * 側欄切頁。
+ *
+ * 原本是 `page.evaluate` + `btn?.click()`:按鈕還沒渲染時那是**靜默 no-op**,
+ * 呼叫端不會知道任何事 —— 症狀會在三十秒後以「下一個步驟的元素出不來」的形式
+ * 出現,指向完全錯誤的地方。這支 spec 長期間歇性紅燈(全量跑紅、單跑必綠)就是
+ * 這個:全量跑時 Electron 啟動與 React 首次繪製比較慢,側欄還沒畫完就出發。
+ *
+ * 用真的 locator 會自動等元素出現、可點、沒有遮罩,失敗時直接指著「按不到這顆
+ * 按鈕」—— 而不是三十秒後在別處爆炸。`aside` 限定側欄,避開頁面內容裡同名的
+ * 按鈕(例如空狀態的「建立第一份講稿」)。
+ */
 async function navTo(main: Page, label: string): Promise<void> {
-  await main.evaluate((l) => {
-    const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes(l))
-    btn?.click()
-  }, label)
+  await main.locator('aside button', { hasText: label }).first().click()
   await main.waitForTimeout(400)
 }
 
@@ -140,20 +149,21 @@ test('校準 + Practice + 貼鏡 盲區巡檢', async () => {
     await main.locator('button', { hasText: '查看總評' }).click()
     await expect(main.locator('text=整體表現穩定')).toBeVisible({ timeout: 15_000 })
 
+    // 先確定練習真的走完了(「練習完成」是 done 頁的標記)。spec 的意圖是
+    // 「練完一輪就去下一段」,而離開守衛只在 phase === 'run' 時生效 —— 等到完成頁
+    // 出現,這一步才真的站在「可以安全離開」的位置上。
+    await expect(main.locator('text=練習完成')).toBeVisible({ timeout: 15_000 })
     // ── C. 貼鏡:進出與還原 ──
     await navTo(main, '提詞講稿')
-    await main.evaluate(() => {
-      const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('新講稿'))
-      btn?.click()
-    })
-    await main.waitForTimeout(300)
-    await main
-      .locator('textarea')
-      .fill(Array.from({ length: 8 }, (_, i) => `第${i + 1}點,產品願景幫助每個人在重要場合自信表達並建立長期信心。`).join('\n'))
-    await main.evaluate(() => {
-      const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('開始提詞'))
-      btn?.click()
-    })
+    // 按鈕還沒渲染時不要靜默跳過:讓它在這裡就紅,而不是三十秒後以
+    // 「textarea 填不進去」的形式指向錯誤的地方。
+    await main.locator('button', { hasText: '新講稿' }).first().click()
+    const editor = main.locator('textarea')
+    await expect(editor).toBeVisible({ timeout: 10_000 })
+    await editor.fill(
+      Array.from({ length: 8 }, (_, i) => `第${i + 1}點,產品願景幫助每個人在重要場合自信表達並建立長期信心。`).join('\n')
+    )
+    await main.locator('button', { hasText: '開始提詞' }).first().click()
     await expect(overlay.locator('[title^="暫停"]')).toHaveCount(1, { timeout: 5_000 })
     await overlay.locator('[title^="貼鏡模式"]').click()
     await overlay.waitForTimeout(1_200)

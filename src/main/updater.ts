@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import { appendFileSync } from 'fs'
 import { join } from 'path'
+import { APP_UPDATE_DOWNLOADED } from '@shared/types'
 import { state } from './state'
 
 /**
@@ -49,7 +50,7 @@ export function initUpdater(): void {
 
       autoUpdater.on('update-downloaded', (info) => {
         // 廣播給主視窗;浮層使用中不打斷,由使用者在主視窗決定何時重啟
-        state.mainWindow?.webContents.send('app:update-downloaded', {
+        state.mainWindow?.webContents.send(APP_UPDATE_DOWNLOADED, {
           version: info.version,
           releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes.slice(0, 2000) : ''
         })

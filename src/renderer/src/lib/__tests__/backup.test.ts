@@ -228,4 +228,49 @@ describe('backup', () => {
       expect(name).not.toMatch(/[\\/:*?"<>|]/)
     })
   })
+
+  describe('savedAsScriptId 在還原後仍然指向同一份講稿', () => {
+    // 注意:還原會重新發號,所以下面都用「還原後查出來的那筆」,不能用還原前的 key。
+    const roundTrip = async (): Promise<MeetingSession> => {
+      const backup = parseBackup(
+        serializeBackup(await buildBackup({ appVersion: '0.2.0', settings: {} }))
+      )
+      await clearAll()
+      await importBackup(backup)
+      const restored = await db.sessions.toCollection().first()
+      if (!restored) throw new Error('還原後應該要有一場會議')
+      return restored
+    }
+
+    it('id 序列有缺口(使用者刪過講稿)也不會指向別人的稿', async () => {
+      await db.scripts.add({ title: 'A', content: 'a', createdAt: 1, updatedAt: 1 })
+      await db.scripts.add({ title: 'B', content: 'b', createdAt: 2, updatedAt: 2 })
+      const target = (await db.scripts.add({
+        title: 'C',
+        content: 'c',
+        createdAt: 3,
+        updatedAt: 3
+      })) as number
+      await db.scripts.delete(2) // 缺口:舊 id 不連續,重新發號後整批位移
+      await db.sessions.add({ ...SESSION, savedAsScriptId: target })
+
+      const restored = await roundTrip()
+      // 沒做對照表的話,這個 id 會指向另一份稿或一個不存在的 id
+      const ref =
+        restored.savedAsScriptId != null ? await db.scripts.get(restored.savedAsScriptId) : undefined
+      expect(ref?.title).toBe('C')
+    })
+
+    it('備份裡根本沒有那份講稿時,參照清掉(寧可讓按鈕恢復可按)', async () => {
+      await db.sessions.add({ ...SESSION, savedAsScriptId: 3 })
+      const restored = await roundTrip()
+      expect(restored.savedAsScriptId).toBeUndefined()
+    })
+
+    it('本來就沒存成講稿的會議不受影響', async () => {
+      await db.sessions.add({ ...SESSION })
+      const restored = await roundTrip()
+      expect(restored.savedAsScriptId).toBeUndefined()
+    })
+  })
 })

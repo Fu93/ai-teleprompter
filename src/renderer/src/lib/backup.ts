@@ -182,16 +182,60 @@ export async function importBackup(b: BackupFile): Promise<ImportResult> {
   //   2. **空陣列不呼叫 bulkAdd**。bulkAdd([]) 會讓交易裡沒有任何待寫入的操作,
   //      Dexie 會把它當成唯讀交易而回滾,連帶把 clear 取消。
   //   3. 逐個 await,順序固定。
+  //
+  // 順序本身現在有語意(2026-10-03):sessions 先寫、scripts 後寫。
+  //   session.savedAsScriptId 指的是講稿的 id,而講稿的 id 是**寫入當下**才發的,
+  //   所以必須等 scripts 寫完拿到新 id 之後,才能把參照改寫過去。
+  //   先寫 sessions 再回寫參照,比先寫 scripts 再寫 sessions 多一次更新,
+  //   換來的是「還原後每場會議都還指向它自己的那份講稿」。
   const strip = <T extends { id?: number }>(rows: T[]): T[] => rows.map(({ id: _id, ...rest }) => rest as T)
 
   await db.transaction('rw', [db.scripts, db.sessions, db.practiceRuns], async () => {
     await db.scripts.clear()
     await db.sessions.clear()
     await db.practiceRuns.clear()
-    if (b.data.scripts.length) await db.scripts.bulkAdd(strip(b.data.scripts) as Script[])
     if (b.data.sessions.length) await db.sessions.bulkAdd(strip(b.data.sessions) as MeetingSession[])
+    // allKeys: 一次拿到 Dexie 實際發號的鍵(依寫入順序)。用它建舊→新的對照,
+    // 而不是假設「新 id = 舊 id」—— 使用者只要刪過一份講稿,舊的 id 序列就有缺口,
+    // 順序寫回的新 id 會整批位移,而 session 上的 savedAsScriptId 會安靜地
+    // 指向**別人的稿或一個不存在的 id**(那正是 Record 頁「已存成講稿」變成死路的原因)。
+    //
+    // 刻意在 if 之外呼叫 remap:備份裡**完全沒有講稿**時,那些參照一樣是懸空的
+    // (還原是取代,還原後的講稿表裡就是沒有它),照樣要清掉。
+    const newScriptIds = b.data.scripts.length
+      ? await db.scripts.bulkAdd(strip(b.data.scripts) as Script[], { allKeys: true })
+      : []
+    await remapSavedAsScriptIds(b.data.scripts, newScriptIds)
     if (b.data.practiceRuns.length) await db.practiceRuns.bulkAdd(strip(b.data.practiceRuns) as PracticeRun[])
   })
 
   return { counts }
+}
+
+/**
+ * 把 session.savedAsScriptId 從「備份裡的舊 id」改寫成「剛剛發的新 id」。
+ *
+ * 對照不到的(備份裡就沒有對應講稿)一律清成 undefined:寧可讓 Record 頁的按鈕
+ * 回到可按、讓使用者再存一次,也不要留下一個指向虛無的「已存成講稿」。
+ * 懸空參照看起來像「已經存過了」,實際上讓使用者再也存不成(沒有任何復原路徑)。
+ */
+async function remapSavedAsScriptIds(
+  scripts: Script[],
+  newIds: number[]
+): Promise<void> {
+  // 對照表是空的(備份裡沒有講稿)時,下面每一個查詢都回 undefined,
+  // 於是所有參照都被清掉 —— 這正是該要的結果。
+  const remap = new Map<number, number>()
+  scripts.forEach((old, i) => {
+    const oldId = old.id
+    const newId = newIds[i]
+    if (oldId != null && typeof newId === 'number') remap.set(oldId, newId)
+  })
+  const sessions = await db.sessions.toArray()
+  for (const s of sessions) {
+    if (s.id == null || s.savedAsScriptId == null) continue
+    const next = remap.get(s.savedAsScriptId)
+    if (next === undefined) await db.sessions.update(s.id, { savedAsScriptId: undefined })
+    else if (next !== s.savedAsScriptId) await db.sessions.update(s.id, { savedAsScriptId: next })
+  }
 }

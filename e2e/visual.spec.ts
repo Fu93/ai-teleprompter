@@ -6,7 +6,7 @@
  * - toast:Record 兩來源全不勾 → 「請至少選擇一個音訊來源」;Practice 空職位 → 「請填寫職位或情境」
  * - 折射:開浮層 → 收合成藥丸;Chromium 不支援時驗證「降級路徑」(無折射 class = 正確 fallback)
  *
- * 產出(docs/screenshots/):
+ * 產出(test-results/screenshots/,gitignored;刻意刷新文件截圖用 scripts/capture-ui.mjs):
  * - 12-toast-stack.png        toast 堆疊(scale 遞減)
  * - 13-toast-hover-pause.png  hover 暫停中的 toast
  * - 14-pill-refraction.png    藥丸折射 + specular(CSS 變數注入後)
@@ -65,7 +65,7 @@ test('toast 堆疊與 hover 暫停截圖', async () => {
     // 等「兩則」而不是等固定時間:固定 600ms 在慢機器上不夠,而這支測試
     // 偶發失敗時報的就是「預期 2 實際 1」。
     await expect(main.locator('.toast-item')).toHaveCount(2, { timeout: 10_000 })
-    await main.screenshot({ path: 'docs/screenshots/12-toast-stack.png' })
+    await main.screenshot({ path: 'test-results/screenshots/12-toast-stack.png' })
 
     // hover 暫停:滑入第一則,超過 toast2 剩餘壽命後兩則都還在。
     //
@@ -76,7 +76,7 @@ test('toast 堆疊與 hover 暫停截圖', async () => {
     await first.hover()
     await main.waitForTimeout(2500)
     expect(await main.locator('.toast-item').count()).toBe(2)
-    await main.screenshot({ path: 'docs/screenshots/13-toast-hover-pause.png' })
+    await main.screenshot({ path: 'test-results/screenshots/13-toast-hover-pause.png' })
 
     // 移開滑鼠 → 到期消失。
     // 這兩則都是錯誤,停留 12s 而非資訊的 4s(lib/toast.ts 的 ERROR_DISPLAY_MS):
@@ -140,7 +140,7 @@ test('藥丸折射 + 輪廓光截圖', async () => {
     )
 
     // 15:展開浮層整體狀態
-    await overlay.screenshot({ path: 'docs/screenshots/15-overlay-refraction.png' })
+    await overlay.screenshot({ path: 'test-results/screenshots/15-overlay-refraction.png' })
 
     // 收合成藥丸
     await overlay.locator('[title*="收合成藥丸"]').click()
@@ -195,7 +195,7 @@ test('藥丸折射 + 輪廓光截圖', async () => {
     expect(island!.animations).toBe(0)
 
     await overlay.waitForTimeout(400)
-    await overlay.screenshot({ path: 'docs/screenshots/14-pill-refraction.png' })
+    await overlay.screenshot({ path: 'test-results/screenshots/14-pill-refraction.png' })
   } finally {
     await app.close()
   }

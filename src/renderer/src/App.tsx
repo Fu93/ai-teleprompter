@@ -78,11 +78,12 @@ function MainApp(): JSX.Element {
   // 沒有它,錄音中點側欄會把整場會議靜默丟掉:頁面 unmount 只收音源不寫 DB。
   const [leaveGuard, setLeaveGuard] = useState<string | null>(null)
 
-  const navigate = async (target: PageId): Promise<void> => {
+  const navigate = async (target: PageId): Promise<boolean> => {
     // 同頁點擊(使用者常反射性點側欄當前項)必須直接返回:下面的確認與
     // setScriptsDirty(false) 都是「離開」的語意,對當前頁執行會把 dirty 旗標
     // 靜默解除 —— 之後真正切頁時守衛已不在,未存變更就會無聲消失。
-    if (target === page) return
+    // 回 true:人已經在目的地,呼叫端(可行動錯誤的 toast)可以照常收尾。
+    if (target === page) return true
     if (
       scriptsDirty &&
       !(await confirmDialog({
@@ -91,7 +92,9 @@ function MainApp(): JSX.Element {
         confirmLabel: '放棄變更並離開'
       }))
     ) {
-      return
+      // 守衛攔下 = 導航沒有發生。呼叫端要知道這件事(見 nav.ts 的 NavResult):
+      // toast 的「前往設定」不該在使用者選擇「留在此頁」時把自己收掉。
+      return false
     }
     if (
       leaveGuard &&
@@ -101,10 +104,11 @@ function MainApp(): JSX.Element {
         confirmLabel: '放棄並離開'
       }))
     ) {
-      return
+      return false
     }
     setScriptsDirty(false)
     setPage(target)
+    return true
   }
 
   useEffect(() => {

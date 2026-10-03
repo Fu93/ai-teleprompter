@@ -1,5 +1,9 @@
 # FlowPrompt → AI 提詞機 整合方案
 
+> **歷史文件**(2026-10-03 歸檔至此):Phase A–E 已全部完成,內文的行數與檔案
+> 結構反映 2026-09-27 當下的狀態,與現況不一致。現行架構以原始碼與
+> docs/UX_FINDINGS.md 為準。
+>
 > 產出日期:2026-09-27。分析基準:`flowprompt`(v1 原型)、`flowprompt-v3`(v13.0.2,33k LOC / 31 測試檔)、本地 `ai-teleprompter` v0.1.0(TS 重寫版)。
 
 ---

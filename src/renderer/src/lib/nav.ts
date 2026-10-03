@@ -25,7 +25,19 @@
 
 export type NavPage = 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings'
 
-type Navigator = (page: NavPage) => void
+/**
+ * 導航的回傳值:
+ *   true  = 已換頁(或已在目的頁)
+ *   false = 被守衛攔下(使用者選「留在此頁」)
+ *   void  = 當成 true(向後相容既有呼叫端)
+ *
+ * 為什麼要回傳值:toast 的「前往設定」按鈕原本在導航後無條件收起自己,
+ * 而導航可能被未存變更守衛擋下來 —— 使用者選「留在此頁」之後,
+ * 這張卡片(那個錯誤唯一的下一步)就已經消失了。
+ */
+type NavResult = boolean | void | Promise<boolean | void>
+
+type Navigator = (page: NavPage) => NavResult
 
 let navigator: Navigator | null = null
 
@@ -43,7 +55,11 @@ export function registerNavigator(fn: Navigator): () => void {
   }
 }
 
-/** 跳頁。沒有登錄 navigator 時安靜地不做(見檔頭)。 */
-export function navigateTo(page: NavPage): void {
-  navigator?.(page)
+/**
+ * 跳頁。回傳「導航是否已達成」(見 NavResult)。
+ * 沒有登錄 navigator 時安靜地回 true(見檔頭:overlay 沒有側欄,
+ * 那裡的 toast 由自己的體系處理 —— 回 false 只會讓按鈕永遠停著)。
+ */
+export function navigateTo(page: NavPage): Promise<boolean> {
+  return Promise.resolve(navigator ? navigator(page) : true).then((r) => r !== false)
 }

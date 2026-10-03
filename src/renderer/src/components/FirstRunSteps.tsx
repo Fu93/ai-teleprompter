@@ -31,7 +31,6 @@ import {
   evaluateOnboarding,
   firstBlockingHow,
   hasPromptedBefore,
-  markPrompted,
   type OnboardingInput,
   type OnboardingResult
 } from '../lib/onboarding'
@@ -103,7 +102,12 @@ export function FirstRunSteps({
       onNavigate(step.target)
       return
     }
-    if (step.id === 'first-prompt' && hasScript) markPrompted()
+    // (這裡原本有一行 `if (step.id === 'first-prompt' && hasScript) markPrompted()`,
+    //  但它永遠不可達:每個步驟都有 target,上面那行就 return 了。而且語意也不對
+    //  ——「點了這一步」不等於「提詞成功」,完成旗標的唯一寫入者是
+    //  markPromptSucceeded()(真的把有內容的講稿推上浮層之後才寫)。
+    //  看起來在做事的死碼比沒有更糟:它讓「點擊就算完成」變成一個
+    //  有人信以為真的行為。)
   }
 
   if (result.complete) {

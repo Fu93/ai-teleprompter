@@ -1,4 +1,4 @@
-import { app, desktopCapturer, dialog, globalShortcut, ipcMain, screen, session, shell } from 'electron'
+import { app, desktopCapturer, dialog, globalShortcut, ipcMain, powerSaveBlocker, screen, session, shell, webContents } from 'electron'
 import { writeFile, readFile, stat } from 'fs/promises'
 import {
   AppInfo,
@@ -9,10 +9,12 @@ import {
   type CoachingKind
 } from '@shared/types'
 import { EXPANDED_MIN, overlayShapeOf } from '@shared/overlayShapes'
-import type { DebugOverlayInfo } from '@shared/api'
+import type { DebugOverlayInfo, OverlayShowPayload } from '@shared/api'
+import { canSyncOverlayScript } from '@shared/overlayScript'
 import { AUDIT, DEBUG, E2E_ENV } from './debug'
-import { deepMerge, saveSettings } from './settings'
+import { deepMerge, saveSettings, saveSettingsThrottled } from './settings'
 import { abortOllamaChat, ollamaChat, ollamaListModels, ollamaVersion } from './ollama'
+import { describeOutboundDenial, normalizeCloudEndpointUrl } from './ai/outboundEndpoint'
 import { chatCompletion, testConnection, getUserKeys, setUserKeys } from './ai/aiProvider'
 import { releaseRequest, trackRequest } from './ai/aiAbort'
 import { listAllScenes } from './packs'
@@ -125,15 +127,39 @@ export function registerHotkeys(): void {
   }
 }
 
+/**
+ * request.frame 是否屬於本 app 的視窗:沿 parent 走到根框架,再對照所有
+ * webContents 的主框架。setDisplayMediaRequestHandler 若不驗來源,任何 frame 的
+ * getDisplayMedia 都會自動拿到螢幕影像與系統音訊 —— renderer 被注入時等於
+ * 靜默錄製整台機器的聲音。
+ */
+function isOurFrame(frame: unknown): boolean {
+  if (!frame) return false
+  try {
+    let f = frame as Electron.WebFrameMain
+    while (f.parent) f = f.parent
+    return webContents.getAllWebContents().some((wc) => wc.mainFrame === f)
+  } catch {
+    return false // 框架已銷毀等狀況:一律當「不是我們的」
+  }
+}
+
 export function registerIpc(): void {
   const settings = (): AppSettings => state.settings
 
   ipcMain.handle(IPC.SettingsGet, () => settings())
 
   ipcMain.handle(IPC.SettingsSet, (_e, patch: unknown) => {
+    // 形狀不對的 patch 直接拒絕:deepMerge 對非物件原樣回傳,一筆 null 就會把
+    // state.settings 變 null、'null' 寫進 settings.json,而且啟動載入經同一條
+    // deepMerge 又是 null —— 只能刪檔救援。renderer 是可信的,但「可信的呼叫端
+    // 寫錯一次」與「設定永久損壞」之間不該只隔一層型別斷言。
+    if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
+      return state.settings
+    }
     const hotkeysBefore = JSON.stringify(state.settings.hotkeys)
     state.settings = deepMerge(state.settings, patch)
-    saveSettings(state.settings)
+    saveSettingsThrottled(state.settings)
     applyOverlayWindowSettings()
     broadcastSettings()
     // 熱鍵只有在真的變了才重新註冊:設定頁的字體/速度滑桿拖一格就是一次
@@ -148,10 +174,35 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.OverlayShow, (_e, payload: { title?: string; content?: string }) => {
     state.lastOverlayPayload = payload ?? {}
     setOverlayVisible(true)
-    state.overlayWindow?.webContents.send('overlay:load-script', state.lastOverlayPayload)
+    state.overlayWindow?.webContents.send(IPC.OverlayLoadScript, state.lastOverlayPayload)
   })
 
   ipcMain.handle(IPC.OverlayGetLastPayload, () => state.lastOverlayPayload)
+
+  /**
+   * 主視窗改稿 → 浮層換稿(2026-10-03)。
+   *
+   * 為什麼需要:浮層內容只在 OverlayShow 收到一次,所以「改一句稿 → 立刻上台」
+   * 這個主流程會讓使用者站在台上講舊版,而且畫面上沒有任何地方說明它是舊的。
+   *
+   * 為什麼不直接每次存檔都推:使用者編輯 A 稿(浮層正在講 A)時存檔 B 稿是正常
+   * 操作,那時換掉浮層等於**把沒人要的稿子推上舞台**。所以規則是「同一份稿才同步」
+   * (見 shared/overlayScript.ts),而 payload 帶 scriptId 就是為了能做這個判斷。
+   *
+   * 刻意不呼叫 setOverlayVisible:使用者是存檔不是要求開浮層,同步不應該叫出視窗。
+   * 回傳是否真的同步了,呼叫端可用它決定要不要提示(現在只用於除錯與日誌)。
+   */
+  ipcMain.handle(IPC.OverlaySync, (_e, payload: OverlayShowPayload) => {
+    if (!canSyncOverlayScript(state.lastOverlayPayload, payload)) return false
+    state.lastOverlayPayload = { ...payload }
+    const win = state.overlayWindow
+    // isDestroyed 守衛:存檔是日常操作,而浮層視窗關閉/重建之間是有空窗的,
+    // 在那裡 send 會拋「Object has been destroyed」而讓整次存檔失敗。
+    if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send(IPC.OverlayLoadScript, state.lastOverlayPayload)
+    }
+    return true
+  })
 
   ipcMain.handle(IPC.OverlayHide, () => setOverlayVisible(false))
   ipcMain.handle(IPC.OverlayToggle, () => setOverlayVisible(!(state.overlayWindow?.isVisible() ?? false)))
@@ -159,14 +210,14 @@ export function registerIpc(): void {
 
   ipcMain.handle(IPC.OverlaySetClickThrough, (_e, v: boolean) => {
     state.settings.overlay.clickThrough = v
-    saveSettings(state.settings)
+    saveSettingsThrottled(state.settings)
     applyOverlayWindowSettings()
     broadcastSettings()
   })
 
   ipcMain.handle(IPC.OverlaySetCaptureProtection, (_e, v: boolean) => {
     state.settings.overlay.captureProtected = v
-    saveSettings(state.settings)
+    saveSettingsThrottled(state.settings)
     applyOverlayWindowSettings()
     broadcastSettings()
   })
@@ -231,11 +282,17 @@ export function registerIpc(): void {
 
   // ---- AI (Ollama) ----
   ipcMain.handle(IPC.OllamaListModels, async (_e, baseUrl: string) => {
-    const [models, version] = await Promise.all([
-      ollamaListModels(baseUrl),
-      ollamaVersion(baseUrl)
-    ])
-    return { models, version, installed: version !== null }
+    try {
+      const [models, version] = await Promise.all([
+        ollamaListModels(baseUrl),
+        ollamaVersion(baseUrl)
+      ])
+      return { models, version, installed: version !== null }
+    } catch (err) {
+      // 連不上/網址打錯會在這裡拋例外:不接的話 renderer 只會收到 Electron 的
+      // 泛用「Error invoking remote method」,使用者無從判斷是 Ollama 沒開還是網址錯。
+      throw new Error(`連不上 Ollama(${err instanceof Error ? err.message : String(err)})`)
+    }
   })
 
   ipcMain.handle(IPC.OllamaChat, async (_e, req: Parameters<typeof ollamaChat>[0]) => {
@@ -260,6 +317,19 @@ export function registerIpc(): void {
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
     temperature?: number
   }) => {
+    // 出站端點必須先過政策,再做任何事。
+    //
+    // 為什麼在這裡擋:baseUrl 是從 renderer 送上來的,而這兩條路徑原本是字串拼接
+    // 後直接 fetch()。同一份設定走 aiProvider.resolveEndpoint 會被擋、走這裡不會
+    // —— 使用者看到的行為取決於他按了哪個按鈕。出站政策集中在一處才叫政策
+    // (理由見 ai/outboundEndpoint.ts 檔頭)。
+    const endpoint = normalizeCloudEndpointUrl(req.baseUrl, '/chat/completions')
+    if (!endpoint.ok) {
+      // 回 { ok:false } 而不是 throw:這兩條路徑的呼叫端(Record / Practice /
+      // Calibration)已經把錯誤訊息顯示給使用者了,throw 會讓它們拿到 Electron
+      // 的泛用錯誤字串,把真正的原因吃掉。
+      return { ok: false, error: describeOutboundDenial(endpoint.reason) }
+    }
     // 雲端也進同一張登錄表:「只有本地 Ollama 可取消」是使用者最不會預期的組合
     // —— 他按了取消,本機模型停了,雲端那邊還在跑而且仍在計費。
     const controller = trackRequest(req.requestId)
@@ -267,7 +337,7 @@ export function registerIpc(): void {
     try {
       const secureAiKey = getUserKeys()?.apiKey
       const apiKey = typeof secureAiKey === 'string' && secureAiKey ? secureAiKey : req.apiKey
-      const res = await fetch(`${req.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      const res = await fetch(endpoint.url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -306,6 +376,12 @@ export function registerIpc(): void {
     audio: Uint8Array
     language?: string
   }) => {
+    // 同 OpenAiChat:出站端點先過政策。STT 這條尤其不該漏 ——
+    // 它會把**錄音內容** POST 出去,擋下來等於少洩漏一次使用者的聲音。
+    const endpoint = normalizeCloudEndpointUrl(args.baseUrl, '/audio/transcriptions')
+    if (!endpoint.ok) {
+      return { ok: false, error: describeOutboundDenial(endpoint.reason) }
+    }
     try {
       const secureSttKey = getUserKeys()?.sttApiKey
       const apiKey = typeof secureSttKey === 'string' && secureSttKey ? secureSttKey : args.apiKey
@@ -313,7 +389,7 @@ export function registerIpc(): void {
       form.append('file', new Blob([args.audio], { type: 'audio/wav' }), 'audio.wav')
       form.append('model', args.model)
       if (args.language && args.language !== 'auto') form.append('language', args.language)
-      const res = await fetch(`${args.baseUrl.replace(/\/$/, '')}/audio/transcriptions`, {
+      const res = await fetch(endpoint.url, {
         method: 'POST',
         headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
         body: form,
@@ -338,7 +414,12 @@ export function registerIpc(): void {
       filters: [{ name: '影片', extensions: ['webm', 'mp4'] }]
     })
     if (canceled || !filePath) return { ok: false, error: 'canceled' }
-    await writeFile(filePath, Buffer.from(args.bytes))
+    try {
+      await writeFile(filePath, Buffer.from(args.bytes))
+    } catch (err) {
+      // 磁碟滿/唯讀/路徑無效:讓使用者知道是「存不下」而不是「app 壞了」
+      throw new Error(`影片存檔失敗(${err instanceof Error ? err.message : String(err)})`)
+    }
     return { ok: true, filePath }
   })
 
@@ -359,7 +440,10 @@ export function registerIpc(): void {
   // ---- 貼鏡模式吸附:浮層移到螢幕上緣角落 ----
   ipcMain.handle(IPC.OverlaySnapCorner, (_e, corner: 'tl' | 'tc' | 'tr') => {
     if (!state.overlayWindow || state.overlayWindow.isDestroyed()) return
-    const { workArea } = screen.getPrimaryDisplay()
+    // 用「目前遮住浮層最多的那台螢幕」而不是一律主螢幕:浮層在外接/投影
+    // 螢幕上時,吸附到主螢幕等於把它從使用者眼前拽走(與 ensureOverlayOnScreen
+    // 的多螢幕原則同一條,見 windows.ts)。
+    const { workArea } = screen.getDisplayMatching(state.overlayWindow.getBounds())
     const [w] = state.overlayWindow.getSize()
     const x = corner === 'tl' ? workArea.x + 8 : corner === 'tr' ? workArea.x + workArea.width - w - 8 : workArea.x + Math.round((workArea.width - w) / 2)
     state.overlayWindow.setPosition(x, workArea.y + 8)
@@ -375,6 +459,11 @@ export function registerIpc(): void {
   // main 沒有辦法同步查詢 renderer,所以方向必須是 renderer 主動推。
   ipcMain.handle(IPC.AppSetCloseBlocker, (_e, text: string | null) => {
     state.closeBlocker = typeof text === 'string' && text.trim() ? text : null
+    return true
+  })
+  // 「正在錄音」是給退出流程讀的事實,與給人看的 closeBlocker 分開存。
+  ipcMain.handle(IPC.AppSetRecording, (_e, recording: unknown) => {
+    state.isRecording = recording === true
     return true
   })
   ipcMain.handle(IPC.AppConfirmClose, () => {
@@ -512,8 +601,18 @@ export function registerIpc(): void {
   })
 
   // ---- 在檔案總管顯示檔案 ----
-  ipcMain.handle(IPC.RevealPath, (_e, path: string) => {
-    if (path && typeof path === 'string') shell.showItemInFolder(path)
+  ipcMain.handle(IPC.RevealPath, async (_e, path: string) => {
+    if (!path || typeof path !== 'string') return
+    // 只 reveal 真的存在檔案:呼叫端是「開啟錄影檔所在資料夾」,路徑來自
+    // 存檔對話框;存在性檢查讓壞路徑(檔案已被移走/改名)安靜地無事發生,
+    // 而不是開一個空的檔案總管視窗讓使用者以為 app 瘋了。
+    try {
+      const info = await stat(path)
+      if (!info.isFile()) return
+    } catch {
+      return
+    }
+    shell.showItemInFolder(path)
   })
 
   // ---- 開外部連結(只准 http/https)----
@@ -563,7 +662,11 @@ export function registerIpc(): void {
       defaultPath: args.defaultName
     })
     if (canceled || !filePath) return { ok: false, error: 'canceled' }
-    await writeFile(filePath, args.content, 'utf-8')
+    try {
+      await writeFile(filePath, args.content, 'utf-8')
+    } catch (err) {
+      throw new Error(`匯出失敗,檔案沒有寫入(${err instanceof Error ? err.message : String(err)})`)
+    }
     return { ok: true, filePath }
   })
 
@@ -581,11 +684,17 @@ export function registerIpc(): void {
     // 避免使用者誤選一個巨大的 JSON 而把 renderer 的字串處理拖死。
     // 超出就回人話錯誤,不截斷 —— 截斷出來的 JSON 解析失敗,錯誤訊息更難懂。
     const max = args?.maxBytes ?? 64 * 1024 * 1024
-    const info = await stat(filePath)
+    let info: Awaited<ReturnType<typeof stat>>
+    let text: string
+    try {
+      info = await stat(filePath)
+      text = await readFile(filePath, 'utf-8')
+    } catch (err) {
+      throw new Error(`讀取備份檔失敗(${err instanceof Error ? err.message : String(err)})`)
+    }
     if (info.size > max) {
       return { ok: false, error: `檔案太大（${Math.round(info.size / 1024 / 1024)}MB）,這不像是備份檔。` }
     }
-    const text = await readFile(filePath, 'utf-8')
     return { ok: true, filePath, text }
   })
 
@@ -634,9 +743,53 @@ export function registerIpc(): void {
 
   ipcMain.handle(IPC.CoachingStatsGet, () => getCoachingCounts())
 
+  // ---- 電源:錄音/轉錄期間阻止系統睡眠 ----
+  // 開會的人常常已經沒在碰電腦(正是系統會想睡覺的時候),而 OS 睡眠會直接
+  // 打斷擷取與逐字稿,app 端無警示也無恢復。'prevent-app-suspension' 不阻止
+  // 螢幕變暗;app 退出時 Electron 會自動清掉 blocker,不需要額外收尾。
+  let powerSaveId: number | null = null
+  ipcMain.handle(IPC.PowerSaveStart, () => {
+    if (powerSaveId === null || !powerSaveBlocker.isStarted(powerSaveId)) {
+      powerSaveId = powerSaveBlocker.start('prevent-app-suspension')
+    }
+    return true
+  })
+  ipcMain.handle(IPC.PowerSaveStop, () => {
+    if (powerSaveId !== null && powerSaveBlocker.isStarted(powerSaveId)) powerSaveBlocker.stop(powerSaveId)
+    powerSaveId = null
+    return true
+  })
+
+  // ---- 錄音/錄影中的環境指示(見 IPC.WindowCaptureIndicator)----
+  // 最小化後「還在錄」是完全不可見的:攝影機/麥克風指示燈在機殼上,
+  // 而工作列底下的視窗看起來與平時一樣。標題 + 工作列閃爍是不需要平台
+  // 資源的最小解(tray 圖示留獨立一輪,見 docs/UX_FINDINGS.md P2 附錄 #1)。
+  // 還原值 'AI 提詞機' = createMainWindow 的 title(見 windows.ts),兩處同字串。
+  ipcMain.handle(IPC.WindowCaptureIndicator, (_e, s: { active: boolean; label?: string }) => {
+    const win = state.mainWindow
+    if (!win || win.isDestroyed()) return
+    win.setTitle(s?.active ? s.label || 'AI 提詞機' : 'AI 提詞機')
+    // flashFrame(true):Windows/Linux 閃工作列直到視窗取得焦點;macOS 是 dock
+    // 退避一次。停止時呼叫 false 只是停止目前的閃爍,不會反向閃。
+    win.flashFrame(!!s?.active)
+  })
+
+  // ---- 設定頁「重新啟動以套用更新」----
+  // quit 走正常關閉流程:electron-updater 的 autoInstallOnAppQuit 掛在 quit 上,
+  // 用 app.exit() 反而不會安裝更新。
+  ipcMain.handle(IPC.AppRelaunch, () => {
+    app.relaunch()
+    app.quit()
+  })
+
   // ---- 系統音訊 loopback 授權（Windows）----
   session.defaultSession.setDisplayMediaRequestHandler(
-    (_request, callback) => {
+    (request, callback) => {
+      // 只核准自家視窗的要求(見 isOurFrame 的說明)
+      if (!isOurFrame(request.frame)) {
+        callback({} as Parameters<typeof callback>[0])
+        return
+      }
       desktopCapturer
         .getSources({ types: ['screen'] })
         .then((sources) => {

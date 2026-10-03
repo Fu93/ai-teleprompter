@@ -275,3 +275,68 @@ describe('查詢介面', () => {
     expect(engine.progress).toBeLessThanOrEqual(1)
   })
 })
+
+describe('暫停期間的手動捲動與 bullet 待機前進', () => {
+  it('seekScroll 寫入捲動位置,恢復播放時從該處繼續而不是被拉回', () => {
+    const engine = new TeleprompterEngine(
+      makeModel(),
+      { rate: 1, scrollSpeed: 60, totalH: 1000, wrapH: 200 },
+      'scroll'
+    )
+    engine.play()
+    engine.tick(0)
+    engine.tick(1000) // 捲了 60px
+    engine.pause()
+
+    // 使用者暫停後手動捲到 500px(scroll 事件反向同步)
+    engine.seekScroll(500)
+    expect(engine.getState().scrollPos).toBe(500)
+
+    // 恢復播放:從 500 繼續,而不是跳回暫停前的 60
+    // (單次 tick 的 dt 被上限截在 250ms,所以 500ms 要兩幀走完)
+    engine.play()
+    engine.tick(2000) // 首幀初始化時鐘
+    engine.tick(2500) // +250ms → 515
+    engine.tick(2750) // +250ms → 530
+    expect(engine.getState().scrollPos).toBeCloseTo(530, 5)
+  })
+
+  it('seekScroll clamp 到 [0, maxScroll]', () => {
+    const engine = new TeleprompterEngine(
+      makeModel(),
+      { rate: 1, scrollSpeed: 60, totalH: 1000, wrapH: 200 },
+      'scroll'
+    )
+    engine.seekScroll(-50)
+    expect(engine.getState().scrollPos).toBe(0)
+    engine.seekScroll(99_999)
+    expect(engine.getState().scrollPos).toBe(840) // 1000 - 200 + 40
+  })
+
+  it('bullet 模式待機中按「下一個重點」:重點前進且狀態轉為 paused', () => {
+    const engine = new TeleprompterEngine(
+      makeModel({
+        bullets: [
+          { title: '一', subPoints: [] },
+          { title: '二', subPoints: [] },
+          { title: '三', subPoints: [] },
+          { title: '四', subPoints: [] }
+        ]
+      }),
+      { rate: 1, scrollSpeed: 60 },
+      'bullet'
+    )
+    expect(engine.getState().status).toBe('idle')
+    engine.manualNext()
+    expect(engine.getState().bulletIndex).toBe(1)
+    expect(engine.getState().status).toBe('paused') // idle → paused(修正的行為)
+    // bullet 是手動模式(play() 對 bullet 不生效),前進只能靠 manualNext;
+    // 到最後一點 → completed
+    engine.manualNext()
+    expect(engine.getState().bulletIndex).toBe(2)
+    expect(engine.getState().status).toBe('paused')
+    engine.manualNext()
+    expect(engine.getState().bulletIndex).toBe(3)
+    expect(engine.getState().status).toBe('completed')
+  })
+})

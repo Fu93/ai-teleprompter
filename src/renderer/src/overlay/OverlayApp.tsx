@@ -174,6 +174,15 @@ export default function OverlayApp(): JSX.Element {
   const toggleKey = settings?.hotkeys.toggleOverlay
   const toggleHint = toggleKey ? `${toggleKey.replaceAll('Control', 'Ctrl')} 可再開` : '於設定頁設定熱鍵後可再開'
   const displayMode = o?.displayMode ?? 'scroll'
+  // 貼鏡形態下的實際引擎模式。
+  //
+  // 為什麼要導一層:連續捲動的推進依賴「捲動容器已量測」(engine.tickScroll 對
+  // 未量測直接 return),而貼鏡 420×170 沒有捲動容器 —— 於是 displayMode=scroll
+  // 進貼鏡後,時鐘照走、狀態點照亮,但畫面一格都不動:看起來在播、實際凍結,
+  // 而且只在錄影當下才看得出來。貼鏡渲染的是索引驅動的 band,其中逐句與
+  // scroll 的語意最接近,所以貼鏡 + scroll 一律以 phrase 驅動;游標歸零與
+  // 工具列換模式是同一套既有語意(setDisplayMode 本來就會重置游標、保留時間)。
+  const engineMode: OverlayDisplayMode = o?.lensMode && displayMode === 'scroll' ? 'phrase' : displayMode
   // 個人化語速基準：已校準時 1×＝使用者自己的語速（引擎固定 120 WPM 基準，換算為有效倍率）
   const personalBaseline = settings?.personal.profile?.charsPerMin ?? PhraseVisuals.DEFAULT_WPM
   // 抽成變數:除錯層要顯示「滑桿倍率 → 實際倍率」的換算,不該重算一份
@@ -184,7 +193,7 @@ export default function OverlayApp(): JSX.Element {
   )
   const { state, model, remainingMs, progress, measured, controls } = useTeleprompterEngine({
     content,
-    displayMode,
+    displayMode: engineMode,
     rate: effectiveRate,
     scrollSpeed: o?.speed ?? 60,
     scrollElRef: scrollRef,
@@ -200,7 +209,6 @@ export default function OverlayApp(): JSX.Element {
     controls.pause()
   }, [controls])
   const { phase: panicPhase, rescue, errorMsg, trigger: triggerPanic, dismiss: dismissRescue } = usePanic(
-    () => content,
     pauseForRescue
   )
 
@@ -337,8 +345,12 @@ export default function OverlayApp(): JSX.Element {
   // ---- 靈動島藥丸:聲音反應層 ----
   // 音量走 ref + rAF 直接寫 CSS 變數,不經過 React render(每幀 setState 會拖累動畫)
   const voiceBarsRef = useRef<HTMLDivElement | null>(null)
+  const isCompact = o?.compact ?? false
   useEffect(() => {
-    if (followStatus !== 'listening') return
+    // 音柱元素只掛在藥丸分支:展開/貼鏡形態跟讀時 el 恆為 null,
+    // 不擋掉的話 rAF 以 60fps 空轉(每秒 60 次什麼都不做的迴圈)。
+    // 以 isCompact 進依賴:morph 到展開時停掉,回藥丸時自動重啟。
+    if (followStatus !== 'listening' || !isCompact) return
     let raf = 0
     const tick = (): void => {
       const el = voiceBarsRef.current
@@ -347,7 +359,7 @@ export default function OverlayApp(): JSX.Element {
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [followStatus])
+  }, [followStatus, isCompact])
 
   // ---- 進度條寬度:rAF 直寫 ----
   //
@@ -580,21 +592,21 @@ export default function OverlayApp(): JSX.Element {
 
   const elapsedSec = state.elapsedMs / 1000
   const isBullet = displayMode === 'bullet'
-  const isTimedMode = displayMode === 'phrase' || displayMode === 'karaoke'
+  const isTimedMode = engineMode === 'phrase' || engineMode === 'karaoke'
   // 「這條線現在有沒有東西可顯示」。
   //
   // 逐句/卡拉OK 的進度由索引算得,不需要量測;連續捲動不然 —— 使用者視角試用
   // 發現的實際情況:收合成藥丸後換稿(藥丸沒有捲動容器,永遠量不到),播放中仍
   // 讓一條永遠 0% 的線貼在底緣,比完全不畫更糟:它看起來像「講稿還在第一行」,
   // 而畫面上沒有任何東西可以讓使用者發現那是假的。展開後就會量到、線就回來了。
-  const progressKnown = displayMode !== 'scroll' || measured
+  const progressKnown = engineMode !== 'scroll' || measured
 
   // 除錯層(預設關閉;Ctrl+Shift+D 開 HUD)。以 portal 掛到 body,
   // 不參與這裡的 flex 版面 —— 貼鏡模式只有 170px,多任何一層都會把正文擠掉。
   const debugLayer = (
     <OverlayDebugRoot
       data={{
-        mode: displayMode,
+        mode: engineMode,
         compact: o.compact,
         lens: o.lensMode,
         mirror: o.mirror,
@@ -719,7 +731,6 @@ export default function OverlayApp(): JSX.Element {
           refractOk && o.glass && !morphing && 'glass-refract'
         )}
         title="拖曳可移動位置（大小在設定頁的「藥丸大小」調整）"
-        onDoubleClick={exitCompact}
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         {debugLayer}
@@ -755,6 +766,12 @@ export default function OverlayApp(): JSX.Element {
             {shownEvent.kind === 'turn' && <MessageCircleQuestion size={14} className="shrink-0 text-sky-300" />}
             {shownEvent.kind === 'coaching' && <Gauge size={14} className="shrink-0 text-amber-300" />}
             {shownEvent.kind === 'panic' && <Siren size={14} className="shrink-0 text-rose-400" />}
+            {o.clickThrough && (
+              // 事件視窗會整個取代島的內容層,連後備分支的「穿透」字樣一起消失:
+              // 穿透中的島收不到點擊又看不到任何標記,像壞掉了。島只有一行寬度,
+              // 圖示是唯一塞得下的穿透標記。
+              <MousePointerClick size={12} className="shrink-0 text-amber-300" />
+            )}
             {/* 島只有一行 162px 的寬度(320 藥丸扣掉圖示與三顆按鈕),而事件文案
                 例如「該你說話了 — 對方在等你回答」一定放不下。截斷是這專案明確
                 要避免的失敗模式(使用者永遠不知道被切掉的是什麼),所以取第一個
@@ -923,9 +940,22 @@ export default function OverlayApp(): JSX.Element {
           className="flex h-9 shrink-0 items-center gap-1 border-b border-white/10 px-2"
           style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
         >
+          {/* 貼鏡狀態點:與藥丸/展開同一份狀態(overlayState)與同一套形狀語彙。
+              原本這顆只有「播放綠/其他灰」兩色,穿透/跟讀/播畢在貼鏡全靠猜,
+              穿透中甚至是一顆看不見的空點(唯一說明靠 title,而穿透收不到滑鼠)。 */}
           <span
-            className={cn('h-1.5 w-1.5 rounded-full', playing ? 'bg-emerald-500' : 'bg-ink-600')}
-          />
+            data-overlay-state={overlayState}
+            title={OVERLAY_STATE_TITLE[overlayState]}
+            className={cn(
+              'flex h-1.5 w-1.5 shrink-0 items-center justify-center',
+              overlayState === 'following' && 'animate-pulse rounded-full bg-emerald-500',
+              overlayState === 'playing' && 'rounded-full bg-emerald-500',
+              overlayState === 'completed' && 'rounded-[1px] bg-amber-450',
+              overlayState === 'idle' && 'rounded-full border border-white/35'
+            )}
+          >
+            {overlayState === 'clickThrough' && <MousePointerClick size={8} className="text-amber-450" />}
+          </span>
           <span className="flex-1" />
           {/* 角落吸附:貼到螢幕上緣,離鏡頭軸線最近。
               貼鏡的寬度下限就是它的設計寬度(420),所以這一段只會在「morph 動畫
@@ -976,7 +1006,7 @@ export default function OverlayApp(): JSX.Element {
         <LensSurface
           model={model}
           state={state}
-          displayMode={displayMode}
+          displayMode={engineMode}
           // 預讀行與所有暫態提示是絕對定位的同一段高度:任一條出現都先收起,
           // 否則 turn-yield / coaching 會直接疊印在「下一句」上(與 lensHint 同型缺陷)
           suppressBottom={(lensHint || !!turnYieldHint || !!coachingHint) && panicPhase === 'idle'}
@@ -1080,7 +1110,11 @@ export default function OverlayApp(): JSX.Element {
               overlayState === 'completed' && 'rounded-[1px] bg-amber-450',
               overlayState === 'idle' && 'rounded-full border border-white/35'
             )}
-          />
+          >
+            {/* 穿透狀態在這個形態同樣收不到滑鼠事件,title 不可達:與藥丸同一套
+                形狀語彙(琥珀滑鼠圖示),讓「按不到」至少看得出來。 */}
+            {overlayState === 'clickThrough' && <MousePointerClick size={8} className="text-amber-450" />}
+          </span>
           <span
             className="max-w-[130px] truncate text-xs font-medium text-white/72"
             // 藥丸分支同欄位有 title;這裡沒有就是「截斷了但看不到全文」
@@ -1316,7 +1350,13 @@ export default function OverlayApp(): JSX.Element {
             label="貼鏡模式"
             title="貼鏡模式:貼近攝影機 5cm 內,眼神自然對準鏡頭(建議搭配逐句短語)"
             active={o.lensMode}
-            onClick={() => enterLens(o)}
+            onClick={() => {
+              // 貼鏡沒有跟讀 UI(音柱與狀態列都不渲染):帶著麥克風進貼鏡會變成
+              // 看不到也停不掉的背景錄音。與「隱藏浮層自動停跟讀」同一族處置,
+              // 也與 setMode 切離 scroll 時停跟讀同一語意。
+              if (followStatus !== 'idle') follow.stopFollow()
+              enterLens(o)
+            }}
           >
             <ScanFace size={13} />
           </ToolBtn>

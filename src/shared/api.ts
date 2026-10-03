@@ -7,13 +7,22 @@ import type {
   CoachingKind,
   DebugSignalKind,
   DebugOverlayAction,
-  DomFinding
+  DomFinding,
+  UpdateDownloadedInfo
 } from './types'
 import type { DiagnosticsReport, EventPayload } from './observability'
 
 export interface OverlayShowPayload {
   title?: string
   content?: string
+  /**
+   * 這份內容出自哪一份講稿(2026-10-03)。
+   *
+   * 為什麼要帶:浮層只拿到 title/content 時,main 無法判斷「浮層正在講的是哪一份」,
+   * 於是使用者改完稿存檔之後沒辦法把浮層一起更新 —— 站在台上講的還是舊版。
+   * 有了身分,「同一份稿才同步」才有判斷依據(見 shared/overlayScript.ts)。
+   */
+  scriptId?: number
 }
 
 export interface OllamaChatApiRequest {
@@ -88,6 +97,12 @@ export interface Api {
 
   // 浮層
   overlayShow(payload: OverlayShowPayload): Promise<void>
+  /**
+   * 主視窗改了講稿之後呼叫。只在浮層正在講同一份稿時才會推送(回傳是否同步)。
+   * 與 overlayShow 的差別:同步**不會**把浮層叫出來 —— 使用者只是存了檔,
+   * 他沒有要求開浮層,而突然冒出視窗是另一種干擾。
+   */
+  overlaySync(payload: OverlayShowPayload): Promise<boolean>
   overlayGetLastPayload(): Promise<OverlayShowPayload>
   overlayHide(): Promise<void>
   overlayToggle(): Promise<void>
@@ -131,7 +146,8 @@ export interface Api {
   keysSet(keys: Record<string, unknown>): Promise<boolean>
   sceneList(): Promise<SceneSummary[]>
   pushTranscript(args: { text: string; speaker?: 'me' | 'them' | 'unknown' }): Promise<boolean>
-  panicTrigger(script?: string): Promise<boolean>
+  /** 觸發 Panic 救援(救援語境由 main 端的 live 上下文提供,不經參數傳) */
+  panicTrigger(): Promise<boolean>
   /** turn-yield:對方講完問句/長段(main → overlay) */
   onTurnYield(cb: (payload: TurnYieldPayload) => void): Unsubscribe
   /** 即時教練訊號(main → overlay) */
@@ -163,6 +179,19 @@ export interface Api {
   }>
   /** 錄影存檔:彈出儲存對話框寫入位元組 */
   saveRecording(args: { bytes: Uint8Array; defaultName: string }): Promise<{ ok: boolean; filePath?: string; error?: string }>
+  /** 錄音/轉錄開始時呼叫:阻止系統睡眠('prevent-app-suspension') */
+  powerSaveStart(): Promise<boolean>
+  /** 錄音/轉錄結束時呼叫:解除電源阻擋 */
+  powerSaveStop(): Promise<boolean>
+  /**
+   * 錄音/錄影進行中的環境指示(見 IPC.WindowCaptureIndicator)。
+   * 最小化後「還在錄」原本完全不可見 —— 指示燈在機殼、畫面在工作列底下。
+   */
+  windowCaptureIndicator(state: { active: boolean; label?: string }): Promise<void>
+  /** 設定頁「重新啟動以套用更新」:relaunch 後走正常 quit(electron-updater 在 quit 時安裝) */
+  relaunchApp(): Promise<void>
+  /** 更新已下載完成(等使用者重啟安裝);見 APP_UPDATE_DOWNLOADED */
+  onUpdateDownloaded(cb: (info: UpdateDownloadedInfo) => void): Unsubscribe
   /** 分享前模擬測試:回傳主螢幕擷取縮圖(浮層應為隱形) */
   shareSimulation(): Promise<{ ok: boolean; dataUrl?: string; error?: string }>
   /** 貼鏡模式吸附:把浮層移到螢幕上緣指定角落 */
@@ -194,6 +223,12 @@ export interface Api {
    * main 在 close 事件裡讀這個值決定要不要擋下來。
    */
   setCloseBlocker(text: string | null): Promise<boolean>
+  /**
+   * 通知 main「現在正在錄音」。退出前存檔(quitGuard)靠這個決定要不要擋下退出。
+   *
+   * 刻意與 setCloseBlocker 分開:那個是給人看的訊息,這個是給機器讀的事實。
+   */
+  setRecording(recording: boolean): Promise<boolean>
   /** 使用者確認放棄變更並關閉 */
   confirmClose(): Promise<boolean>
   /** 使用者在關閉確認對話框按了取消 */

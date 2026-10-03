@@ -107,8 +107,19 @@ export const useToasts = create<ToastState>((set) => ({
       const item: ToastItem = { id: nextId++, kind, message, remainingMs, running: true }
       if (action) item.action = action
       const items = [item, ...s.items]
-      // 上限 3 則,超額移除最舊(最舊者多半已被看到)
-      return { items: items.length > MAX_VISIBLE ? items.slice(0, MAX_VISIBLE) : items }
+      if (items.length <= MAX_VISIBLE) return { items }
+      // 上限 3 則。超額時先淘汰「會自動消失」的項目:帶按鈕的錯誤不會自己退場
+      // (它是使用者唯一的下一步),被第四則訊息靜默擠掉的話,使用者還沒走到
+      // 按鈕前面它就沒了。注意 items 是新在前,所以從尾端找最舊的非 action 項;
+      // 全部都不會過期時才退最舊。
+      let evictIdx = items.length - 1
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (!items[i].action) {
+          evictIdx = i
+          break
+        }
+      }
+      return { items: items.filter((_, i) => i !== evictIdx) }
     }),
 
   dismiss: (id) => set((s) => ({ items: s.items.filter((t) => t.id !== id) })),

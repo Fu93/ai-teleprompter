@@ -40,6 +40,9 @@ export const BLOCKING_SPECS = [
   'backup.spec.ts',
   'scripts-import.spec.ts',
   'transcript-to-script.spec.ts',
+  // 錄音中退出不能靜默清空整場會議(before-quit 會繞過視窗守衛,
+  // autoInstallOnAppQuit 又讓「更新完退出」是常見路徑 —— 見 quit-flush.spec.ts 檔頭)
+  'quit-flush.spec.ts',
   'practice-generation.spec.ts',
   'preflight.spec.ts',
   'mic-denied.spec.ts',
@@ -47,6 +50,7 @@ export const BLOCKING_SPECS = [
   'calibration-escape.spec.ts',
   'debug-panel.spec.ts',
   'overlay-hide-follow.spec.ts',
+  'overlay-script-sync.spec.ts',
   'pill-notice.spec.ts',
   'pill-progress.spec.ts',
   'pill-scale.spec.ts',

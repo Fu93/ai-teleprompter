@@ -1,7 +1,7 @@
 /**
  * 模擬會議演練 — 以真實 app + 真 IPC 重播一場典型會議的語音節奏,
  * 驗證即時回饋管線(turn-yield + coaching)的觸發、時序與自動淡出,
- * 並逐訊號截圖存檔 docs/screenshots/。
+ * 並逐訊號截圖存檔 test-results/screenshots/(gitignored;刻意刷新文件截圖時用 scripts/capture-ui.mjs 寫 docs/screenshots/)。
  *
  * 執行:npx playwright test e2e/meeting-flow.spec.ts(需先 npm run build)
  *
@@ -88,7 +88,7 @@ test('模擬會議:六訊號逐段觸發並截圖', async () => {
           .catch(() => false)
         if (hit) {
           deadAirSeen = true
-          await overlay!.screenshot({ path: 'docs/screenshots/20-meeting-dead-air.png' })
+          await overlay!.screenshot({ path: 'test-results/screenshots/20-meeting-dead-air.png' })
           return true
         }
         await overlay!.waitForTimeout(200)
@@ -100,7 +100,7 @@ test('模擬會議:六訊號逐段觸發並截圖', async () => {
     await push(main, 'them', '可以請你介紹一下你自己嗎')
     await overlay!.waitForSelector('text=該你說話了', { timeout: 8_000 })
     await overlay!.waitForTimeout(1600) // 等 1.2s main 防抖後的事件送達+渲染
-    await overlay!.screenshot({ path: 'docs/screenshots/16-meeting-turn-yield.png' })
+    await overlay!.screenshot({ path: 'test-results/screenshots/16-meeting-turn-yield.png' })
     // 先補一句對方話語重置靜音時鐘:淡出驗證若把靜音拉過 8s,
     // dead_air 的 2s timer tick 會在此燒掉 300s 冷卻,步驟 5 就永不觸發。
     // (renderer 的 6s 淡出計時與 main 推送互不干擾,驗證依然有效)
@@ -127,7 +127,7 @@ test('模擬會議:六訊號逐段觸發並截圖', async () => {
       }
     }
     expect(fastFired).toBe(true)
-    await overlay!.screenshot({ path: 'docs/screenshots/17-meeting-fast.png' })
+    await overlay!.screenshot({ path: 'test-results/screenshots/17-meeting-fast.png' })
     // 只等 4s:靜音 8s 會觸發 dead_air 燒掉 300s 冷卻;banner 自然淡出即可
     await overlay!.waitForTimeout(4_000)
     await push(main, 'them', '好,那我們繼續', 500)
@@ -140,7 +140,7 @@ test('模擬會議:六訊號逐段觸發並截圖', async () => {
       await push(main, 'me', '嗯', 3000)
     }
     await overlay!.waitForSelector('text=填充詞有點多', { timeout: 5_000 })
-    await overlay!.screenshot({ path: 'docs/screenshots/18-meeting-filler.png' })
+    await overlay!.screenshot({ path: 'test-results/screenshots/18-meeting-filler.png' })
     await overlay!.waitForTimeout(4_000) // 同上:避免燒掉 dead_air 冷卻
 
     // ---------- 4. 對方講完 0.5s 我插話 → coaching interrupt ----------
@@ -148,7 +148,7 @@ test('模擬會議:六訊號逐段觸發並截圖', async () => {
     await main.waitForTimeout(500)
     await push(main, 'me', '這個專案主要是我負責資料管線的設計')
     await overlay!.waitForSelector('text=打斷對方', { timeout: 5_000 })
-    await overlay!.screenshot({ path: 'docs/screenshots/19-meeting-interrupt.png' })
+    await overlay!.screenshot({ path: 'test-results/screenshots/19-meeting-interrupt.png' })
 
     // ---------- 5. dead_air 已由上方背景觀察器捕捉 ----------
     expect(deadAirSeen || (await deadAirPromise)).toBe(true)

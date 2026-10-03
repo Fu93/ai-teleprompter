@@ -137,7 +137,7 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
       return
     }
     await db.scripts.update(s.id!, { lastUsedAt: Date.now() })
-    await window.api.overlayShow({ title: s.title, content: s.content })
+    await window.api.overlayShow({ scriptId: s.id, title: s.title, content: s.content })
     // 第一段提詞成功。標記在**真的 show 成功之後**,不是按下鈕時 ——
     // 這個旗標是「達成」的證明,提前寫等於把一次失敗也算成完成。
     markPromptSucceeded()
@@ -203,7 +203,7 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
         <PreflightCard variant="compact" onNavigate={onNavigate} onResult={setPreflightResult} />
       </div>
 
-      {/* 首用「3 分���上手」:三步全部可見、可完成,但不擋路。
+      {/* 首用「3 分鐘上手」:三步全部可見、可完成,但不擋路。
           位置在 preflight **之下**是刻意的:preflight 講的是「AI 還差什麼」
           (一個問題清單),上手卡片講的是「你走到第幾步」(一個進度)。先讓
           使用者看見缺什麼(那是阻擋級),再看見自己走了多遠。
@@ -287,7 +287,10 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
         )}
         {settings && (
           <div className="mt-3 border-t border-ink-800 pt-3 text-[11px] text-ink-400">
-            浮層熱鍵 {settings.hotkeys.toggleOverlay} · 隱藏 {settings.hotkeys.hideOverlay} ·
+            {/* 熱鍵正規化與其他頁一致(Control→Ctrl):同一個 App 不要讓
+                總覽頁顯示「Control+Alt+T」、其他頁顯示「Ctrl+Alt+T」 */}
+            浮層熱鍵 {settings.hotkeys.toggleOverlay.replaceAll('Control', 'Ctrl')} · 隱藏{' '}
+            {settings.hotkeys.hideOverlay.replaceAll('Control', 'Ctrl')} ·
             螢幕擷取隱形 {settings.overlay.captureProtected ? '開' : '關'}
           </div>
         )}

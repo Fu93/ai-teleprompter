@@ -143,6 +143,13 @@ export const STATES = [
   { id: 'practice/done', page: 'practice', nav: 'practice', seed: 'practiceDone' },
   { id: 'calibration/step0', page: 'calibration', nav: 'calibration', seed: 'none' },
   { id: 'calibration/step1', page: 'calibration', nav: 'calibration', seed: 'calStep1' },
+  /**
+   * step1 有語速結果的變體:step1 上「跳過語速量測」與「下一步」是互斥渲染
+   * (前者 rateResult==null、後者反之)。只宣告 step1 的話,其中一顆必定
+   * 「登記了但從沒出現」—— 探針-覆蓋率會紅。這個狀態把 rateResult 備妥,
+   * 讓「下一步」出現在被宣告的狀態裡。
+   */
+  { id: 'calibration/step1-rated', page: 'calibration', nav: 'calibration', seed: 'calStep1Rated' },
   { id: 'calibration/step2', page: 'calibration', nav: 'calibration', seed: 'calStep2' },
   { id: 'settings/default', page: 'settings', nav: 'settings', seed: 'none' },
   { id: 'settings/openai', page: 'settings', nav: 'settings', seed: 'openai' },
@@ -324,7 +331,9 @@ export const CONTROLS = [
   { key: key('calibration', 'input:number', '沒有攝影機？直接填你平常的觀看距離'), step: 'calibration', note: '手動距離真的進到下一步的推導' },
   { key: key('calibration', 'button', '用手動距離繼續'), step: 'calibration', note: '真的進到 step 1' },
   { key: key('calibration', 'button', '開始朗讀'), step: 'calibration', note: '按下後真的開始收音(假麥克風);語速數值本身需要 Whisper,不在這一條的斷言範圍' },
+  { key: key('calibration', 'button', '再測一次'), step: 'calibration', note: '同一顆收音鈕的已量測態(rateResult 有值):按下重開收音。渲染在 calibration/step1-rated' },
   { key: key('calibration', 'button', '唸完了'), step: 'calibration', exempt: { category: EXEMPT_CATEGORY.MODEL_DOWNLOAD, reason: '同上一條:停止朗讀後要跑 Whisper 才會有語速結果' } },
+  { key: key('calibration', 'button', '跳過語速量測'), step: 'calibration', note: '沒有量測也能進 step 2(cpm 走備援):沒有麥克風/權限被拒者的出口,與「下一步」互斥渲染' },
   { key: key('calibration', 'button', '下一步'), step: 'calibration', note: '真的進到 step 2' },
   { key: key('calibration', 'button', '−'), step: 'calibration', note: '字級真的變小(預覽與參數同步)' },
   { key: key('calibration', 'button', '+'), step: 'calibration', note: '字級真的變大' },

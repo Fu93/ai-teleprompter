@@ -8,15 +8,29 @@ const RIGHT_IRIS_CENTER = 473
 
 let landmarkerPromise: Promise<FaceLandmarker> | null = null
 
+/**
+ * mediapipe 資源的載入來源。
+ *
+ * dev:走 dev server 的 http(`/mediapipe/wasm`),fetch 對 http 沒有任何限制。
+ * 打包:頁面以 file:// 載入,而 Chromium 拒絕 file: scheme 的 fetch —— 原本
+ * 的相對路徑在安裝版直接失敗(dev 測得到、打包沒人驗過)。改由 main 端註冊的
+ * privileged scheme 提供同一批本地檔案(app://bundle,見 src/main/appProtocol.ts),
+ * 語意不變:本地資源、離線可用,只不過協定從 file 換成了能被 fetch 的 app。
+ */
+function localBase(): string {
+  if (import.meta.env.DEV) {
+    const base = (import.meta.env.BASE_URL ?? '/').replace(/\/?$/, '/')
+    return `${base}mediapipe`
+  }
+  return 'app://bundle/mediapipe'
+}
+
 function wasmBase(): string {
-  // dev: '/' → '/mediapipe/wasm'；打包: './' → './mediapipe/wasm'（相對 index.html）
-  const base = (import.meta.env.BASE_URL ?? '/').replace(/\/?$/, '/')
-  return `${base}mediapipe/wasm`
+  return `${localBase()}/wasm`
 }
 
 function modelUrl(): string {
-  const base = (import.meta.env.BASE_URL ?? '/').replace(/\/?$/, '/')
-  return `${base}mediapipe/models/face_landmarker.task`
+  return `${localBase()}/models/face_landmarker.task`
 }
 
 export async function getFaceLandmarker(): Promise<FaceLandmarker> {

@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron'
 import { IPC, type AppSettings } from '@shared/types'
+import type { OverlayShowPayload } from '@shared/api'
 import { loadSettings } from './settings'
 
 /**
@@ -14,14 +15,23 @@ const state = {
   settings: null as unknown as AppSettings,
   mainWindow: null as BrowserWindow | null,
   overlayWindow: null as BrowserWindow | null,
-  /** 最近一次 OverlayShow 的內容;panic 無語音上下文時退用講稿結尾 */
-  lastOverlayPayload: { title: undefined, content: undefined } as { title?: string; content?: string },
+  /** 最近一次 OverlayShow/OverlaySync 的內容;panic 無語音上下文時退用講稿結尾 */
+  lastOverlayPayload: { title: undefined, content: undefined } as OverlayShowPayload,
   /**
    * renderer 宣告的「現在關掉會丢東西」訊息(未存講稿 / 錄音中)。
    * main 無法同步查詢 renderer,所以由 renderer 主動上報,close 事件只讀這裡。
    * null = 沒有阻擋,視窗正常關閉。
    */
   closeBlocker: null as string | null,
+  /**
+   * renderer 上報的「現在正在錄音」事實。
+   *
+   * 與 closeBlocker 分開的理由見 IPC.AppSetRecording 的註解。退出前存檔
+   * (quitGuard)只看這一個布林:逐字稿只存在 renderer 的 React state 裡,
+   * 而 App 退出流程(before-quit)會繞過 close 守衛,於是 OS 關機或自動更新
+   * 可以在錄音中把整場會議靜默清空。
+   */
+  isRecording: false,
   /**
    * 註冊失敗的全域熱鍵(已被其他程式佔用或無效)。
    *

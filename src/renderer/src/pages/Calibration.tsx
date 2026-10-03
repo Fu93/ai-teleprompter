@@ -730,9 +730,18 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
                 <Square size={14} /> 唸完了
               </button>
             )}
-            <button className="btn-outline text-xs" disabled={rateResult == null} onClick={() => goToStep(2)}>
-              下一步 <ChevronRight size={13} />
-            </button>
+            {rateResult == null ? (
+              // 沒有麥克風(或權限被拒)的人拿不到量測,唯一的路被 disabled 堵死
+              // 就永遠卡在這一步;已校準過、只想重校眼距的人同樣被逼著重新朗讀。
+              // finish() 本來就有 cpm 備援(先前校準值或預設 240),所以這裡直接放行。
+              <button className="btn-outline text-xs" onClick={() => goToStep(2)}>
+                跳過語速量測 <ChevronRight size={13} />
+              </button>
+            ) : (
+              <button className="btn-outline text-xs" onClick={() => goToStep(2)}>
+                下一步 <ChevronRight size={13} />
+              </button>
+            )}
           </div>
         </div>
       )}

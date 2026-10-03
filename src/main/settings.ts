@@ -38,7 +38,15 @@ const settingsFile = () => join(app.getPath('userData'), 'settings.json')
  * 展開的視窗」。
  */
 export function mergeLoadedSettings(raw: string): AppSettings {
-  return deepMerge(structuredClone(DEFAULT_SETTINGS), JSON.parse(raw))
+  const parsed: unknown = JSON.parse(raw)
+  // settings.json 的內容不是 JSON 物件(例如曾被寫進 'null')時丟錯,讓
+  // loadSettings 走預設值:deepMerge 對非物件的 patch 是原樣回傳,若把 null
+  // 帶進去,啟動載入經同一條 deepMerge 又是 null —— 每一次啟動都是 null,
+  // 使用者只能手動刪檔救援。容錯之後,最壞情況是「設定回到預設」,不是「全 app 壞掉」。
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('settings.json 的內容不是 JSON 物件')
+  }
+  return deepMerge(structuredClone(DEFAULT_SETTINGS), parsed)
 }
 
 export function loadSettings(): AppSettings {
@@ -53,4 +61,26 @@ export function saveSettings(settings: AppSettings): void {
   const p = settingsFile()
   mkdirSync(dirname(p), { recursive: true })
   writeFileSync(p, JSON.stringify(settings, null, 2), 'utf-8')
+}
+
+/**
+ * 節流落盤:合併連續的設定寫入。
+ *
+ * 為什麼需要:設定頁的字體/速度滑桿拖一格就是一次 SettingsSet,每格都
+ * writeFileSync 的話,一次拖動就是幾十次磁碟寫入(與同頁 API Key 輸入享受的
+ * debounce 待遇不一致)。廣播與視窗套用仍由呼叫端即時做 —— 那是拖動的回饋,
+ * 被合併的只有磁碟寫入;trailing 保證最後一格一定會落盤。
+ */
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+export function saveSettingsThrottled(settings: AppSettings): void {
+  if (saveTimer !== null) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    saveTimer = null
+    try {
+      saveSettings(settings)
+    } catch (err) {
+      // 落盤失敗(磁碟滿等)不該炸掉 main:設定還在記憶體裡,下次變更會再試
+      console.error('[settings] 節流落盤失敗:', err instanceof Error ? err.message : String(err))
+    }
+  }, 500)
 }

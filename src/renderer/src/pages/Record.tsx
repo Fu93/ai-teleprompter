@@ -25,6 +25,7 @@ import { CancelableBusy } from '../components/CancelableBusy'
 import { toast } from '../lib/toast'
 import { reportError, reportEvent, reportCode } from '../lib/reportError'
 import { buildSessionReport, sortTranscriptSegments } from '../lib/session-intelligence'
+import { createSessionPersister } from '../lib/sessionPersist'
 import { buildActionList } from '../lib/actionList'
 import { AudioSegmenter, type AudioSegmentMetadata } from '../lib/audio/segmenter'
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
@@ -33,6 +34,8 @@ import { registerAuditControl } from '../lib/auditBridge'
 import { createPendingTracker, drainPending, STT_FAILURE_BANNER_THRESHOLD } from '../lib/transcriptionQueue'
 import { confirmDialog } from '../lib/confirm'
 import { useCloseGuard } from '../lib/closeGuard'
+import { saveSessionAsScript, isSessionSavedAsScript } from '../lib/sessionToScript'
+import { setCaptureIndicator } from '../lib/captureIndicator'
 
 // 連續失敗門檻與 Practice 共用同一份(見 lib/transcriptionQueue.ts):
 // 兩頁對「我在白講」的告警時機必須一致,否則使用者只會覺得提示不可靠。
@@ -47,12 +50,37 @@ type ModelState = {
 export default function Record({ onGuardChange }: { onGuardChange?: (msg: string | null) => void } = {}): JSX.Element {
   const { settings } = useSettings()
   const [recording, setRecording] = useState(false)
+  /**
+   * 「正在錄音」的鏡像 ref。兩個用途:
+   *   1. 退出前存檔由 main 端用 executeJavaScript 觸發,那時不能假設
+   *      React state 是最新一次 render 的值。
+   *   2. 通知 main(`setRecording`),讓 App 退出流程知道該不該先存檔 ——
+   *      before-quit 會繞過視窗守衛,逐字稿卻只存在這個進程的記憶體裡。
+   */
+  const recordingRef = useRef(false)
   /** start() 的多步 await(模型載入/麥克風/AudioContext)期間擋再按:
    *  雙擊會讓第一組 stream/segmenter ref 被覆蓋而永久洩漏,且兩組分段器重複送轉錄 */
   const [starting, setStarting] = useState(false)
   const startingRef = useRef(false)
   const [wantMic, setWantMic] = useState(true)
   const [wantSys, setWantSys] = useState(false)
+  /**
+   * 本視窗內已存成講稿的 session id(畫面快取)。
+   * 事實在 MeetingSession.savedAsScriptId —— 只靠這個 Set 的話,切頁/重啟就歸零,
+   * 再按一次會產生第二份同內容講稿(見 lib/sessionToScript.ts)。
+   */
+  const [savedAsScriptIds, setSavedAsScriptIds] = useState<Set<number>>(new Set())
+  /**
+   * 現存的講稿 id。null = 還沒問過資料庫。
+   *
+   * 為什麼需要:「已存成講稿」不能只看 session 上的 savedAsScriptId —— 那份講稿
+   * 可以被刪掉(講稿頁有刪除鈕),參照卻會留著,於是按鈕永遠停在 disabled 的
+   * 「已存成講稿」,使用者既看不到那份稿,也再也存不成。
+   *
+   * 一次把主鍵全部載進 Set(而不是每次 render 去問 DB):這頁有 15 場會議的按鈕,
+   * 每個都要判斷一次。
+   */
+  const [scriptIds, setScriptIds] = useState<Set<number> | null>(null)
   const [micLevel, setMicLevel] = useState(0)
   const [sysLevel, setSysLevel] = useState(0)
   const [segments, setSegments] = useState<TranscriptSegment[]>([])
@@ -108,12 +136,106 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
   const transcriptBoxRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef('')
   titleRef.current = title
+  const wantMicRef = useRef(wantMic)
+  wantMicRef.current = wantMic
+  const wantSysRef = useRef(wantSys)
+  wantSysRef.current = wantSys
+  /**
+   * 這一場的寫入器。「只寫一次」的守衛住在裡面(見 lib/sessionPersist.ts 的
+   * 檔頭):正常 stop() 與退出前存檔共用同一個實例,才不會寫出兩場會議。
+   */
+  const persisterRef = useRef(createSessionPersister())
+
+  /**
+   * 把「現在這場」寫進 IndexedDB。**正常 stop() 與退出前存檔共用這一段。**
+   *
+   * 為什麼讀 refs 而不是 state:退出前存檔是 main 端用 executeJavaScript
+   * 觸發的,那一刻 React 的 state 可能已經不是最新一次 render 的值。
+   *
+   * 真實的演算法與「只寫一次」守衛在 lib/sessionPersist.ts —— 抽出來是為了
+   * 讓它有可測的接縫(元件內的函式測不到),也在於兩條路徑必須保證是同一份。
+   */
+  const persistNow = async (
+    // 呼叫端可以帶入已經算好的時間。
+    //
+    // 為什麼需要這個參數:stop() 會在呼叫 persistNow **之前**把
+    // `startedAtRef.current` 歸零(那個時間已經被 stop() 存進自己的區域變數)。
+    // 如果 persistNow 自己去讀 refs,它會讀到 0 → durationSec 算出來是 0 →
+    // 會後報告卡因為 `durationSec > 0` 不成立而**整張不出現**,而且存進
+    // IndexedDB 的 startedAt 也變成「現在」。這是抽出共用函式時最容易犯、
+    // 而且症狀最不相關的一類錯(畫面上看起來像「報告不顯示」而不是「時間算錯」)。
+    opts?: { startedAt?: number; endedAt?: number }
+  ): Promise<MeetingSession | null> => {
+    const startedAt = opts?.startedAt ?? (sessionStartedAtRef.current || startedAtRef.current)
+    let coachingCounts: Partial<Record<CoachingKind, number>> | undefined
+    try {
+      coachingCounts = await window.api.coachingStats()
+    } catch {
+      // 計數不可得不影響報告本體(與 stop() 的既有行為一致)
+    }
+    const endedAt = opts?.endedAt ?? Date.now()
+    return persisterRef.current.persist({
+      segments: segsRef.current,
+      startedAt: startedAt || endedAt,
+      endedAt,
+      title: titleRef.current,
+      speakerAvailability: { me: wantMicRef.current, them: wantSysRef.current },
+      personalCpm: personalCpmBaseline,
+      coachingCounts
+    })
+  }
+
+  /**
+   * 退出前存檔的掛鉤。main 端在 `before-quit` 用 executeJavaScript 叫它
+   * (見 src/main/quitGuard.ts)。
+   *
+   * 為什麼掛成 window 上的函式:contextIsolation 之下 preload 的 world 和
+   * renderer 的 world 分開,main 叫不到元件內的函式;而
+   * `webContents.executeJavaScript` 跑在 page 的 **main world**,正是這裡。
+   */
+  useEffect(() => {
+    // 回 boolean 而不是 session:executeJavaScript 的結果會被序列化回 main 端,
+    // 整份逐字稿走一趟 IPC 沒有任何好處。main 只需要知道「存了沒有」。
+    const w = window as Window & { __aiTpFlushRecording?: () => Promise<boolean> }
+    w.__aiTpFlushRecording = async () => {
+      // 沒在錄音就不動作:「使用者只是改設定就關 App」不該憑空多出一場會議。
+      if (!recordingRef.current) return false
+      return (await persistNow()) !== null
+    }
+    return () => {
+      delete w.__aiTpFlushRecording
+    }
+  })
+
+  /**
+   * recordingRef 跟著 state 走,並在每次改變時通知 main。
+   *
+   * 為什麼兩件事都要做:
+   *   1. ref:退出前存檔是由 main 用 executeJavaScript 觸發的,那一刻不能假設
+   *      React state 是最新一次 render 的值。
+   *   2. IPC:讓 App 退出流程知道該不該先存檔 —— before-quit 會繞過視窗守衛,
+   *      逐字稿卻只存在這個進程的記憶體裡。
+   *
+   * 這段曾經整段不見過(被另一段抽取程式碼時一起刪掉),而症狀是
+   * 「退出前存檔永遠回傳 false」—— 型別檢查與單元測試都抓不到,
+   * 因為 ref 宣告還在、只是沒有任何地方寫入它。**ref 宣告存在不代表它會被更新。**
+   */
+  useEffect(() => {
+    recordingRef.current = recording
+    void window.api.setRecording(recording).catch(() => undefined)
+  }, [recording])
 
   const engine = settings?.stt.engine ?? 'local'
+  /** 使用者的個人語速基準(字/分);沒校準過就是 null。報告的語速建議與卡片標示共用它。 */
+  const personalCpmBaseline = settings?.personal.profile?.charsPerMin ?? null
   const modelKey = (settings?.stt.localModel ?? 'base') as WhisperModelKey
 
   const refreshSessions = useCallback(async (): Promise<void> => {
     setSessions(await db.sessions.orderBy('startedAt').reverse().limit(15).toArray())
+    // 「已存成講稿」需要知道哪些講稿**還在**(見 scriptIds 的註解)。
+    // 與 sessions 一起載入:同一個 useEffect 觸發,不會出現「按鈕已顯示舊判定」的瞬間。
+    const keys = await db.scripts.toCollection().primaryKeys()
+    setScriptIds(new Set(keys as number[]))
   }, [])
 
   useEffect(() => {
@@ -127,10 +249,23 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
     return () => clearInterval(t)
   }, [])
 
-  // 自動捲動
+  // 自動捲動:只在使用者本來就在底部時跟隨。
+  // 錄音中往上回讀是明確意圖,每個新段落把畫面拽回底部會讓「回讀」變成不可能。
+  // 「是否在底部」必須在 DOM 更新前記帳:段落渲染後 scrollHeight 已長高,
+  // 那時才量的話,「本來在底部」會被誤判成「不在底部」而永遠不跟。
+  const atBottomRef = useRef(true)
   useEffect(() => {
     const el = transcriptBoxRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    const onScroll = (): void => {
+      atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+    }
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+  useEffect(() => {
+    const el = transcriptBoxRef.current
+    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight
   }, [segments])
 
   // unmount 清理:錄音中切頁要收掉分段器與音訊 track(麥克風/系統音訊燈滅),
@@ -195,6 +330,10 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       registerAuditControl('record.branchState', (arg) => {
         const want = typeof arg === 'string' ? arg : 'stt-failed'
         if (want === 'stt-failed') {
+          // 橫幅現在只在錄音中渲染(停止後留著會與「會後報告已儲存」矛盾),
+          // 所以強制這個狀態要一併打開 recording:稽核量的是「錄音中辨識持續
+          // 失敗」這個使用者真的會處在的狀態,不是一個單獨的 boolean。
+          setRecording(true)
           setSttFailed(true)
           return true
         }
@@ -240,10 +379,22 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       startAttemptRef.current += 1
       sessionIdRef.current += 1
       stopAll()
+      void window.api.powerSaveStop()
       whisperRef.current?.dispose()
       whisperRef.current = null
     }
   }, [])
+
+  // 錄音中的環境指示(見 lib/captureIndicator.ts):最小化後「還在錄」要看得出來。
+  // 收尾中(saving)也算 —— 那段等待最長 65 秒,同樣會被最小化。
+  useEffect(() => {
+    setCaptureIndicator(
+      'record',
+      recording ? '● 錄音中 — AI 提詞機' : saving ? '收尾中 — AI 提詞機' : null
+    )
+  }, [recording, saving])
+  // 離頁必還原:unmount 不會再觸發上面那個 effect 的「設成 null」分支
+  useEffect(() => () => setCaptureIndicator('record', null), [])
 
   const ensureWhisper = async (): Promise<void> => {
     if (!whisperRef.current) {
@@ -439,8 +590,14 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
     if (settings?.stt.engine === 'local') {
       try {
         await ensureWhisper()
-      } catch {
+      } catch (err) {
         stopAll()
+        // 原本靜默 return:模型下載失敗(斷網/磁碟滿)時按鈕卡在「啟動中」,
+        // 畫面上沒有任何話解釋為什麼。模型載入與「開麥」是兩種不同的失敗,
+        // 訊息也要分開 —— 叫使用者去查麥克風權限是錯診斷。
+        startingRef.current = false
+        setStarting(false)
+        reportError('語音模型載入失敗,無法開始轉錄', err, { event: 'transcribe_failed' })
         return
       }
       if (attempt !== startAttemptRef.current) {
@@ -452,6 +609,10 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
     }
     segsRef.current = []
     setSegments([])
+    // 新的一場:上一場若已經存過(含退出前存檔),這裡要把「已存檔」的事實清掉,
+    // 否則寫入器會以為這一場也存過而拒絕寫入 —— 結果是第二場會議無聲無息地
+    // 沒有被儲存。
+    persisterRef.current.reset()
     // 新的一場開始,上一場的報告立刻下架:留著只會誤導(見 lastReportMeta)
     setLastReport(null)
     setLastReportMeta(null)
@@ -510,6 +671,9 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
         return
       }
       setRecording(true)
+      // 開會的人常常已經沒在碰電腦(正是系統會想睡覺的時候):轉錄期間
+      // 阻止系統睡眠,停止時解除(見 ipc.ts 的 powerSaveBlocker)。
+      void window.api.powerSaveStart()
       // 「這場會議有真的嘗試過轉錄」的唯一錨點。沒有它的話,診斷報告裡
       // 「從來沒按過開始」與「按了但全部失敗」長得一樣 —— 而那正是回報者
       // 最常提供的資訊(「我按了,沒反應」)。engine/model 讓報告直接回答
@@ -572,25 +736,14 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
           const segments = segsRef.current
           // 會話量化報告:與 session 一起存,供 Dashboard 趨勢使用;
           // 併入會議期間的 coaching 觸發計數,形成改進閉環
-          const report = buildSessionReport(segments, {
-            durationSec: Math.min((endedAt - startedAt) / 1000, 24 * 60 * 60),
-            speakerAvailability: { me: wantMic, them: wantSys }
-          })
-          try {
-            report.coachingCounts = await window.api.coachingStats()
-          } catch {
-            // 計數不可得時不影響報告本體
-          }
           const sessionTitle = titleRef.current.trim() || `會議 ${formatDateTime(startedAt)}`
-          setLastReport(report)
-          setLastReportMeta({ title: sessionTitle, endedAt })
-          await db.sessions.add({
-            title: sessionTitle,
-            startedAt,
-            endedAt,
-            segments,
-            report
-          })
+          // 報告由 persistNow 裡的寫入器算並回傳 —— 這裡**不再自己算第二次**。
+          // 算兩次會有兩份統計,而它們只在其中一條路徑(退出前存檔)不一致,
+          // 那是最難被使用者自己發現、也最難回報的形狀。
+          const saved = await persistNow({ startedAt, endedAt })
+          if (!saved) throw new Error('會議寫入失敗')
+          setLastReport(saved.report ?? null)
+          setLastReportMeta({ title: saved.title, endedAt })
           // 收帳成功的錨點:與 transcribe_started / transcribe_failed 配對,
           // 「這場會議從開始到存檔」的整條故事在診斷報告裡才讀得完整。
           reportEvent('transcribe_succeeded', {
@@ -621,6 +774,15 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       sessionStartedAtRef.current = 0
       stoppingRef.current = false
       setSaving(false)
+      void window.api.powerSaveStop()
+      // 會話結束就把 main 端的語音上下文丟掉(成功、失敗、取消都算)。
+      //
+      // 為什麼要在「停止」清、而不是只在「開始」清:contextReset 原本只在
+      // startRecording 呼叫,於是**停止之後到下一場開始之前**,main 端仍然留著
+      // 上一場的逐字稿與冷卻狀態。這段縫隙裡按 Alt+P(Panic 救援),AI 會拿著
+      // 上一場會議的內容去回答 —— 而「把不該外送的內容送到雲端」正是這個 App
+      // 在資料信任面板上對使用者承諾不會發生的事。
+      void window.api.contextReset()
     }
   }
 
@@ -638,23 +800,44 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
    *   全部段落混在一起會變成一份「會議逐字稿」而不是講稿。
    *   段落前保留時間戳是刻意的 —— 講稿需要能對照原文位置。
    */
+  /**
+   * 「已存成講稿」的判斷:畫面快取(Set)+ 事實(MeetingSession.savedAsScriptId)。
+   *
+   * 只看 Set 的話,切頁再回來(或重啟)就歸零 —— 按鈕回到「存成講稿」,
+   * 再按一次就產生兩份一模一樣的講稿。savedAsScriptId 存在 IndexedDB,
+   * 是跨頁、跨重啟都成立的事實(見 lib/sessionToScript.ts)。
+   */
+  const isSavedAsScript = (s: MeetingSession): boolean =>
+    isSessionSavedAsScript(s, scriptIds, savedAsScriptIds)
+
+  /**
+   * 把逐字稿存成一份講稿。
+   *
+   * 為什麼需要這個轉換(使用者視角稽核 scripts/audit-journey.mjs 量到的唯一死路):
+   *   這個 App 是提詞機,但錄音產出的是「會議紀錄」。使用者開完會拿到逐字稿,
+   *   最自然的下一步是「把這段變成我下次要用的講稿」—— 而程式裡沒有任何一條路
+   *   做得到,唯一的下游動作是「匯出 .md 到磁碟」。他得自己開記事本複製貼上到
+   *   講稿頁,而這一步沒有任何 UI 指引。**產出的東西和使用者累積的內容被隔離在
+   *   兩個 store 裡,而其中一邊是這個產品的主功能。**
+   *
+   * 格式與防重複的決定都在 lib/sessionToScript.ts(資料層):
+   * 只取**我方**的發言、段落前保留時間戳;「存過了」以 savedAsScriptId 為準,
+   * 重複呼叫冪等 —— 不會產生兩份一模一樣的講稿。
+   */
   const saveTranscriptAsScript = async (s: MeetingSession): Promise<void> => {
-    const mine = s.segments.filter((seg) => seg.speaker === 'me')
-    const body = (mine.length ? mine : s.segments)
-      .map((seg) => `[${formatDuration(seg.start)}] ${seg.text}`)
-      .join('\n')
-    if (!body.trim()) {
-      toast.error('這場會議沒有可以存成講稿的內容')
+    // 重複防護:按鈕沒有 busy 態,使用者不確定是否成功時會再按一次。
+    if (isSavedAsScript(s)) {
+      toast.info('這場已經存成講稿了,在「提詞講稿」頁')
       return
     }
-    const now = Date.now()
+    let scriptId: number
     try {
-      await db.scripts.add({
-        title: `${s.title}（講稿）`,
-        content: body,
-        createdAt: now,
-        updatedAt: now
-      })
+      const res = await saveSessionAsScript(s)
+      if (!res.ok) {
+        toast.error('這場會議沒有可以存成講稿的內容')
+        return
+      }
+      scriptId = res.scriptId
     } catch (err) {
       // 寫入失敗(IndexedDB 滿/隱私模式)要有聲,而不是靜默失敗讓使用者以為存好了
       reportError('講稿儲存失敗', err, { event: 'backup_failed' })
@@ -663,6 +846,15 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
     // 不跨頁跳轉:Scripts 進頁時本來就會自動選中最新的那一份(orderBy updatedAt desc),
     // 所以 toast 裡直接給出下一步就好。使用者按完會看到「已存成講稿」並知道去哪找 ——
     // 硬加一個跨頁跳轉得動 App 的 navigate 簽章,那是為了順手而擴大改動面。
+    const sid = s.id
+    if (sid != null) {
+      setSavedAsScriptIds((prev) => new Set(prev).add(sid))
+      // sessions state 跟著補上事實:按鈕的 disabled/文案讀的是它
+      setSessions((prev) => prev.map((x) => (x.id === sid ? { ...x, savedAsScriptId: scriptId } : x)))
+    }
+    // 剛建立的講稿要立刻算進「現存的講稿」,否則這顆按鈕會因為
+    // 「參照的 id 不在 scriptIds 裡」而看起來仍然沒存過。
+    setScriptIds((prev) => new Set(prev ?? []).add(scriptId))
     toast.success(`已存成講稿:${s.title}（講稿）,在「提詞講稿」頁`)
   }
 
@@ -714,7 +906,7 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       )
     } catch (err) {
       // 剪貼簿在某些環境不可用。使用者正要拿這份清單去做事,
-      // 所以除了錯誤還要給他看得���的版本 —— 匯出成 .md 是可行的退路。
+      // 所以除了錯誤還要給他看得懂的版本 —— 匯出成 .md 是可行的退路。
       reportError('複製行動清單失敗', err, { event: 'backup_failed' })
       toast.info(`可以改用「匯出」把這場存成 .md。\n\n${list.text.slice(0, 400)}`)
     }
@@ -734,6 +926,9 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       return
     await db.sessions.delete(id)
     await refreshSessions()
+    // 與刪除講稿(toast.success)、刪除練習紀錄(toast.info)同一標準:
+    // 三種刪除中這筆資料量最大(逐字稿+摘要+報告),反而不能無聲消失。
+    toast.info('會議紀錄已刪除')
   }
 
   const generateSummary = async (s: MeetingSession): Promise<void> => {
@@ -824,8 +1019,10 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
         為什麼需要這個而不是多跳幾個 toast:持續失敗時原本會幾秒一個錯誤跳出來,
         堆滿並蓋住錄音介面。使用者只會得到「一直有東西出錯」的雜訊,
         不會知道「我現在講的話不會被儲存」。這個橫幅把該有的那句話講清楚。
+        只在錄音中顯示:停止後橫幅留著會與「會後報告已儲存」互相矛盾
+        (已經沒有在錄,卻還說「你現在說的話不會被儲存」)。
       */}
-      {sttFailed && (
+      {sttFailed && recording && (
         <div
           role="alert"
           className="mb-4 flex items-start gap-2.5 rounded-xl border border-rose-450/40 bg-rose-450/10 px-4 py-3 text-sm text-rose-300"
@@ -984,7 +1181,14 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
               {
                 label: '我的語速',
                 value: lastReport.myCpm > 0 ? `${lastReport.myCpm}` : '—',
-                hint: lastReport.myCpm > 0 ? '字/分' : undefined
+                // 有基準就把基準一起擺出來:單一個數字讀不出「這算快還算慢」,
+                // 而判斷偏快偏慢本來就是相對於這個人的常態。
+                hint:
+                  lastReport.myCpm > 0
+                    ? personalCpmBaseline
+                      ? `字/分 · 你的基準 ${Math.round(personalCpmBaseline)}`
+                      : '字/分'
+                    : undefined
               },
               {
                 label: '語速穩定度',
@@ -1112,10 +1316,11 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
                       // 但逐字稿原本只能「匯出 .md 到磁碟」—— 那是給人看的,
                       // 回到這個 App 的路要使用者自己複製貼上。這顆鈕把它接回去。
                       className="btn-ghost text-xs"
+                      disabled={isSavedAsScript(s)}
                       onClick={() => void saveTranscriptAsScript(s)}
                       title="把這場會議的逐字稿存成一份講稿,之後就能拿去提詞"
                     >
-                      <BookPlus size={12} /> 存成講稿
+                      <BookPlus size={12} /> {isSavedAsScript(s) ? '已存成講稿' : '存成講稿'}
                     </button>
                     <button
                       data-effect-id="copy-action-list"

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, screen } from 'electron'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 import os from 'os'
 import { IPC } from '@shared/types'
 import { EXPANDED_MIN, overlayShapeDesignSize, overlayShapeMin, overlayShapeOf } from '@shared/overlayShapes'
@@ -8,6 +9,17 @@ import { logMain } from './logging'
 import { broadcastSettings, state } from './state'
 
 const isDev = !app.isPackaged
+
+/**
+ * 打包版頁面的 file:// URL(will-navigate 白名單用)。
+ * 白名單收斂到「本 app 的 index.html」而不是任意 file:// URL:後者等於允許把
+ * 本機任何 HTML(例如使用者剛下載的檔案)導進帶著 preload API 的視窗。
+ */
+const PROD_INDEX_URL = pathToFileURL(join(__dirname, '../renderer/index.html')).href
+
+function isProdIndexUrl(url: string): boolean {
+  return url === PROD_INDEX_URL || url.startsWith(`${PROD_INDEX_URL}#`) || url.startsWith(`${PROD_INDEX_URL}?`)
+}
 
 /**
  * Windows 11 22H2(build ≥22621)才支援 setBackgroundMaterial('acrylic')。
@@ -20,12 +32,12 @@ function isWin11_22H2(): boolean {
   return major >= 10 && build >= 22621
 }
 
-/** 視窗安全:禁新視窗;僅允許 dev server 或本地檔案內部導航 */
+/** 視窗安全:禁新視窗;僅允許 dev server 或本 app 的 index.html 內部導航 */
 export function hardenWebContents(win: BrowserWindow): void {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', (e, url) => {
     const devBase = process.env['ELECTRON_RENDERER_URL']
-    const allowed = isDev && devBase ? url.startsWith(devBase) : url.startsWith('file://')
+    const allowed = isDev && devBase ? url.startsWith(devBase) : isProdIndexUrl(url)
     if (!allowed) e.preventDefault()
   })
 }
@@ -282,9 +294,14 @@ export function createMainWindow(): BrowserWindow {
   win.on('close', (e) => {
     if (closeConfirmed || quitting) return
     const blocker = state.closeBlocker
-    // 沒有守衛(或已經在問了)就讓它正常關閉 —— 不能讓使用者被自己的對話框困住
-    if (!blocker || closePromptPending) return
+    // 沒有守衛就放行:使用者回答過(或本來就沒東西會掉)時,不能再被對話框困住。
+    if (!blocker) return
+    // 有守衛就擋 —— **包含「已經在問」的情況**。
     e.preventDefault()
+    // 已經在問了:使用者又按了一次 X。此刻不能重發確認事件(ConfirmHost 會疊出
+    // 第二個對話框),但**絕對不能在這裡放行** —— 那正是這個守衛存在的目的被推翻:
+    // 他還沒回答「要不要保留」,未存的講稿/正在錄的整場會議就沒了。
+    if (closePromptPending) return
     closePromptPending = true
     win.webContents.send(IPC.AppCloseRequested, blocker)
     // 具名函式而不是內聯箭頭:它要自己重排自己(多等一輪再退回原生框)
@@ -300,6 +317,11 @@ export function createMainWindow(): BrowserWindow {
         closePromptTimer = setTimeout(onFallbackTimeout, CLOSE_PROMPT_FALLBACK_MS)
         return
       }
+      // 彈原生框之前先把 pending 收掉:原生框是這條流程的最後一輪,若使用者
+      // 選「取消」而 pending 還留著,下一次按 X 就會卡在「已經在問」→
+      // 視窗從此再也關不掉(必須靠一個已經不在的 App 內對話框回應)。
+      // 收掉之後,下一次按 X 會重跑整條流程(含新的退回計時)。
+      clearClosePrompt()
       void dialog
         .showMessageBox(win, {
           type: 'warning',

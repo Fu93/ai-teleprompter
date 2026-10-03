@@ -1,0 +1,48 @@
+node_modules/
+out/
+dist/
+*.log
+.DS_Store
+test-results/
+playwright-report/
+dist/
+.freebuff/
+*.tsbuildinfo
+
+# UI 稽核產物(每次執行重新產生)
+docs/audit/
+
+# 稽核用的假裝置 fixture(產生物,由 npm run make-audio-fixture 產生)
+fixtures/audit/
+
+# 一次性 UI 目檢的捕掃產物(每次重新產生,不進版控)
+tmp-ui-audit/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

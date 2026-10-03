@@ -103,6 +103,18 @@ export class TeleprompterEngine {
     }
   }
 
+  /**
+   * 暫停/跟讀期間由 UI 反向同步捲動位置(使用者手動捲動、跟讀對位捲動)。
+   *
+   * 播放中的方向是引擎 → DOM(RAF 層每幀直寫 scrollTop);暫停時 DOM 是唯一
+   * 真相 —— 沒有這條路,恢復播放的第一幀會把畫面拉回暫停前的舊位置,
+   * 使用者剛捲去核對的段落直接消失。clamp 到 maxScroll 只是防線:正常呼叫值
+   * 來自容器本身的 scrollTop,必然在範圍內(尾部還有 40px padding 緩衝)。
+   */
+  seekScroll(pos: number): void {
+    this.scrollPos = Math.max(0, Math.min(pos, this.maxScroll()))
+  }
+
   toggle(): void {
     if (this.status === 'playing') this.pause()
     else this.play()
@@ -123,7 +135,9 @@ export class TeleprompterEngine {
     const max = Math.max(0, this.model.bullets.length - 1)
     if (this.bulletIndex < max) {
       this.bulletIndex++
-      this.status = this.bulletIndex >= max ? 'completed' : this.status === 'completed' ? 'paused' : this.status
+      // idle 也要轉 paused:待機中按「下一個重點」,重點前進了但狀態點還亮著
+      // 「待機」—— 畫面自我矛盾(已經不是待機的內容了)。
+      this.status = this.bulletIndex >= max ? 'completed' : this.status === 'playing' ? 'playing' : 'paused'
     }
   }
 

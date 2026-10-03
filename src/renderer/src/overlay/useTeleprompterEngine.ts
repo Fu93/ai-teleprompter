@@ -182,6 +182,28 @@ export function useTeleprompterEngine(params: UseTeleprompterEngineParams): UseT
     return () => ro.disconnect()
   }, [scrollElRef, model, displayMode, measureKey, surface, bump])
 
+  // ── 反向同步:暫停/跟讀期間,容器上的捲動位置要寫回引擎 ──
+  //
+  // 播放中的方向是引擎 → DOM(上面的 RAF 每幀直寫);暫停時 DOM 是唯一真相。
+  // 沒有這條反向同步,使用者暫停後捲去核對後文、一按播放,第一幀就會被
+  // engine.scrollPos 的舊值拉回暫停前的位置 ——「我剛捲到哪」被吃掉。
+  // 跟讀(useFollowMode)以 el.scrollTo 對位捲動,同樣經這條路寫回引擎,
+  // 停止跟讀後接播放才會從聽到的地方繼續。
+  // 播放中引擎也在寫 DOM → 同樣會觸發 scroll 事件,以 status !== 'playing' 擋掉,
+  // 不然兩邊互相覆寫(引擎寫 → 事件 → 寫回 → 引擎下一幀又寫)。
+  useEffect(() => {
+    const el = scrollElRef.current
+    if (!el) return
+    const onScroll = (): void => {
+      const engine = engineRef.current
+      if (!engine || engine.getState().status === 'playing') return
+      engine.seekScroll(el.scrollTop)
+      bump()
+    }
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [scrollElRef, surface, bump])
+
   // 卸載清理
   useEffect(
     () => () => {

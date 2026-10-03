@@ -56,7 +56,11 @@ async function isMain(win: Page): Promise<boolean> {
  * 所以逾時代表真的有問題而不是環境慢。
  */
 export async function launchApp(env?: Record<string, string | undefined>): Promise<Launched> {
-  const app = await electron.launch({ args: ['.'], timeout: 60_000, env })
+  // electron.launch 的 env 型別不接受 undefined 值,而呼叫端常直接傳 process.env。
+  const cleanEnv = env
+    ? (Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string>)
+    : undefined
+  const app = await electron.launch({ args: ['.'], timeout: 60_000, env: cleanEnv })
 
   let main: Page | undefined
   for (let i = 0; i < 60 && !main; i++) {

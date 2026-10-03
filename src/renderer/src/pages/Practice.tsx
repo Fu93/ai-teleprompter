@@ -36,6 +36,8 @@ import { confirmDialog } from '../lib/confirm'
 import { registerAuditControl } from '../lib/auditBridge'
 import { toast } from '../lib/toast'
 import { analyzePracticeRun } from '../lib/session-intelligence'
+import { buildPracticeAnswer } from '../lib/practiceAnswer'
+import { setCaptureIndicator } from '../lib/captureIndicator'
 
 const PRACTICE_TYPES = ['行為面試', '技術面試', '自我介紹', '案例簡報', '銷售情境'] as const
 
@@ -91,7 +93,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
    *
    * 為什麼是 ref 而不是 state:它每次呼叫都換一個新的函式參考,放進 state
    * 會造成「為了記住怎麼取消而多 render 一次」——而它在 busy 期間本來就
-   * 不該影響畫面。ref 也讓取消鈕不需要���按鈕本身傳 props。
+   * 不該影響畫面。ref 也讓取消鈕不需要靠按鈕本身傳 props。
    */
   const cancelRef = useRef<(() => void) | null>(null)
   // 在飛的辨識請求由 lib/transcriptionQueue 追蹤(與 Record 頁同一份實作)。
@@ -322,6 +324,14 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     }
   }, [])
 
+  // 錄音中的環境指示(見 lib/captureIndicator.ts):
+  // 作答時把主視窗最小化,「麥克風還開著」原本完全不可見。
+  useEffect(() => {
+    setCaptureIndicator('practice', recording ? '● 錄音中 — AI 提詞機' : null)
+  }, [recording])
+  // 離頁必還原:unmount 不會再觸發上面那個 effect 的「設成 null」分支
+  useEffect(() => () => setCaptureIndicator('practice', null), [])
+
   const ensureWhisper = async (): Promise<void> => {
     if (!whisperRef.current) {
       const client = new WhisperClient()
@@ -450,7 +460,17 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         toast.error('請先在設定頁填入雲端語音 API 的 Base URL 與模型')
         return
       }
-      if (settings?.stt.engine === 'local') await ensureWhisper()
+      if (settings?.stt.engine === 'local') {
+        // 模型載入與「開麥」是兩種不同的失敗:下載失敗(斷網/磁碟滿)被當成
+        // 「無法開啟麥克風」會把使用者導去查麥克風硬體與 Windows 權限,
+        // 而真正的問題(模型)連狀態都看不到。分開接住,訊息各說各的。
+        try {
+          await ensureWhisper()
+        } catch (err) {
+          reportError('語音模型載入失敗,無法開始作答', err, { event: 'transcribe_failed' })
+          return
+        }
+      }
       if (attempt !== startAttemptRef.current) return
       const answerId = ++answerIdRef.current
       segsRef.current = new OrderedTranscript()
@@ -622,7 +642,9 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     const q = questions[qIndex]
     const transcript = segsRef.current.toString()
     if (!transcript.trim()) {
-      toast.error('沒有聽到回答內容')
+      // 錄音已停、音訊已丟,這一題的回答沒有辦法挽回 —— 訊息必須說清楚
+      // 「怎麼辦」(重答),不能只有一句無出路的「沒有聽到」。
+      toast.error(`沒有聽到回答內容。請確認麥克風沒有被靜音、音量沒有歸零,再按「開始回答」重答這題${q ? `:${q}` : ''}。`)
       return
     }
     if (!settings) return
@@ -651,13 +673,14 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       const raw = await chat.promise
       if (!runGenerationRef.current.isCurrent(generation)) return
       const fb = extractJson<PracticeFeedback>(raw)
-      const answer: PracticeAnswer = {
+      const answer = buildPracticeAnswer({
         question: q,
-        answerTranscript: transcript,
-        durationSec: Math.max(0, (answerEndedAt - answerStart) / 1000),
-        feedback: fb,
-        partial: partial || undefined
-      }
+        transcript,
+        answerStart,
+        answerEndedAt,
+        partial,
+        feedback: fb
+      })
       setAnswers((a) => [...a, answer])
       // 練習的兩個 AI 呼叫(逐題反饋、整體總評)是使用者最常說「卡住了」的地方。
       // 沒有耗時就只能分辨「慢」與「壞掉」——兩者的處置完全不同。
@@ -670,14 +693,13 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       // 使用者自己按的取消:不是錯誤,但**回答要保留** ——
       // 他已經開口講完了,不能因為他不想等教練評論就把逐字稿丟掉。
       if (isCancelled(err)) {
+        // 取消的是**反饋**,不是轉錄:逐字稿是完整的。
+        // 原本這裡寫死 partial: true —— 於是「不想等評論」的答案被標成
+        // 「逐字稿可能不完整(語音辨識逾時或有段落失敗)」,那是一則錯誤的
+        // 診斷,使用者會去查一個沒壞的麥克風。「未評分」由沒有 feedback 表示。
         setAnswers((a) => [
           ...a,
-          {
-            question: q,
-            answerTranscript: transcript,
-            durationSec: Math.max(0, (answerEndedAt - answerStart) / 1000),
-            partial: true
-          }
+          buildPracticeAnswer({ question: q, transcript, answerStart, answerEndedAt, partial })
         ])
         return
       }
@@ -685,15 +707,10 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         event: 'ai_request_failed',
         provider: aiProvider
       })
-      // 反饋失敗仍保留回答文字
+      // 反饋失敗仍保留回答文字(未評分 —— 不等於逐字稿不完整)
       setAnswers((a) => [
         ...a,
-        {
-          question: q,
-          answerTranscript: transcript,
-          durationSec: Math.max(0, (answerEndedAt - answerStart) / 1000),
-          partial: partial || undefined
-        }
+        buildPracticeAnswer({ question: q, transcript, answerStart, answerEndedAt, partial })
       ])
     } finally {
       cancelRef.current = null
@@ -790,6 +807,9 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     if (overallFailed) toast.info('你仍可查看逐題反饋與保存的練習紀錄。')
     if (overallCancelled) toast.info('已略過整體總評，逐題反饋與練習紀錄都已保存。')
     setPhase('done')
+    // 與 Record 的停止路徑同一個理由:練習結束後 main 端不該還留著這一輪的
+    // 語音上下文(Alt+P 或下一輪開始前的任何一次提問都可能帶著舊內容)。
+    void window.api.contextReset()
     await refreshHistory()
   }
 
@@ -1065,6 +1085,16 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
                       逐字稿可能不完整
                     </span>
                   )}
+                  {!curAnswer.feedback && (
+                    // 「沒有拿到反饋」是另一件事:取消或 AI 失敗時逐字稿仍然完整,
+                    // 不能借用 partial 的視覺(那是「逐字稿壞了」的診斷)。
+                    <span
+                      className="rounded bg-ink-700 px-1.5 py-0.5 text-[10px] text-ink-300"
+                      title="AI 反饋沒有產生(被取消或失敗)—— 逐字稿保留,可直接下一題"
+                    >
+                      未評分
+                    </span>
+                  )}
                 </div>
                 {curAnswer.answerTranscript}
               </div>
@@ -1313,6 +1343,11 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
             {a.partial && (
               <div className="mt-1.5 text-[10px] text-amber-450">
                 逐字稿可能不完整（當時語音辨識逾時或有段落失敗）
+              </div>
+            )}
+            {!a.feedback && (
+              <div className="mt-1.5 text-[10px] text-ink-400">
+                未評分（AI 反饋被取消或未能產生——逐字稿保留）
               </div>
             )}
           </div>

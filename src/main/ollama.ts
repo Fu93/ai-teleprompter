@@ -1,6 +1,7 @@
 import { AppSettings } from '@shared/types'
 import { E2E_ENV } from './debug'
 import { abortRequest, releaseRequest, trackRequest } from './ai/aiAbort'
+import { describeOutboundDenial, normalizeCloudEndpointUrl } from './ai/outboundEndpoint'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -17,11 +18,25 @@ export interface OllamaChatRequest {
 
 const DEFAULT_TIMEOUT_MS = 300_000 // 本地模型生成可能較慢
 
+/**
+ * 把使用者設定的 Ollama baseUrl 轉成可 fetch 的位址,拒絕時丟使用者看得懂的錯誤。
+ *
+ * 為什麼需要:這三個函式原本是 `${baseUrl}/api/tags` 這種字串拼接後直接
+ * fetch()。Ollama 預設在 localhost,所以「只准 loopback」的舊政策在
+ * aiProvider 那條路徑上有生效、在這條路徑上從來沒有 — 使用者設一個不對的網址,
+ * 得到的反應是 fetch 的泛用錯誤,而不是「這個位址不能用」。
+ */
+function ollamaUrl(baseUrl: string, path: string): string {
+  const r = normalizeCloudEndpointUrl(baseUrl, path)
+  if (!r.ok) throw new Error(describeOutboundDenial(r.reason))
+  return r.url
+}
+
 export async function ollamaListModels(baseUrl: string): Promise<string[]> {
   /**
    * e2e 故障注入。放在**這裡**而不是 renderer:
    *   contextBridge 凍結了 window.api,在 renderer 改寫它會丟 TypeError 而讓
-   *   整個入口檔中止(見 renderer/src/lib/e2eFaults.ts 的檔頭)。而放�� main
+   *   整個入口檔中止(見 renderer/src/lib/e2eFaults.ts 的檔頭)。而放在 main
    *   還有一個好處:preflight 與設定頁「測試連線」兩個呼叫點都會看到同一個故障。
    *
    * 兩種情境的差別是使用者真的會分辨的:
@@ -34,7 +49,7 @@ export async function ollamaListModels(baseUrl: string): Promise<string[]> {
   if (E2E_ENV.ollama === 'down') throw new Error('Ollama 回應 0(連線失敗)')
   if (E2E_ENV.ollama === 'no-model') return []
 
-  const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/tags`, {
+  const res = await fetch(ollamaUrl(baseUrl, '/api/tags'), {
     signal: AbortSignal.timeout(8000)
   })
   if (!res.ok) throw new Error(`Ollama 回應 ${res.status}`)
@@ -57,8 +72,16 @@ export async function ollamaVersion(baseUrl: string): Promise<string | null> {
   if (E2E_ENV.ollama === 'down') return null
   if (E2E_ENV.ollama === 'no-model') return '0.0.0-e2e'
 
+  // 位址被政策擋下要**往外擲**,不能掉進下面的 catch。
+  //
+  // 為什麼:這個函式的回傳值決定 `installed`,而 null 在 UI 上讀成
+  // 「沒裝 Ollama」—— 那會叫使用者去下載安裝一個他其實有、只是網址填錯的程式。
+  // 「網址不能用」與「服務沒開」是兩個不同的診斷,前者不該被偽裝成後者。
+  // 擋下來的位址連一次網路請求都不該發生,這裡先擲是最誠實的位置。
+  const url = ollamaUrl(baseUrl, '/api/version')
+
   try {
-    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/version`, {
+    const res = await fetch(url, {
       signal: AbortSignal.timeout(3000)
     })
     if (!res.ok) return null
@@ -81,7 +104,7 @@ export async function ollamaChat(req: OllamaChatRequest, settings: AppSettings):
   const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
 
   try {
-    const res = await fetch(`${req.baseUrl.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(ollamaUrl(req.baseUrl, '/api/chat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

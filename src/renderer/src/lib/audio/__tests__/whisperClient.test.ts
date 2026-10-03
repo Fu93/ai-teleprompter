@@ -66,3 +66,91 @@ describe('WhisperClient dispose', () => {
     }
   })
 })
+
+/**
+ * 看門狗:worker 活著但不回應時會發生什麼。
+ *
+ * 這是「使用者講了整場、逐字稿一片空白、而且沒有任何錯誤」的成因 —— pending
+ * 裡那一筆永遠不 settle,`chain` 又讓後面每一段都排在它後面等下去。
+ *
+ * 測試手法上兩個坑(都踩過,寫在這裡免得下次再花時間):
+ *   1. fake worker 是**直接注入** client['worker'] 的,所以 ensureWorker() 會
+ *      早退 —— 它從來沒有替我們註冊 message 監聽器。要餵回覆只能呼叫 client
+ *      的 handle(),走 worker 事件反而沒有東西會收。
+ *   2. transcribe() 透過 chain.then 排隊,所以要**先推進 0 毫秒**讓那段被建立、
+ *      計時器被掛上,再推進 1_000 毫鐘;直接推進 1_000 的話,計時器是在推進
+ *      結束後才建立的,永遠等不到它。
+ */
+describe('WhisperClient 看門狗', () => {
+  /** 直接注入一個永不回覆的 worker(負載已完成、推論卡死)。 */
+  function stuckClient(timeoutMs = 1_000): {
+    client: WhisperClient
+    posted: Array<{ id: number }>
+    reply: (id: number | undefined, text: string) => void
+  } {
+    const posted: Array<{ id: number }> = []
+    const fakeWorker = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      postMessage: vi.fn((msg: { id?: number }) => {
+        if (typeof msg?.id === 'number') posted.push({ id: msg.id })
+      }),
+      terminate: vi.fn()
+    } as unknown as Worker
+    const client = new WhisperClient({ transcribeTimeoutMs: timeoutMs })
+    ;(client as unknown as { worker: Worker })['worker'] = fakeWorker
+    return {
+      client,
+      posted,
+      reply: (id, text) =>
+        (client as unknown as { handle: (m: unknown) => void }).handle({ type: 'result', id, text })
+    }
+  }
+
+  it('逾時會 reject 該段、發出狀態訊息,而且**不會**讓後續請求一起卡死', async () => {
+    vi.useFakeTimers()
+    const { client, posted, reply } = stuckClient()
+    const statuses: string[] = []
+    client.onStatus = (m) => statuses.push(m)
+
+    // load() 不會回 ready,但它會把 loadPromise 設成非 null —— 這正是「已載入但
+    // 推論卡住」的樣態。
+    void client.load('base').catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const first = client.transcribe(new Float32Array(160), 'zh')
+    await vi.advanceTimersByTimeAsync(0) // 讓這一段真的排進 chain、計時器掛上
+    const rejected = expect(first).rejects.toThrow('語音辨識逾時')
+    await vi.advanceTimersByTimeAsync(1_000)
+    await rejected
+    expect(statuses.join()).toContain('語音辨識沒有回應')
+
+    // 關鍵:watchdog 之後 chain 必須能往前走。第二段照樣送出,而且給它回覆就會 resolve。
+    const second = client.transcribe(new Float32Array(160), 'zh')
+    await vi.advanceTimersByTimeAsync(0)
+    const secondId = posted[posted.length - 1]?.id
+    expect(secondId).toBeDefined()
+    reply(secondId, '回來了')
+    await expect(second).resolves.toBe('回來了')
+    vi.useRealTimers()
+  })
+
+  it('正常回覆時不留逾時計時器(否則長會議會累積幾百個 90 秒後才觸發的計時器)', async () => {
+    vi.useFakeTimers()
+    const { client, posted, reply } = stuckClient()
+    void client.load('base').catch(() => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const p = client.transcribe(new Float32Array(160), 'zh')
+    await vi.advanceTimersByTimeAsync(0)
+    reply(posted[posted.length - 1]?.id, '好的')
+    await expect(p).resolves.toBe('好的')
+
+    // 若計時器沒被清掉,再走 5 秒就會觸發逾時分支(onStatus 被呼叫)
+    const statuses: string[] = []
+    client.onStatus = (m) => statuses.push(m)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(statuses).toHaveLength(0)
+    vi.useRealTimers()
+  })
+})

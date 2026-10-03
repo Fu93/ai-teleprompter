@@ -75,3 +75,59 @@ describe('nav 註冊橋', () => {
     }
   })
 })
+
+/**
+ * 導航回傳值:可行動錯誤(toast 的「前往設定」)依賴它決定「要不要收起自己」。
+ *
+ * 缺陷是:runAction 原本在導航後無條件收起 toast,而導航可能被未存變更守衛
+ * 攔下(使用者選「留在此頁」)—— 那張卡片是那個錯誤唯一的下一步,它先消失了,
+ * 使用者修完手上的事就再也回不到建議的那一步。
+ *
+ * 負向驗證:把 navigateTo 改回無條件 resolve true(或讓 ToastHost 無條件
+ * onDone()),第一條測試變紅。
+ */
+describe('nav 導航結果(可行動 toast 依賴它)', () => {
+  it('navigator 回 false(被守衛攔下)→ navigateTo 解析 false,toast 不該收起', async () => {
+    const off = registerNavigator(() => false)
+    try {
+      await expect(navigateTo('settings')).resolves.toBe(false)
+    } finally {
+      off()
+    }
+  })
+
+  it('navigator 回 true(已換頁)→ navigateTo 解析 true', async () => {
+    const off = registerNavigator(() => true)
+    try {
+      await expect(navigateTo('settings')).resolves.toBe(true)
+    } finally {
+      off()
+    }
+  })
+
+  it('async navigator 的結果會被等出來(守衛的確認對話框是 async)', async () => {
+    const off = registerNavigator(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+      return false
+    })
+    try {
+      await expect(navigateTo('record')).resolves.toBe(false)
+    } finally {
+      off()
+    }
+  })
+
+  it('回 void 的舊呼叫端視為「已達成」(向後相容)', async () => {
+    const calls: NavPage[] = []
+    const off = registerNavigator((p) => void calls.push(p))
+    try {
+      await expect(navigateTo('record')).resolves.toBe(true)
+    } finally {
+      off()
+    }
+  })
+
+  it('沒有 navigator(浮層視窗)時視為已達成 —— 不讓 toast 永遠停著', async () => {
+    await expect(navigateTo('settings')).resolves.toBe(true)
+  })
+})

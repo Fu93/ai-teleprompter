@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, dialog } from 'electron'
 import {
   appendFileSync,
   existsSync,
@@ -80,6 +80,19 @@ export function initLogging(): void {
 
   process.on('uncaughtException', (err) => {
     write('FATAL', `uncaughtException: ${err.stack ?? String(err)}`)
+    // 只落盤的話 main 會在半損壞狀態繼續跑,使用者看到的是「怪但沒死」,
+    // 而且沒有任何紀錄指向該看哪份日誌。跳出對話框說明後結束:
+    // 設定載入與 IndexedDB 都有容錯,重啟是安全的;app.quit() 會跑完
+    // before-quit 的收尾(存設定、關守衛),比 process.exit 穩。
+    try {
+      dialog.showErrorBox(
+        'AI 提詞機發生無法復原的錯誤',
+        `應用程式將關閉。錯誤內容已寫入日誌:\n${logFile()}\n\n${err.message}`
+      )
+    } catch {
+      /* 對話框本身失敗就直接退 */
+    }
+    app.quit()
   })
   process.on('unhandledRejection', (reason) => {
     write('ERROR', `unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`)

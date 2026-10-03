@@ -1,12 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
-import { IPC } from '../shared/types'
+import { APP_UPDATE_DOWNLOADED, IPC } from '../shared/types'
 import type {
   AppSettings,
   AppInfo,
   RescuePayload,
   TurnYieldPayload,
-  CoachingPayload
+  CoachingPayload,
+  UpdateDownloadedInfo
 } from '../shared/types'
 import type {
   Api,
@@ -29,6 +30,7 @@ const api: Api = {
   onSettingsChanged: (cb) => on<AppSettings>(IPC.OverlaySettingsChanged, cb),
 
   overlayShow: (payload: OverlayShowPayload) => ipcRenderer.invoke(IPC.OverlayShow, payload),
+  overlaySync: (payload: OverlayShowPayload) => ipcRenderer.invoke(IPC.OverlaySync, payload),
   overlayGetLastPayload: () => ipcRenderer.invoke(IPC.OverlayGetLastPayload),
   overlayHide: () => ipcRenderer.invoke(IPC.OverlayHide),
   overlayToggle: () => ipcRenderer.invoke(IPC.OverlayToggle),
@@ -38,7 +40,7 @@ const api: Api = {
   overlaySetSize: (w, h) => ipcRenderer.invoke(IPC.OverlaySetSize, w, h),
   overlaySetSizeLive: (w, h) => ipcRenderer.invoke(IPC.OverlaySetSizeLive, w, h),
   onOverlayVisibility: (cb) => on<boolean>(IPC.OverlayVisibilityChanged, cb),
-  onOverlayLoadScript: (cb) => on<OverlayShowPayload>('overlay:load-script', cb),
+  onOverlayLoadScript: (cb) => on<OverlayShowPayload>(IPC.OverlayLoadScript, cb),
 
   ollamaListModels: (baseUrl) => ipcRenderer.invoke(IPC.OllamaListModels, baseUrl),
   ollamaChat: (req: OllamaChatApiRequest) => ipcRenderer.invoke(IPC.OllamaChat, req),
@@ -54,7 +56,7 @@ const api: Api = {
   keysSet: (keys) => ipcRenderer.invoke(IPC.KeysSet, keys),
   sceneList: () => ipcRenderer.invoke(IPC.SceneList),
   pushTranscript: (args) => ipcRenderer.invoke(IPC.ContextPushTranscript, args),
-  panicTrigger: (script?: string) => ipcRenderer.invoke(IPC.PanicTrigger, { script }),
+  panicTrigger: () => ipcRenderer.invoke(IPC.PanicTrigger),
   onPanicThinking: (cb: () => void) => on<void>(IPC.PanicThinking, cb),
   onPanicRescue: (cb: (payload: RescuePayload) => void) => on(IPC.PanicRescue, cb),
   onPanicError: (cb: (message: string) => void) => on<string>(IPC.PanicError, cb),
@@ -68,6 +70,11 @@ const api: Api = {
   appInfo: (): Promise<AppInfo> => ipcRenderer.invoke(IPC.AppInfo),
   saveRecording: (args: { bytes: Uint8Array; defaultName: string }) =>
     ipcRenderer.invoke(IPC.SaveRecording, args),
+  powerSaveStart: () => ipcRenderer.invoke(IPC.PowerSaveStart),
+  powerSaveStop: () => ipcRenderer.invoke(IPC.PowerSaveStop),
+  windowCaptureIndicator: (s) => ipcRenderer.invoke(IPC.WindowCaptureIndicator, s),
+  relaunchApp: () => ipcRenderer.invoke(IPC.AppRelaunch),
+  onUpdateDownloaded: (cb: (info: UpdateDownloadedInfo) => void) => on(APP_UPDATE_DOWNLOADED, cb),
   shareSimulation: () => ipcRenderer.invoke(IPC.ShareSimulation),
   snapOverlayCorner: (corner: 'tl' | 'tc' | 'tr') => ipcRenderer.invoke(IPC.OverlaySnapCorner, corner),
   recenterOverlay: () => ipcRenderer.invoke(IPC.OverlayRecenter),
@@ -83,6 +90,7 @@ const api: Api = {
 
   // 關閉視窗守衛(見 src/main/windows.ts 的 close 事件處理)
   setCloseBlocker: (text) => ipcRenderer.invoke(IPC.AppSetCloseBlocker, text),
+  setRecording: (recording) => ipcRenderer.invoke(IPC.AppSetRecording, recording),
   confirmClose: () => ipcRenderer.invoke(IPC.AppConfirmClose),
   cancelClose: () => ipcRenderer.invoke(IPC.AppCancelClose),
   onCloseRequested: (cb) => on<string>(IPC.AppCloseRequested, cb),

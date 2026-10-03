@@ -13,7 +13,7 @@ import {
 } from '@shared/overlayShapes'
 import { toast } from '../lib/toast'
 import { cn, formatDateTime } from '../lib/utils'
-import type { AppSettings } from '@shared/types'
+import type { AppSettings, UpdateDownloadedInfo } from '@shared/types'
 import type { SceneSummary } from '@shared/api'
 import { Segmented } from '../components/Segmented'
 import { BackupSection } from '../components/BackupSection'
@@ -225,6 +225,10 @@ export default function SettingsPage({
   onNavigate?: (page: 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings') => void
 }): JSX.Element {
   const { settings, update } = useSettings()
+  // 更新下載完成:electron-updater 預設在使用者下次退出時自動安裝,
+  // 但「靜默安裝」沒有人知道發生過什麼。橫幅 + 重啟鈕把時機的決定權交回使用者。
+  const [updateInfo, setUpdateInfo] = useState<UpdateDownloadedInfo | null>(null)
+  useEffect(() => window.api.onUpdateDownloaded(setUpdateInfo), [])
   const [testing, setTesting] = useState(false)
   const [aiApiKey, setAiApiKey] = useState('')
   const [sttApiKey, setSttApiKey] = useState('')
@@ -498,6 +502,18 @@ export default function SettingsPage({
     <div className="mx-auto max-w-3xl space-y-5 px-8 py-8">
       <h1 className="text-xl font-bold">設定</h1>
 
+      {updateInfo && (
+        // 更新完成但不該靜默:electron-updater 的 autoInstallOnAppQuit 會在
+        // 下次退出時裝掉它,使用者卻會覺得「我只是關個程式,為什麼再打開
+        // 變新版了」。說清楚 + 給一顆立刻重啟的鈕,時機由使用者決定。
+        <div className="flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+          <span className="flex-1">已下載更新 v{updateInfo.version},重新啟動後安裝。</span>
+          <button className="btn-primary text-xs" onClick={() => void window.api.relaunchApp()}>
+            重新啟動以更新
+          </button>
+        </div>
+      )}
+
       {/* 區塊目錄:九個區塊的單一長捲動頁需要一條索引(見 SETTINGS_SECTIONS) */}
       <nav
         data-settings-toc="1"
@@ -645,7 +661,7 @@ export default function SettingsPage({
         />
         <Switch
           label="即時教練"
-          hint="會議/練習轉錄中偵測語速過快、填充詞過多、搶話、冷場、獨白過長，浮層即時提醒（語速基準取自個人化校準）。會議中想關掉其中一��,直接點提示條上的提示即可,只靜默到本場結束,不會影響「該你說話了」"
+          hint="會議/練習轉錄中偵測語速過快、填充詞過多、搶話、冷場、獨白過長，浮層即時提醒（語速基準取自個人化校準）。會議中想關掉其中一項,直接點提示條上的提示即可,只靜默到本場結束,不會影響「該你說話了」"
           checked={o.coaching}
           onChange={(v) => patchO({ coaching: v })}
         />
@@ -1090,7 +1106,7 @@ export default function SettingsPage({
           if (dupes.length === 0) return null
           return (
             <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-              熱鍵衝突：{dupes.join('、')}，衝突時只有一顆會生效，請改開。
+              熱鍵衝突：{dupes.join('、')}。衝突時只有一顆會生效,請把其中一顆改成其他組合。
             </div>
           )
         })()}
@@ -1116,7 +1132,7 @@ export default function SettingsPage({
               })}
             </ul>
             <div className="mt-1 text-rose-200/80">
-              這些組合已被其他程式佔用（常見於常駐軟體或視窗管理器）。請把對應的下拉改成上面列的組合。
+              這些組合已被其他程式佔用（常見於常駐軟體或視窗管理器）。請把對應的下拉改成**其他**組合 —— 上面列的這幾顆已經按了不會有反應,選它們沒有用。
             </div>
           </div>
         )}

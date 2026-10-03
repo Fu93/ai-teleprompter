@@ -11,7 +11,8 @@
     "preview": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
-    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:e2e",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "lint:baseline": "node --no-warnings scripts/lint-baseline.mjs",
@@ -31,7 +32,8 @@
     "audit:selftest": "node --no-warnings scripts/audit-selftest.mjs",
     "make-audio-fixture": "node --no-warnings scripts/make-audio-fixture.mjs",
     "dist": "electron-vite build && electron-builder",
-    "audit:journey": "node --no-warnings scripts/audit-journey.mjs"
+    "audit:journey": "node --no-warnings scripts/audit-journey.mjs",
+    "release:checks": "node --no-warnings scripts/release-checks.mjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.9"

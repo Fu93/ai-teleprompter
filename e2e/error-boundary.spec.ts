@@ -54,7 +54,7 @@ async function readMainLog(app: ElectronApplication): Promise<string> {
 /** 走側欄真實導航到指定頁 */
 async function navTo(main: Page, label: string): Promise<void> {
   await main.evaluate((l) => {
-    const btn = Array.from(document.querySelectorAll('aside button')).find((b) => b.textContent?.includes(l))
+    const btn = Array.from(document.querySelectorAll('aside button')).find((b) => b.textContent?.includes(l)) as HTMLElement | undefined
     btn?.click()
   }, label)
   await main.waitForTimeout(500)

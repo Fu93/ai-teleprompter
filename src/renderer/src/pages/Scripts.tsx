@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { FilePlus2, FolderOpen, Pause, Play, Save, Search, Sparkles, Trash2, Video, X } from 'lucide-react'
 import { db } from '../lib/db'
 import type { Script } from '@shared/types'
-import { cn, formatDateTime, formatDuration } from '../lib/utils'
+import { cn, formatDateTime, formatDuration, normalizeScriptTitle } from '../lib/utils'
 import { toast } from '../lib/toast'
 import { describeError } from '../lib/describeError'
 import { DEMO_SCRIPT_CONTENT, DEMO_SCRIPT_TITLE } from '../lib/demoScript'
@@ -12,6 +12,9 @@ import { useSettings } from '../lib/store'
 import { registerAuditControl } from '../lib/auditBridge'
 import { confirmDialog } from '../lib/confirm'
 import { useCloseGuard } from '../lib/closeGuard'
+import { setCaptureIndicator } from '../lib/captureIndicator'
+import { unlinkScriptFromSessions } from '../lib/sessionToScript'
+import { describeImportTooLarge } from '../lib/scriptImport'
 
 function estimateMinutes(content: string, charsPerMin: number): string {
   const chars = content.replace(/\s/g, '').length
@@ -141,11 +144,26 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     setDirty(false)
   }
 
+  /**
+   * 存檔後同步浮層。盡力而為:同步失敗**不能**讓存檔看起來失敗 ——
+   * 稿子確實存好了,而浮層多半根本沒開著。失敗只寫日誌。
+   */
+  const syncOverlayScript = (scriptId: number, title: string, content: string): void => {
+    void window.api
+      .overlaySync({ scriptId, title, content })
+      .catch((err: unknown) => {
+        void window.api.logFromRenderer(
+          'WARN',
+          `浮層同步失敗:${err instanceof Error ? err.message : String(err)}`
+        )
+      })
+  }
+
   const save = async (): Promise<boolean> => {
     if (selectedId == null) return false
     // 存進 DB 的標題是「trim 後空則回填未命名講稿」;編輯器要跟著對齊,
     // 否則清單顯示「未命名講稿」而輸入框仍是空的,兩邊各講各的
-    const storedTitle = draft.title.trim() || '未命名講稿'
+    const storedTitle = normalizeScriptTitle(draft.title)
     try {
       await db.scripts.update(selectedId, {
         title: storedTitle,
@@ -160,11 +178,15 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     setDirty(false)
     if (draft.title !== storedTitle) setDraft((d) => ({ ...d, title: storedTitle }))
     await refresh(selectedId)
+    // 浮層正在講同一份稿時把它換成剛存的內容(規則見 shared/overlayScript.ts)。
+    // 這是「改一句稿 → 立刻上台」的主流程:沒有這一步,上台講的是舊版。
+    syncOverlayScript(selectedId, storedTitle, draft.content)
     return true
   }
 
   const remove = async (): Promise<void> => {
     if (selectedId == null) return
+    let unlinked = 0
     if (
       !(await confirmDialog({
         title: `刪除「${draft.title || '未命名講稿'}」？`,
@@ -174,15 +196,31 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
       }))
     )
       return
-    await db.scripts.delete(selectedId)
+    await db.transaction('rw', [db.scripts, db.sessions], async () => {
+      await db.scripts.delete(selectedId)
+      // 指向它的 session 參照必須同時清掉:留著會讓「錄音轉錄」頁那顆按鈕
+      // 永遠停在 disabled 的「已存成講稿」,使用者再也存不成這份逐字稿。
+      unlinked = await unlinkScriptFromSessions(selectedId)
+    })
     setSelectedId(null)
     setDraft({ title: '', content: '' })
-    toast.success('講稿已刪除')
+    toast.success(
+      unlinked > 0
+        ? `講稿已刪除(該場會議的逐字稿現在可以重新存成講稿)`
+        : '講稿已刪除'
+    )
     setDirty(false)
     await refresh(null)
   }
 
   const importFile = async (file: File): Promise<void> => {
+    // 先擋大小再讀內容:file.text() 會把整份檔案變成字串,選到影片或資料備份
+    // 時就是直接吃光 renderer 的記憶體,而且畫面上什麼都不會說(見 scriptImport.ts)。
+    const tooLarge = describeImportTooLarge(file.size)
+    if (tooLarge) {
+      toast.error(tooLarge)
+      return
+    }
     const text = await file.text()
     if (dirty && !(await confirmDiscard('匯入的內容會覆蓋目前的修改。', '放棄變更並匯入'))) return
     const title = file.name.replace(/\.(txt|md|markdown)$/i, '') || '未命名講稿'
@@ -197,7 +235,11 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     // 儲存失敗就停:浮層若照開,使用者看到的是舊稿,比不開更糟
     if (dirty && !(await save())) return
     await db.scripts.update(selectedId, { lastUsedAt: Date.now() })
-    await window.api.overlayShow({ title: draft.title, content: draft.content })
+    await window.api.overlayShow({
+      scriptId: selectedId,
+      title: normalizeScriptTitle(draft.title),
+      content: draft.content
+    })
     // 「第一段提詞」的里程碑要在這裡也寫。原本只有總覽頁那條路寫,
     // 於是從講稿頁按下開始提詞的人回總覽頁會看到 3 分鐘上手停在 2/3 ——
     // 而那一頁的說明正是「先寫一段講稿,再按開始提詞」,也就是他剛剛做過的事。
@@ -226,7 +268,11 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     // 這一顆只會出現在「沒有選取任何講稿」的空狀態,所以沒有未存變更要守。
     setDirty(false)
     await db.scripts.update(id, { lastUsedAt: Date.now() })
-    await window.api.overlayShow({ title: DEMO_SCRIPT_TITLE, content: DEMO_SCRIPT_CONTENT })
+    await window.api.overlayShow({
+      scriptId: id,
+      title: DEMO_SCRIPT_TITLE,
+      content: DEMO_SCRIPT_CONTENT
+    })
     markPromptSucceeded()
     toast.info('已建立範例講稿 —— 它是真的稿子,可以直接改成你自己的內容。')
   }
@@ -279,6 +325,14 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     // 卸載時收當下這筆;平時由關閉按鈕負責
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 錄影中的環境指示(見 lib/captureIndicator.ts):
+  // 錄影提詞會把攝影機+麥克風開著數分鐘到數小時,最小化後「還在錄」原本不可見。
+  useEffect(() => {
+    setCaptureIndicator('scripts-rec', recording ? '● 錄影中 — AI 提詞機' : null)
+  }, [recording])
+  // 離頁必還原(unmount 清理雖然會停掉錄影,但那時 recording state 已不更新)
+  useEffect(() => () => setCaptureIndicator('scripts-rec', null), [])
 
   const pickMime = (): string => {
     const candidates = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
@@ -366,7 +420,11 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
       }, 1000)
       await db.scripts.update(selectedId, { lastUsedAt: Date.now() })
       if (attempt !== recordingAttemptRef.current) return
-      await window.api.overlayShow({ title: draft.title, content: draft.content })
+      await window.api.overlayShow({
+        scriptId: selectedId,
+        title: normalizeScriptTitle(draft.title),
+        content: draft.content
+      })
     } catch (err) {
       if (attempt === recordingAttemptRef.current) {
         if (recTimerRef.current) {

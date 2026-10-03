@@ -125,6 +125,10 @@ const STEPS = [
   { name: 'lint', cmd: [npm, 'run', 'lint'] },
   { name: 'lint:baseline', cmd: [npm, 'run', 'lint:baseline'] },
   { name: 'typecheck', cmd: [npm, 'run', 'typecheck'] },
+  // production 依賴漏洞 + 版本一致性。刻意不含 devDependencies 的漏洞:
+  // electron-builder 鏈上的 high 目前沒有可用修復版本,設成紅燈只會讓這條
+  // 規則永遠紅著(等於沒有規則)。理由見 scripts/lib/release-checks.mjs。
+  { name: 'release-checks', cmd: [npm, 'run', 'release:checks'] },
   { name: 'unit', cmd: [npm, 'run', 'test'] },
   { name: 'audit:ui', cmd: [npm, 'run', 'audit:ui'] },
   { name: 'audit:deep', cmd: [npm, 'run', 'audit:deep'] },

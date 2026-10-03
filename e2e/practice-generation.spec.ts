@@ -109,9 +109,13 @@ function startMocks(): void {
         // 先 parse 出 messages,取 user 那句,再切出逐字稿。
         // 失敗時把 user content 整段印出來 —— 正則對不上時,「猜」是猜不出來的。
         try {
-          const parsed = JSON.parse(body)
-          const userMsg = parsed.messages?.find((msg) => typeof msg?.content === 'string' && msg.content.includes('回答逐字稿'))
-          const content = userMsg?.content ?? ''
+          const parsed = JSON.parse(body) as { messages?: Array<{ content?: unknown }> }
+          // 取含「回答逐字稿」的那則（user）—— messages 陣列的第一則是 system，
+          // 取「第一個字串 content」會抓到 system prompt，逐字稿永遠是空的。
+          const userMsg = parsed.messages?.find(
+            (msg) => typeof msg.content === 'string' && msg.content.includes('回答逐字稿')
+          )
+          const content = typeof userMsg?.content === 'string' ? userMsg.content : ''
           capturedUserContent = content
           const startAt = content.indexOf('應徵者的回答逐字稿：')
           const rest = startAt >= 0 ? content.slice(startAt) : ''

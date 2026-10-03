@@ -104,7 +104,7 @@ export function reportError(prefix: string, err: unknown, opts: ReportErrorOptio
  * 最好的例子是螢幕擷取:`setDisplayMediaRequestHandler` 核准不到來源時,
  * Chromium 丟出來的也是 `NotAllowedError`,與麥克風權限被拒**同一個名稱**。
  * 讓規則比對去處理它,結果就是使用者被導去「Windows 設定 → 麥克風」,
- * 而他真正要改的是螢��擷取授權。診斷錯了,代價是他的時間。
+ * 而他真正要改的是麥克風擷取授權。診斷錯了,代價是他的時間。
  *
  * 用法前提:**你比規則表更清楚這個錯誤是什麼**。若只是「我猜是這個」,
  * 應該用 `reportError` 讓規則去比對 —— 否則就是把臆測寫成權威,

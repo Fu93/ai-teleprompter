@@ -181,6 +181,11 @@ export const IPC = {
   SettingsSet: 'settings:set',
   OverlayShow: 'overlay:show',
   OverlayGetLastPayload: 'overlay:get-last-payload',
+  /**
+   * renderer → main:主視窗改了正在提詞的那一份稿,請浮層換稿。
+   * 與 OverlayShow 的差別是不會把浮層叫出來(規則見 shared/overlayScript.ts)。
+   */
+  OverlaySync: 'overlay:sync',
   OverlayHide: 'overlay:hide',
   OverlayToggle: 'overlay:toggle',
   OverlayIsVisible: 'overlay:is-visible',
@@ -258,6 +263,8 @@ export const IPC = {
   // events (main -> renderer)
   OverlayVisibilityChanged: 'overlay:visibility-changed',
   OverlaySettingsChanged: 'overlay:settings-changed',
+  /** main → overlay:帶著講稿內容顯示浮層(與 OverlayShow 同 payload,見 preload 的 onOverlayLoadScript) */
+  OverlayLoadScript: 'overlay:load-script',
   PanicThinking: 'panic:thinking',  PanicRescue: 'panic:rescue',
   PanicError: 'panic:error',
   /** turn-yield:對方講完問句 → 該你說話了(main → overlay) */
@@ -287,10 +294,45 @@ export const IPC = {
 
   // 關閉視窗守衛:renderer 主動宣告「現在關掉會丢東西」,main 在 close 事件裡擋下來
   AppSetCloseBlocker: 'app:set-close-blocker',
+  /**
+   * 「現在正在錄音」的事實通知。
+   *
+   * 為什麼需要獨立的一個 channel 而不是去讀 closeBlocker 的字串:closeBlocker
+   * 是給人看的訊息,而且同時涵蓋「講稿沒存」與「正在錄音」兩種情況。退出前存檔
+   * 只該在後者發生 —— 拿字串去做 substring 比對,等於把安全行為綁在一句可能
+   * 被改寫的文案上。
+   */
+  AppSetRecording: 'app:set-recording',
   AppCloseRequested: 'app:close-requested',
   AppConfirmClose: 'app:confirm-close',
-  AppCancelClose: 'app:cancel-close'
+  AppCancelClose: 'app:cancel-close',
+  /** 錄音/轉錄期間阻止系統睡眠(見 ipc.ts 的 powerSaveBlocker 說明) */
+  PowerSaveStart: 'app:powersave-start',
+  PowerSaveStop: 'app:powersave-stop',
+  /** 設定頁「重新啟動以套用更新」:relaunch 後以 exit 結束目前實例 */
+  AppRelaunch: 'app:relaunch',
+  /**
+   * 錄音/錄影進行中的環境指示:主視窗標題 + 工作列閃爍(P2 附錄 #1 的縮小版)。
+   * renderer 上報 active/label,main 負責 setTitle 與 flashFrame(平台降級自然:
+   * macOS 的 flashFrame 是 dock 退避一次)。tray 圖示是獨立一輪,見 UX_FINDINGS。
+   */
+  WindowCaptureIndicator: 'app:capture-indicator'
 } as const
+
+// ===== main → renderer 事件(不走 ipcMain.handle 的一類)=====
+/**
+ * 更新已下載完成,等使用者重啟安裝。
+ *
+ * 為什麼要是具名常數而不是兩端各寫一次魔法字串:updater.ts 送、preload 收,
+ * 字串各寫一次的話改一邊就靜默斷線(與 'overlay:load-script' 同一個教訓)。
+ */
+export const APP_UPDATE_DOWNLOADED = 'app:update-downloaded'
+
+export interface UpdateDownloadedInfo {
+  version: string
+  /** release notes(已截斷,見 updater.ts) */
+  releaseNotes: string
+}
 
 // ===== turn-yield 提示(Phase B)=====
 export interface TurnYieldPayload {
@@ -385,6 +427,16 @@ export interface MeetingSession {
   segments: TranscriptSegment[]
   summary?: MeetingSummary
   report?: SessionReport
+  /**
+   * 這場會議的逐字稿已存成講稿時,對應的 Script.id(2026-10-03)。
+   *
+   * 為什麼要落在 session 上而不是 component state:「存成講稿」原本用
+   * Set<number> 防重複,而它活不過切頁與重啟 —— 使用者回來再按一次,
+   * 就會得到兩份一模一樣的講稿(與「連按兩次」是同一族缺陷,只是觸發的
+   * 組合是跨頁/重啟)。存在 session 上,「已存成講稿」才是一個**事實**,
+   * 不是一個只活在畫面上的記憶。備份/還原隨 session 自動流通。
+   */
+  savedAsScriptId?: number
 }
 
 export interface MeetingSummary {

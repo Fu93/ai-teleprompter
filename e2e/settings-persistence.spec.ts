@@ -44,7 +44,7 @@ const UD = join(tmpdir(), 'e2e-settings-persistence')
 async function boot(): Promise<{ app: import('@playwright/test').ElectronApplication; main: Page }> {
   const env = { ...process.env }
   delete env.AI_TP_E2E
-  const app = await electron.launch({ args: ['.', `--user-data-dir=${UD}`], env, timeout: 60_000 })
+  const app = await electron.launch({ args: ['.', `--user-data-dir=${UD}`], env: env as Record<string, string>, timeout: 60_000 })
   let main: Page | undefined
   for (let i = 0; i < 60 && !main; i++) {
     for (const w of app.windows()) {
@@ -62,9 +62,9 @@ async function boot(): Promise<{ app: import('@playwright/test').ElectronApplica
 /** 沒有 __auditForce（未開 AI_TP_AUDIT），所以走真實的側欄點擊。 */
 async function gotoSettings(main: Page): Promise<void> {
   await main.evaluate(() => {
-    const b = [...document.querySelectorAll('aside button')].find((x) =>
-      x.textContent?.includes('設定')
-    )
+    const b = [...document.querySelectorAll('aside button')].find(
+      (x) => x.textContent?.includes('設定')
+    ) as HTMLElement | undefined
     b?.click()
   })
   await main.waitForTimeout(1500)

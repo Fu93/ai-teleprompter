@@ -37,7 +37,15 @@ const KIND_META: Record<ToastKind, { icon: typeof Info; className: string }> = {
 function runAction(action: ToastAction, onDone: () => void): void {
   switch (action.kind) {
     case 'goto':
-      if (action.page) navigateTo(action.page)
+      if (action.page) {
+        // 只有**真的換頁**才收起:被未存變更守衛攔下(使用者選「留在此頁」)時,
+        // 這張卡片是這個錯誤唯一的下一步 —— 讓它先消失,使用者修完手上的事
+        // 就再也回不到建議的那一步。同頁點擊算「已到達」(人已在目的地)。
+        void navigateTo(action.page).then((ok) => {
+          if (ok) onDone()
+        })
+        return
+      }
       break
     case 'external':
     case 'docs':
@@ -48,7 +56,7 @@ function runAction(action: ToastAction, onDone: () => void): void {
   }
   // 按下去就算「已處理」:無限期停駐的 toast 留在畫面上會擋住底下兩列清單
   // (domAudit 的 text-covered 會報),而使用者已經看到訊息並且已經出發去修了。
-  // 對「重試」以外的動���尤其重要 —— 跳頁之後回來還看到同一張卡片,只會
+  // 對「重試」以外的動作尤其重要 —— 跳頁之後回來還看到同一張卡片,只會
   // 讓人懷疑剛才到底按了沒有。
   onDone()
 }

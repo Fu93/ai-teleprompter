@@ -78,8 +78,10 @@ jobs:
           name: e2e-artifacts
           path: |
             test-results/
-            docs/screenshots/
           retention-days: 7
+        # e2e 的截圖已改寫到 test-results/screenshots/(gitignored):
+        # docs/screenshots/ 是被追蹤的文件資產,讓 e2e 直接覆寫會讓工作樹
+        # 常態性變髒。刻意刷新文件截圖用 scripts/capture-ui.mjs。
 
   audit:
     # 六支 UI/UX 稽核(ui/deep/states/edge/journey/effects)也擋 merge:

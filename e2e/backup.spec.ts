@@ -42,7 +42,7 @@ async function launch(): Promise<{ app: ElectronApplication; main: Page }> {
 
 const navTo = async (main: Page, label: string): Promise<void> => {
   await main.evaluate((l) => {
-    const btn = Array.from(document.querySelectorAll('aside button')).find((b) => b.textContent?.includes(l))
+    const btn = Array.from(document.querySelectorAll('aside button')).find((b) => b.textContent?.includes(l)) as HTMLElement | undefined
     btn?.click()
   }, label)
   await main.waitForTimeout(500)

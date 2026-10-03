@@ -34,8 +34,29 @@ export interface PracticeRunAnalysis {
 const CJK_RE = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uAC00-\uD7AF]/g
 const GAP_THRESHOLD_SEC = 5
 const LONG_TURN_SEC = 120
+/**
+ * 沒有個人校準值時的絕對門檻(字/分)。
+ *
+ * 刻意保持這兩個常數:它們是「沒有校準資料」時的保守預設,不是使用者該被量出的標準。
+ */
 const CPM_FAST = 320
 const CPM_SLOW = 120
+/**
+ * 有個人校準值時的相對門檻係數。
+ *
+ * 1.3 是從 main/context-engine/coachingRules.ts 的即時「語速偏快」規則**沿用**的同一個係數,
+ * 為的是讓會後報告與會議中浮出的提示講同一件事:同一場會議裡,一邊說不偏、一邊說偏快,
+ * 使用者只會覺得這個 App 的數字不可信。
+ */
+const CPM_FAST_FACTOR = 1.3
+const CPM_SLOW_FACTOR = 0.75
+/**
+ * 沒有校準值時,建議的「舒服目標」。
+ *
+ * 與觸發門檻(CPM_FAST)分開:門檻是「算快」,目標是「回到舒服的速率」。
+ * 兩者混用會出現「已經算偏快,卻叫你壓到同樣快的數字」這種自相矛盾。
+ */
+const CPM_TARGET = 260
 const MAX_SUGGESTIONS = 3
 
 // ── 基礎計算 ──
@@ -124,7 +145,15 @@ function toTurns(segments: TranscriptSegment[]): Turn[] {
 
 export function buildSessionReport(
   segments: TranscriptSegment[],
-  opts: { durationSec?: number; speakerAvailability?: { me: boolean; them: boolean } } = {}
+  opts: {
+    durationSec?: number
+    speakerAvailability?: { me: boolean; them: boolean }
+    /**
+     * 使用者的個人語速基準(字/分)。有值時,「偏快/偏慢」改用它當基準 ——
+     * 花了一整頁校準出來的數字,報告卻不採用,那是承諾與行為不一致。
+     */
+    personalCpm?: number | null
+  } = {}
 ): SessionReport {
   const turns = toTurns(segments ?? [])
   const now = Date.now()
@@ -144,8 +173,7 @@ export function buildSessionReport(
       gapCount: 0,
       gapTotalSec: 0,
       theirQuestionCount: 0,
-      steadiness: 100,
-      suggestions: [],
+      steadiness: 100,suggestions: [],
       generatedAt: now
     }
   }
@@ -202,15 +230,34 @@ export function buildSessionReport(
     generatedAt: now
   }
 
-  report.suggestions = buildSuggestions(report)
+  report.suggestions = buildSuggestions(report, { personalCpm: opts.personalCpm })
   return report
 }
 
 const SEVERITY_ORDER = { high: 0, medium: 1, low: 2 } as const
 
-export function buildSuggestions(r: SessionReport): SessionSuggestion[] {
+/**
+ * 建議的產生。
+ *
+ * 語速那兩條的基準:有個人校準值就用它(相對門檻),沒有才退回絕對門檻 —
+ * 這個取捨的理由見 CPM_FAST_FACTOR 的註解。訊息裡會把用到的基準寫出來,
+ * 因為「340 字/分算不算快」只有相對於某個人的常態才有意義。
+ */
+export function buildSuggestions(
+  r: SessionReport,
+  opts: { personalCpm?: number | null } = {}
+): SessionSuggestion[] {
   const out: SessionSuggestion[] = []
   const pct = Math.round(r.talkRatio * 100)
+  const personal =
+    opts.personalCpm != null && Number.isFinite(opts.personalCpm) && opts.personalCpm > 0
+      ? Math.round(opts.personalCpm)
+      : null
+  const fastAt = personal != null ? personal * CPM_FAST_FACTOR : CPM_FAST
+  const slowAt = personal != null ? personal * CPM_SLOW_FACTOR : CPM_SLOW
+  // 目標是「回到自己的常態」,不是「壓到觸發門檻」—— 有基準就用基準,沒有才用絕對值。
+  const targetAt = personal != null ? personal : CPM_TARGET
+  const baselineNote = personal != null ? `,你的基準 ${personal} 字/分` : ''
 
   if (r.talkRatioAvailable !== false && r.theirSec > 10 && r.talkRatio > 0.75) {
     out.push({ severity: 'high', message: `你說了 ${pct}% 的時間——試著把發言壓到六成以下,多留空間給對方` })
@@ -224,10 +271,16 @@ export function buildSuggestions(r: SessionReport): SessionSuggestion[] {
   if (r.gapCount >= 3) {
     out.push({ severity: 'low', message: `有 ${r.gapCount} 次超過 5 秒的冷場(共 ${r.gapTotalSec} 秒),可準備幾個承接話題` })
   }
-  if (r.myCpm > CPM_FAST) {
-    out.push({ severity: 'medium', message: `語速偏快(${r.myCpm} 字/分),建議控制在 260 以下讓人跟得上` })
-  } else if (r.myCpm > 0 && r.myCpm < CPM_SLOW) {
-    out.push({ severity: 'low', message: `語速偏慢(${r.myCpm} 字/分),重點句可加快節奏` })
+  if (r.myCpm > fastAt) {
+    out.push({
+      severity: 'medium',
+      message: `語速偏快(${r.myCpm} 字/分${baselineNote}),建議控制在 ${targetAt} 字/分以下讓人跟得上`
+    })
+  } else if (r.myCpm > 0 && r.myCpm < slowAt) {
+    out.push({
+      severity: 'low',
+      message: `語速偏慢(${r.myCpm} 字/分${baselineNote}),重點句可加快節奏`
+    })
   }
   if (r.talkRatioAvailable !== false && r.theirQuestionCount >= 3 && r.talkRatio < 0.5) {
     out.push({ severity: 'medium', message: `對方問了 ${r.theirQuestionCount} 個問題,確認每題都有正面回應` })

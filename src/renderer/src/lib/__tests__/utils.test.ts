@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { degrade, formatDuration, formatTransport } from '../utils'
+import { degrade, formatDuration, formatTransport, normalizeScriptTitle } from '../utils'
 
 /** 回歸:藥丸「下一個關鍵詞」從句中切字,曾顯示「，今天想跟」以逗號開頭 */
 describe('degrade(漸進揭露)', () => {
@@ -67,5 +67,22 @@ describe('formatTransport(浮層時間列)', () => {
   it('formatDuration 的斗零本身就是 0:00(所以負號只可能來自手寫字串)', () => {
     expect(formatDuration(-1)).toBe('0:00')
     expect(formatDuration(0)).toBe('0:00')
+  })
+})
+
+/**
+ * 回歸:空白標題存檔後清單寫「未命名講稿」,浮層卻顯示 fallback「提詞浮層」——
+ * 同一份稿子兩個名字。normalizeScriptTitle 是存檔與浮層 payload 的共同出處。
+ */
+describe('normalizeScriptTitle(標題正規化的單一出處)', () => {
+  it('trim 後空 → 未命名講稿(存檔與浮層必須同名)', () => {
+    expect(normalizeScriptTitle('')).toBe('未命名講稿')
+    expect(normalizeScriptTitle('   ')).toBe('未命名講稿')
+    expect(normalizeScriptTitle(' \t\n ')).toBe('未命名講稿')
+  })
+
+  it('非空標題只去首尾空白,中間原樣', () => {
+    expect(normalizeScriptTitle(' 週會 紀錄 ')).toBe('週會 紀錄')
+    expect(normalizeScriptTitle('未命名講稿')).toBe('未命名講稿')
   })
 })

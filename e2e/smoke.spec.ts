@@ -302,7 +302,7 @@ test('浮層掉出畫面:自動拉回 + 工具列「置中」按鈕', async () =
       }, overlayId)
     const shoveOffscreen = (): Promise<void> =>
       app.evaluate(({ BrowserWindow }, id) => {
-        BrowserWindow.fromId(id).setPosition(-4000, -4000)
+        BrowserWindow.fromId(id)?.setPosition(-4000, -4000)
       }, overlayId)
 
     // 模擬「執行中拔掉螢幕」:推到遠離任何螢幕的座標

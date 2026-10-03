@@ -138,8 +138,8 @@ test('雲端 STT 設定頁 UI 全程點選 → 錄音入庫與報告', async () 
     await navTo(main, '錄音轉錄')
     await main.evaluate(() => {
       const boxes = Array.from(document.querySelectorAll('input[type=checkbox]'))
-      const mic = boxes.find((b) => b.closest('label')?.textContent?.includes('麥克風'))
-      if (mic && !(mic as HTMLInputElement).checked) mic.click()
+      const mic = boxes.find((b) => b.closest('label')?.textContent?.includes('麥克風')) as HTMLInputElement | undefined
+      if (mic && !mic.checked) mic.click()
     })
     await main.evaluate(() => {
       const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.includes('開始聆聽'))

@@ -3240,6 +3240,33 @@ async function stepCalibration(main) {
   await clickText(main, '用手動距離繼續')
   await sleep(800)
 
+  // step1 的「跳過語速量測」只在**沒有**語速結果時渲染(與「下一步」互斥):
+  // 它是沒有麥克風/權限被拒者的出口。fresh step1 直接按 → 必須真的進到
+  // step 2(finish() 的 cpm 走備援值,不需要任何量測)。
+  {
+    const pSkip = probe(key('calibration', 'button', '跳過語速量測'), '校準')
+    const skip = await clickText(main, '跳過語速量測')
+    if (skip !== true) {
+      pSkip.unreachable('step 1 找不到「跳過語速量測」(rateResult 已有值時它會變成「下一步」)')
+    } else {
+      await sleep(900)
+      if ((await domText(main, 'main')).includes('個人化參數預覽')) {
+        pSkip.works('跳過語速量測真的進入 step 2(沿用 cpm 備援,不需要麥克風)', EVIDENCE.DOM)
+      } else {
+        pSkip.dead('按了跳過語速量測但沒有進入 step 2')
+      }
+      // 回 step1 給下面的「開始朗讀」探針:離頁收掉狀態 → 重走手動距離
+      await gotoViaSidebar(main, '總覽')
+      await sleep(800)
+      await gotoViaSidebar(main, '個人化校準')
+      await sleep(600)
+      await main.locator('input[aria-label="沒有攝影機？直接填你平常的觀看距離"]').first().fill('60').catch(() => {})
+      await sleep(300)
+      await clickText(main, '用手動距離繼續')
+      await sleep(800)
+    }
+  }
+
   {
     const pRead = probe(key('calibration', 'button', '開始朗讀'), '校準')
     const read = await clickText(main, '開始朗讀')
@@ -3268,6 +3295,35 @@ async function stepCalibration(main) {
 
   await main.evaluate(() => window.__auditForce?.('calibration.branchState', 'rate-plausible'))
   await sleep(500)
+  // rateResult 有值後,step1 的收音鈕從「開始朗讀」變成「再測一次」(同一顆鈕的
+  // 已量測態,渲染在宣告狀態 calibration/step1-rated 裡)。按下要真的重開收音。
+  {
+    const pRetry = probe(key('calibration', 'button', '再測一次'), '校準')
+    const retry = await clickText(main, '再測一次')
+    if (retry !== true) {
+      pRetry.unreachable('step 1 找不到「再測一次」(rateResult 為 null 時它是「開始朗讀」)')
+    } else {
+      let seen = false
+      for (let i = 0; i < 24 && !seen; i++) {
+        seen = (await domText(main, 'main')).includes('錄音中')
+        if (!seen) await sleep(250)
+      }
+      if (seen) pRetry.works('按下後畫面進入「錄音中」(重測 = 重新收音,與開始朗讀同族)', EVIDENCE.DOM)
+      else pRetry.dead('按了「再測一次」但畫面沒有進入錄音中')
+      // 收掉這次錄音(離頁 → unmount 收掉麥克風)→ 重走 step1 + 備妥語速,
+      // 讓接下來的「下一步」路徑照常進行。
+      await gotoViaSidebar(main, '總覽')
+      await sleep(800)
+      await gotoViaSidebar(main, '個人化校準')
+      await sleep(600)
+      await main.locator('input[aria-label="沒有攝影機？直接填你平常的觀看距離"]').first().fill('60').catch(() => {})
+      await sleep(300)
+      await clickText(main, '用手動距離繼續')
+      await sleep(800)
+      await main.evaluate(() => window.__auditForce?.('calibration.branchState', 'rate-plausible'))
+      await sleep(500)
+    }
+  }
   await clickText(main, '下一步')
   await sleep(900)
   /**
@@ -4602,8 +4658,8 @@ async function stepInventory(app, main, stt, llm) {
       /**
        * **帶 action 的那一則**,不是沒有 action 的。
        *
-       * `toast|id:toast-action` 是登��表裡的一筆,但它在這裡曾經是
-       * probe-not-found —— 有登記、探針也跑過,卻沒���任何**被宣告的狀態**
+       * `toast|id:toast-action` 是登記表裡的一筆,但它在這裡曾經是
+       * probe-not-found —— 有登記、探針也跑過,卻沒有任何**被宣告的狀態**
        * 渲染出它。原因就是這行原本發的是 `__auditToast('info', '稽核 toast')`:
        * 沒有 action,ToastHost 就不會渲染那顆按鈕。
        *
@@ -4648,9 +4704,16 @@ async function stepInventory(app, main, stt, llm) {
       if (!pr.ok || !open) blocked(`狀態:${st.id}`, pr.ok ? '強制開啟了但 modal 沒有渲染' : forceWhy(pr))
       await sleep(500)
     }
-    if (st.seed === 'calStep1' || st.seed === 'calStep2') {
-      await main.evaluate((v) => window.__auditForce?.('calibration.step', v), st.seed === 'calStep1' ? 1 : 2)
+    if (st.seed === 'calStep1' || st.seed === 'calStep1Rated' || st.seed === 'calStep2') {
+      await main.evaluate((v) => window.__auditForce?.('calibration.step', v), st.seed === 'calStep2' ? 2 : 1)
       await sleep(800)
+    }
+    if (st.seed === 'calStep1Rated') {
+      // step1 的「下一步」只在語速結果存在時渲染(與「跳過語速量測」互斥)。
+      // 這個狀態把 rateResult 備妥,讓「下一步」出現在被宣告的狀態裡。
+      const rr = await forceOk('calibration.branchState', 'rate-plausible')
+      if (!rr.ok) blocked(`狀態:${st.id}`, "calibration.branchState('rate-plausible') 沒有生效;" + forceWhy(rr))
+      await sleep(600)
     }
     if (st.seed === 'practiceRun' || st.seed === 'practiceAnswering' || st.seed === 'practiceAnswered' || st.seed === 'practiceLastAnswered') {
       const arg = { practiceRun: 'run', practiceAnswering: 'answering', practiceAnswered: 'answered', practiceLastAnswered: 'last-answered' }[st.seed]
@@ -5135,7 +5198,7 @@ async function main_() {
       /**
        * 寫清楚分母是什麼,因為同一份報告裡還有另一個「覆蓋率」數字。
        *
-       * 這裡是 **探針給出結論的登記項數 / 登記表總數**(154)��
+       * 這裡是 **探針給出結論的登記項數 / 登記表總數**(154)。
        * 而上面「覆蓋率」那張表是 **被列舉到的控制項實例中有結論或豁免的數**
        * (145)。兩個分母不同 —— 一個數「有沒有量」,另一個數「畫面上有沒有漏」——
        * 而它們長得幾乎一樣,讀者只會以為其中一個是錯的。

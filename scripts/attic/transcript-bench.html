@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8" />
+<style>
+  body { margin:0; background:#0b0f17; }
+  .list { display:flex; flex-direction:column; gap:12px; padding:16px; }
+  .row { display:flex; gap:12px; }
+  .t { width:96px; flex-shrink:0; text-align:right; font-family:monospace; font-size:10px; color:#94a3b8; }
+  .b { min-width:0; flex:1; font-size:14px; line-height:1.625; color:#e2e8f0; }
+  .tag { margin-right:8px; border-radius:4px; padding:2px 6px; font-size:10px; }
+  .me { background:rgba(56,189,248,.2); color:#7dd3fc; }
+  .them { background:rgba(45,212,191,.2); color:#5eead4; }
+</style>
+</head>
+<body>
+<div class="list" id="list"></div>
+<script>
+/**
+ * 照抄 Record.tsx 逐字稿列的 DOM 結構與樣式。
+ * 結構/樣式不同,量到的數字就沒有意義 —— 這是這支腳本唯一的假設。
+ */
+function appendSeg(start, speaker, text) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  const t = document.createElement('div');
+  t.className = 't';
+  t.textContent = String(Math.floor(start / 60)).padStart(2, '0') + ':' + String(start % 60).padStart(2, '0');
+  const b = document.createElement('div');
+  b.className = 'b';
+  const tag = document.createElement('span');
+  tag.className = 'tag ' + (speaker === 'me' ? 'me' : 'them');
+  tag.textContent = speaker === 'me' ? '我' : '對方';
+  const span = document.createElement('span');
+  span.textContent = text;
+  b.appendChild(tag);
+  b.appendChild(span);
+  row.appendChild(t);
+  row.appendChild(b);
+  document.getElementById('list').appendChild(row);
+  return row;
+}
+
+/**
+ * 現況的列表**會被重新排序**:mic/sys 的 ASR 回來順序不等於語音順序。
+ * 所以「新增一段」的真實成本是 append + reorder,不是單純 append。
+ * 這支函式刻意量那個組合。
+ */
+function reorder() {
+  const list = document.getElementById('list');
+  const rows = Array.from(list.children);
+  for (let i = rows.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    if (i !== j) list.insertBefore(rows[i], rows[j]);
+  }
+}
+
+const TEXT = '這是第 %d 段的逐字稿內容,長度接近真實語音辨識輸出的一句話,大約二十幾個中文字。';
+
+function fill(n) {
+  const list = document.getElementById('list');
+  while (list.children.length) list.removeChild(list.lastElementChild);
+  for (let i = 0; i < n; i++) {
+    appendSeg(i * 30, i % 2 === 0 ? 'me' : 'them', TEXT.replace('%d', i));
+  }
+}
+
+window.__run = async function () {
+  const sizes = [50, 200, 500, 1000, 2000];
+  const out = [];
+  // 先全跑一次當熱身 —— 第一版量測就是死在沒熱身,量到 JIT 編譯而不是排版成本
+  for (const n of sizes) {
+    fill(n);
+    for (let i = 0; i < 5; i++) { appendSeg(1e6, 'me', TEXT.replace('%d', 0)); reorder(); void document.body.offsetHeight; document.getElementById('list').lastElementChild.remove(); }
+  }
+
+  for (const n of sizes) {
+    const samples = [];
+    for (let rep = 0; rep < 9; rep++) {
+      fill(n - 1);
+      const t0 = performance.now();
+      appendSeg(1e6, 'me', TEXT.replace('%d', 0));
+      reorder();
+      // 強制同步 layout:append 之後 style recalc 與 layout 是延遲的,
+      // 不強制 flush 就量不到使用者真正感覺到的那一段。
+      void document.body.offsetHeight;
+      samples.push(performance.now() - t0);
+    }
+    samples.sort((a, b) => a - b);
+    out.push({ n, ms: samples[Math.floor(samples.length / 2)] });
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  return out;
+};
+</script>
+</body>
+</html>

@@ -27,7 +27,7 @@ test('錄完的逐字稿能存成講稿,而且真的存進去了', async () => {
     // 播一場會議進去
     await main.evaluate(async () => {
       const req = indexedDB.open('ai-teleprompter')
-      const db = await new Promise((res, rej) => {
+      const db = await new Promise<IDBDatabase>((res, rej) => {
         req.onsuccess = () => res(req.result)
         req.onerror = () => rej(req.error)
       })
@@ -48,12 +48,12 @@ test('錄完的逐字稿能存成講稿,而且真的存進去了', async () => {
     const scriptCount = () =>
       main.evaluate(async () => {
         const req = indexedDB.open('ai-teleprompter')
-        const db = await new Promise((res, rej) => {
+        const db = await new Promise<IDBDatabase>((res, rej) => {
           req.onsuccess = () => res(req.result)
           req.onerror = () => rej(req.error)
         })
         const tx = db.transaction('scripts', 'readonly')
-        return new Promise((res) => {
+        return new Promise<number>((res) => {
           const r = tx.objectStore('scripts').count()
           r.onsuccess = () => res(r.result)
           r.onerror = () => res(-1)
@@ -81,12 +81,12 @@ test('錄完的逐字稿能存成講稿,而且真的存進去了', async () => {
     // 內容正確:只取我方發言,且保留時間戳
     const saved = await main.evaluate(async () => {
       const req = indexedDB.open('ai-teleprompter')
-      const db = await new Promise((res, rej) => {
+      const db = await new Promise<IDBDatabase>((res, rej) => {
         req.onsuccess = () => res(req.result)
         req.onerror = () => rej(req.error)
       })
       const tx = db.transaction('scripts', 'readonly')
-      const all = await new Promise((res) => {
+      const all = await new Promise<Array<{ title: string; content: string }>>((res) => {
         const r = tx.objectStore('scripts').getAll()
         r.onsuccess = () => res(r.result)
         r.onerror = () => res([])
@@ -116,7 +116,7 @@ test('沒有可存成講稿的內容時,不會產生空講稿', async () => {
   try {
     await main.evaluate(async () => {
       const req = indexedDB.open('ai-teleprompter')
-      const db = await new Promise((res, rej) => {
+      const db = await new Promise<IDBDatabase>((res, rej) => {
         req.onsuccess = () => res(req.result)
         req.onerror = () => rej(req.error)
       })
@@ -148,12 +148,12 @@ test('沒有可存成講稿的內容時,不會產生空講稿', async () => {
     // 什麼都沒有的講稿,然後以為是儲存壞了。
     const count = await main.evaluate(async () => {
       const req = indexedDB.open('ai-teleprompter')
-      const db = await new Promise((res, rej) => {
+      const db = await new Promise<IDBDatabase>((res, rej) => {
         req.onsuccess = () => res(req.result)
         req.onerror = () => rej(req.error)
       })
       const tx = db.transaction('scripts', 'readonly')
-      return new Promise((res) => {
+      return new Promise<number>((res) => {
         const r = tx.objectStore('scripts').count()
         r.onsuccess = () => res(r.result)
         r.onerror = () => res(-1)
@@ -161,12 +161,12 @@ test('沒有可存成講稿的內容時,不會產生空講稿', async () => {
     })
     const contents = await main.evaluate(async () => {
       const req = indexedDB.open('ai-teleprompter')
-      const db = await new Promise((res, rej) => {
+      const db = await new Promise<IDBDatabase>((res, rej) => {
         req.onsuccess = () => res(req.result)
         req.onerror = () => rej(req.error)
       })
       const tx = db.transaction('scripts', 'readonly')
-      const all = await new Promise((res) => {
+      const all = await new Promise<Array<{ content: string }>>((res) => {
         const r = tx.objectStore('scripts').getAll()
         r.onsuccess = () => res(r.result)
         r.onerror = () => res([])

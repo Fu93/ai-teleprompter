@@ -4,6 +4,7 @@
  * 只允許 loopback / 私有網段;阻擋雲端 metadata、link-local、CGNAT、
  * multicast、reserved 等可被用於 SSRF 的位址。
  */
+import { canonicalHost, isIPv6Host, mappedIPv4FromIPv6 } from './ipHost'
 
 export const OLLAMA_DEFAULT_ENDPOINT = 'http://localhost:11434/api/chat'
 
@@ -37,24 +38,26 @@ export function isBlockedSSRFIPv4(ip: string): boolean {
 }
 
 export function isBlockedSSRFHost(hostRaw: string): boolean {
-  const host = hostRaw.toLowerCase().replace(/^\[|\]$/g, '')
+  const host = canonicalHost(hostRaw)
 
   if (host === '0.0.0.0' || host === '::' || host === '::0') return true
 
-  // IPv6 unique-local fc00::/7
-  if (/^f[cd][0-9a-f]{2}:/.test(host)) return true
-  // IPv6 link-local fe80::/10
-  if (/^fe[89ab][0-9a-f]:/.test(host)) return true
+  // IPv4-mapped / compatible IPv6 必須遞迴檢查。
+  //
+  // 為什麼這裡不能只比字串:`new URL('http://[::ffff:169.254.169.254]/').hostname`
+  // 回傳的是 **hex 形狀** `[::ffff:a9fe:a9fe]`,不是點號形狀。原本的
+  // /^::ffff:(.+)$/ 只認點號形狀,所以這條防護在真實呼叫路徑上從來沒生效過 ——
+  // 而單元測試直接餵字串,所以看起來是綠的(見 ipHost.ts 檔頭)。
+  const mapped = mappedIPv4FromIPv6(host)
+  if (mapped !== null) return isBlockedSSRFIPv4(mapped)
 
-  // IPv4-mapped IPv6(::ffff:a.b.c.d)遞迴檢查
-  const mapped = host.match(/^::ffff:(.+)$/)
-  if (mapped) {
-    const inner = mapped[1]
-    if (inner.includes('.')) return isBlockedSSRFIPv4(inner)
-    return isBlockedSSRFHost(inner)
+  if (isIPv6Host(host)) {
+    // IPv6 unique-local fc00::/7
+    if (/^f[cd][0-9a-f]{2}:/.test(host)) return true
+    // IPv6 link-local fe80::/10
+    if (/^fe[89ab][0-9a-f]:/.test(host)) return true
+    return false // 其他 IPv6(非本模組管轄;正規化階段僅允許 ::1)
   }
-
-  if (host.includes(':')) return false // 其他 IPv6(非本模組管轄;正規化階段僅允許 ::1)
 
   return isBlockedSSRFIPv4(host)
 }
@@ -78,7 +81,7 @@ export function normalizeOllamaEndpointUrl(raw: unknown): string | null {
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
 
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const host = canonicalHost(url.hostname)
   const isPrivate = PRIVATE_IPV4_RE.test(host)
   if (!isLoopbackHost(host) && !isPrivate) return null
   if (isBlockedSSRFHost(host)) return null

@@ -57,6 +57,21 @@ describe('isBlockedSSRFHost (IPv6)', () => {
     expect(isBlockedSSRFHost('::ffff:127.0.0.1')).toBe(false)
   })
 
+  /**
+   * 防Regression:這條是本專案真的踩過的洞。
+   *
+   * 原先的防護用 /^::ffff:(.+)$/ 抓內嵌 IPv4,但 WHATWG URL 解析會把
+   * [::ffff:169.254.169.254] 正規化成 **hex 形狀** `[::ffff:a9fe:a9fe]`。
+   * 上一條測試直接餵字串所以是綠的,而真實呼叫永遠走不到那條分支。
+   */
+  it('經 new URL 正規化成 hex 形狀的 IPv4-mapped 仍然被擋', () => {
+    expect(new URL('http://[::ffff:169.254.169.254]/').hostname).toBe('[::ffff:a9fe:a9fe]')
+    expect(isBlockedSSRFHost('[::ffff:a9fe:a9fe]')).toBe(true)
+    expect(normalizeOllamaEndpointUrl('http://[::ffff:169.254.169.254]:11434')).toBeNull()
+    // loopback 的 mapped 形狀仍然要能通,否則會擋掉本機服務
+    expect(isBlockedSSRFHost('[::ffff:7f00:1]')).toBe(false)
+  })
+
   it('正常 loopback / 私網為假', () => {
     expect(isBlockedSSRFHost('localhost')).toBe(false)
     expect(isBlockedSSRFHost('127.0.0.1')).toBe(false)

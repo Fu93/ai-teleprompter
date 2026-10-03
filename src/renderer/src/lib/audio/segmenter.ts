@@ -22,6 +22,16 @@ export interface SegmenterOptions {
   minSilenceMs?: number
   /** 語音開始前回補（ms），避免吃掉第一個字 */
   prerollMs?: number
+  /**
+   * 一段語音的最長長度（ms），超過就強制切一段。
+   *
+   * 為什麼需要:能量 VAD 只在「安靜下來」時切段。遇到一口氣講很久、或背景音
+   * 讓門檻一直過不去的場合,音訊會無限累積 —— 這正是 preroll 環曾經發生的
+   * 同一族問題的**有聲版本**(那個環已經改成有界的)。30 秒是刻意的:Whisper 的
+   * 輸入本來就常是 30 秒切片,切在這裡不增加任何處理成本,也不會把字切在
+   * 句子中間太多次。
+   */
+  maxSegmentMs?: number
 }
 
 export class AudioSegmenter {
@@ -34,6 +44,7 @@ export class AudioSegmenter {
   private readonly minSpeechSamples: number
   private readonly minSilenceSamples: number
   private readonly prerollSamples: number
+  private readonly maxSegmentSamples: number
 
   private inSpeech = false
   private current: Float32Array[] = []
@@ -54,6 +65,7 @@ export class AudioSegmenter {
     this.minSpeechSamples = Math.floor(((opts.minSpeechMs ?? 260) / 1000) * this.sampleRate)
     this.minSilenceSamples = Math.floor(((opts.minSilenceMs ?? 750) / 1000) * this.sampleRate)
     this.prerollSamples = Math.floor(((opts.prerollMs ?? 240) / 1000) * this.sampleRate)
+    this.maxSegmentSamples = Math.floor(((opts.maxSegmentMs ?? 30_000) / 1000) * this.sampleRate)
     this.onSegment = opts.onSegment
     this.onLevel = opts.onLevel
   }
@@ -115,6 +127,11 @@ export class AudioSegmenter {
         }
       }
     }
+    // 長度上限:還在有聲、且沒有被靜音切掉時,到頂就切一段。
+    //
+    // inSpeech 這個條件很重要:靜音分支可能剛呼叫過 finishSegment,那時已經
+    // 不在語音中,不能再切一次(否則會送出一段 0 長度的垃圾)。
+    if (this.inSpeech && this.currentLen >= this.maxSegmentSamples) this.finishSegment()
   }
 
   private finishSegment(): void {

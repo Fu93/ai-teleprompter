@@ -69,7 +69,7 @@ export interface OnboardingInput {
    * AI 模型現在可用。
    *
    * 由 preflight 的 blocking 判定給出,不重新實作 —— 兩份邏輯一定會漂移,
-   * 而漂移的結果是「卡片說可以開始、按下��被擋」。
+   * 而漂移的結果是「卡片說可以開始、按下去被擋」。
    */
   modelReady: boolean
   /**
@@ -112,7 +112,10 @@ export function evaluateOnboarding(input: OnboardingInput): OnboardingResult {
       title: '第一段提詞',
       action: input.hasScript ? '打開提詞浮層跟著唸' : '先寫一段講稿',
       state: input.hasPrompted ? 'done' : 'todo',
-      target: input.hasScript ? 'scripts' : 'scripts'
+      // 不需要三元:「有沒有講稿」只影響 action 文案,兩種情況都去講稿頁
+      // (原本寫成 input.hasScript ? 'scripts' : 'scripts' —— 一個 no-op,
+      //  讀起來卻像兩條路,與它下面那段不可達的 markPrompted 一起誤導人)。
+      target: 'scripts'
     }
   ]
 

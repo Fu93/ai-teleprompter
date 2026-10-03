@@ -17,6 +17,27 @@ export const WHISPER_MODELS = {
 
 export type WhisperModelKey = keyof typeof WHISPER_MODELS
 
+/**
+ * 單一段語音辨識的看門狗:超過這個時間還沒回來,就當作這一段沒了。
+ *
+ * ── 為什麼需要 ──
+ *   worker 活著但不回應(推論當掉、GPU 裝置遺失、wasm 卡在初始化)是會發生的。
+ *   那時 pending 裡的那一筆永遠不會 settle,而 `chain` 會讓**後續每一段**都排在
+ *   它後面等下去:使用者繼續講、繼續錄,畫面上再也沒有多一個字,卻沒有任何錯誤
+ *   訊息。停止時雖然看得到「N 段未完成」,但那時整場會議已經講完了。
+ *
+ * ── 為什麼是 90 秒 ──
+ *   本地模型在慢機器上跑一段 20 秒語音本來就要數十秒。太短的逾時會把**正常的慢
+ *   推論**誤判成卡死,結果是靜默丟掉使用者的話 —— 那比「卡住」更糟。寧可晚一點
+ *   說,也不要誤殺。
+ *
+ * ── 逾時之後刻意做得很保守 ──
+ *   只 reject 這一筆,並用 onStatus 說清楚發生了什麼;**不**自動殺 worker。
+ *   在使用者正說話時把模型抽走重載,會留下一個更大的洞(mic 還開著、音訊在堆、
+ *   使用者以為還在錄)。恢復的路徑是使用者自己按「停止並儲存」再重新開始。
+ */
+export const WHISPER_TRANSCRIBE_TIMEOUT_MS = 90_000
+
 type OutMsg =
   | { type: 'ready'; device: WhisperDevice }
   | { type: 'progress'; payload: WhisperDownloadProgress }
@@ -41,6 +62,13 @@ export class WhisperClient {
    * 「設成 small、實際仍用 base」會發生,而且沒有任何錯誤訊息。
    */
   private loadGeneration = 0
+
+  /**
+   * @param opts.transcribeTimeoutMs 看門狗時長(測試會傳很小的值)。
+   *   留成選項而不是常數直呼,是為了讓「worker 不回應」這個情境能被測到 ——
+   *   否則唯一能驗證它的方式是等九十分鐘。
+   */
+  constructor(private readonly opts: { transcribeTimeoutMs?: number } = {}) {}
 
   onProgress: ((p: WhisperDownloadProgress) => void) | null = null
   onStatus: ((message: string) => void) | null = null
@@ -186,8 +214,37 @@ export class WhisperClient {
   private transcribeOnce(audio: Float32Array, language: string): Promise<string> {
     if (!this.worker || !this.loadPromise) return Promise.reject(new Error('模型尚未載入'))
     const id = this.nextId++
+    const timeoutMs = this.opts.transcribeTimeoutMs ?? WHISPER_TRANSCRIBE_TIMEOUT_MS
     return new Promise<string>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const clear = (): void => {
+        if (timer === null) return
+        clearTimeout(timer)
+        timer = null
+      }
+      timer = setTimeout(() => {
+        const p = this.pending.get(id)
+        this.pending.delete(id)
+        if (!p) return
+        // 先講清楚狀態再 reject。reject 會讓呼叫端的失敗橫幅亮起來(那是「我
+        // 講的話有沒有被存到」的答案),但「為什麼」只有 status 訊息說得出來。
+        this.onStatus?.(
+          `語音辨識沒有回應(${Math.round(timeoutMs / 1000)} 秒):這一段被跳過。若持續發生,請停止後重新開始聆聽以重載模型。`
+        )
+        p.reject(new Error(`語音辨識逾時:${Math.round(timeoutMs / 1000)} 秒沒有回應`))
+      }, timeoutMs)
+      // resolve/reject 都包一層,確保計時器一定被清掉 —— 否則每個成功辨識的
+      // 段落都會留下一個 90 秒後才觸發的無害逾時,而在長時間會議裡那是幾百個。
+      this.pending.set(id, {
+        resolve: (t: string) => {
+          clear()
+          resolve(t)
+        },
+        reject: (e: Error) => {
+          clear()
+          reject(e)
+        }
+      })
       // 轉移 buffer 所有權以省記憶體
       this.worker!.postMessage({ type: 'transcribe', id, audio, language }, [audio.buffer])
     })

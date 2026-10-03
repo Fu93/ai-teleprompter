@@ -7,7 +7,7 @@ import {
   sortTranscriptSegments,
   analyzePracticeRun
 } from '../session-intelligence'
-import type { TranscriptSegment } from '@shared/types'
+import type { SessionReport, SessionSuggestion, TranscriptSegment } from '@shared/types'
 
 const seg = (speaker: 'me' | 'them', text: string, start: number, end: number): TranscriptSegment => ({
   speaker,
@@ -260,5 +260,68 @@ describe('analyzePracticeRun', () => {
   it('無有效回答回 0', () => {
     expect(analyzePracticeRun([]).avgCpm).toBe(0)
     expect(analyzePracticeRun([]).scores).toEqual([])
+  })
+})
+
+describe('語速建議採用個人校準值', () => {
+  // 只給 buildSuggestions 會讀的欄位:用真 buildSessionReport 的輸出會把
+  // 建議清單塞滿(MAX_SUGGESTIONS),再加一條就會被排序截掉 —— 那是測試自己的陷阱。
+  const report = (over: { myCpm: number; theirSec?: number; talkRatio?: number }): SessionReport => ({
+    durationSec: 600,
+    mySec: 300,
+    theirSec: over.theirSec ?? 300,
+    talkRatio: over.talkRatio ?? 0.5,
+    talkRatioAvailable: true,
+    myUnits: 1700,
+    myCpm: over.myCpm,
+    turnCount: 20,
+    avgMyTurnSec: 15,
+    longestMyTurnSec: 40,
+    gapCount: 0,
+    gapTotalSec: 0,
+    theirQuestionCount: 0,
+    steadiness: 80,
+    suggestions: [],
+    generatedAt: 0
+  })
+  const speedMsg = (out: SessionSuggestion[]): string | undefined =>
+    out.find((s) => s.message.includes('語速'))?.message
+
+  it('沒有校準值時維持絕對門檻與原本的建議目標(既有行為不變)', () => {
+    const out = buildSuggestions(report({ myCpm: 340 }))
+    expect(speedMsg(out)).toContain('語速偏快')
+    expect(speedMsg(out)).toContain('260')
+    expect(speedMsg(out)).not.toContain('你的基準')
+  })
+
+  it('校準值 400 的使用者,340 字/分不算快', () => {
+    // 花一整頁校準出來的數字,報告卻不採用 —— 那份逐字稿就是為他產出的
+    expect(speedMsg(buildSuggestions(report({ myCpm: 340 }), { personalCpm: 400 }))).toBeUndefined()
+  })
+
+  it('校準值 240 的使用者,340 字/分算快,訊息說得出用的是哪個基準與目標', () => {
+    // 門檻 = 240 × 1.3 = 312(main 端即時 coaching 用同一個係數);目標回到自己的常態 240
+    const msg = speedMsg(buildSuggestions(report({ myCpm: 340 }), { personalCpm: 240 }))
+    expect(msg).toContain('語速偏快')
+    expect(msg).toContain('你的基準 240')
+    expect(msg).toContain('控制在 240')
+  })
+
+  it('基準偏低的使用者,不會因為固定門檻而被說偏慢', () => {
+    // 絕對門檻 120:110 字/分對「平常講 100 字/分」的人完全正常
+    expect(speedMsg(buildSuggestions(report({ myCpm: 110 })))).toContain('語速偏慢')
+    expect(speedMsg(buildSuggestions(report({ myCpm: 110 }), { personalCpm: 100 }))).toBeUndefined()
+  })
+
+  it('基準偏高時,相對於自己的常態偏慢也說得出口(固定門檻看不到這件事)', () => {
+    expect(speedMsg(buildSuggestions(report({ myCpm: 150 })))).toBeUndefined()
+    expect(speedMsg(buildSuggestions(report({ myCpm: 150 }), { personalCpm: 400 }))).toContain('語速偏慢')
+  })
+
+  it('buildSessionReport 會把個人基準一路帶到建議裡', () => {
+    // 34 字 / 6 秒 = 340 字/分:對沒有校準值的人算快,對校準值 400 的人不算
+    const segs = [seg('me', '字'.repeat(34), 0, 6)]
+    expect(speedMsg(buildSessionReport(segs).suggestions)).toContain('語速偏快')
+    expect(speedMsg(buildSessionReport(segs, { personalCpm: 400 }).suggestions)).toBeUndefined()
   })
 })

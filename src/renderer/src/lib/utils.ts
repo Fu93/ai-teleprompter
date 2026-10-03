@@ -40,6 +40,18 @@ export function formatTransport(elapsedSec: number, remainingMs: number | null):
   return `已播 ${elapsed} · 剩 ${formatDuration(remaining)}`
 }
 
+/**
+ * 講稿標題的單一出處:存檔、浮層 payload、刪除確認共用。
+ *
+ * 為什麼需要它:save() 原本自己 trim + 回填「未命名講稿」,而 launch() /
+ * beginRecording() 把**未正規化**的 draft.title 送給浮層 —— 空白標題存檔後,
+ * 清單寫「未命名講稿」、浮層卻顯示 fallback「提詞浮層」。同一份稿子在兩個
+ * 地方有兩個名字,使用者會以為開錯稿。三處共用一個函式,漂移就不可能發生。
+ */
+export function normalizeScriptTitle(title: string): string {
+  return title.trim() || '未命名講稿'
+}
+
 export function formatDateTime(ts: number): string {
   const d = new Date(ts)
   const pad = (n: number): string => String(n).padStart(2, '0')
