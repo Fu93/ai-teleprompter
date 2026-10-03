@@ -202,3 +202,49 @@ test('錄影中阻擋系統睡眠,結束後釋放', async () => {
     await teardown(app, main)
   }
 })
+
+/**
+ * 退出前 flush 的**負向驗證**。
+ *
+ * main 端 quitGuard 的呼叫點對「掛鉤不存在」是**靜默放行**:
+ *   `window.__aiTpFlushRecording ? window.__aiTpFlushRecording() : false`
+ * 所以 Scripts.tsx 那個掛鉤 effect 若被誤刪,quit 流程不會出任何錯 ——
+ * 症狀會退回「錄影中關機,整段錄影無聲消失」的原始問題,只靠下次啟動的
+ * 孤兒檔復原兜底。這一條是「拿掉掛鉤時唯一會紅的地方」,
+ * 與 quit-flush.spec.ts 對會議錄音掛鉤的同一道防線成對。
+ *
+ * 順帶正向驗證 flush 本身:呼叫掛鉤要回 true(videoRecordingFinish 真的關檔),
+ * 而且錄影介面回到停止態。quittingRef 讓這條路**不彈**存檔對話框 ——
+ * 關機時沒有人能回答對話框,這正是掛鉤存在的理由。
+ */
+test('退出前 flush 的掛鉤存在,而且真的能收尾錄影', async () => {
+  const { app, main } = await launch()
+  test.setTimeout(120_000)
+  try {
+    await scriptReady(main)
+    await startRecording(main)
+
+    const hasHook = await main.evaluate(
+      () => typeof (window as Window & { __aiTpFlushRecording?: unknown }).__aiTpFlushRecording === 'function'
+    )
+    expect(
+      hasHook,
+      '退出前收尾錄影的掛鉤必須掛在 window 上(main 的 quitGuard 以 executeJavaScript 呼叫它;拿掉 Scripts.tsx 的掛鉤 effect,這一行就會紅)'
+    ).toBe(true)
+
+    // 切片是 500ms 一片:等兩片以上落地再 flush。剛開錄就 flush 的話,
+    // 0-byte 的暫存檔被 finish 如實判成 'empty' 丟棄 —— 那是產品的正確
+    // 契約(不值得存的東西不留),不是這條要量的行為。
+    await main.waitForTimeout(2_000)
+
+    const flushed = await main.evaluate(
+      () => (window as Window & { __aiTpFlushRecording?: () => Promise<boolean> }).__aiTpFlushRecording!()
+    )
+    expect(flushed, '退出前 flush 必須真的收尾錄影(videoRecordingFinish 回 ok)').toBe(true)
+
+    // 收尾後與按「停止錄影」同一個終態:錄影按鈕消失
+    await expect(main.locator('[data-effect-id="rec-stop"]')).toHaveCount(0, { timeout: 15_000 })
+  } finally {
+    await teardown(app, main)
+  }
+})

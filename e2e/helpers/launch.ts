@@ -60,7 +60,29 @@ export async function launchApp(env?: Record<string, string | undefined>): Promi
   const cleanEnv = env
     ? (Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string>)
     : undefined
-  const app = await electron.launch({ args: ['.'], timeout: 60_000, env: cleanEnv })
+  /**
+ * 預設帶上假裝置的旗標,不是因為「測試不需要麥克風」,而是因為**真實麥克風
+ * 讓測試不再可重現**。
+ *
+ * 實測(同一台機器、同一份程式碼、`--repeat-each=2`):
+ *   不帶假裝置:4 個用例 → 1 過 3 敗(失敗全是「等待說話…」一直不消失)
+ *   帶假裝置  :4 個用例 → 4 過
+ * 而失敗的那三個不是「今天機器慢」:它們的症狀是 VAD 從真實音訊切不出段落,
+ * 與被測行為(退出前 flush)完全無關,卻讓一條 blocking 測試擋住 merge。
+ *
+ * CI 更沒有選擇:`windows-latest` 上**沒有任何音訊輸入裝置**,真實麥克風那條路
+ * 在 CI 上是 100% 失敗,不是偶發。
+ *
+ * 為什麼不動「麥克風被拒」那條測試:它靠 helpers/env.ts 在**邊界**注入失敗
+ * (見 mic-denied.spec.ts 的檔頭),本來就不依賴裝置真的不存在 —— 這是這個 repo
+ * 少數做對的隔離方式。
+ *
+ * 需要「真的沒有麥克風」的用例請自己 electron.launch(不用這個 helper),
+ * 並在檔頭寫明理由。
+ */
+const DEFAULT_ARGS = ['.', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream']
+
+  const app = await electron.launch({ args: DEFAULT_ARGS, timeout: 60_000, env: cleanEnv })
 
   let main: Page | undefined
   for (let i = 0; i < 60 && !main; i++) {

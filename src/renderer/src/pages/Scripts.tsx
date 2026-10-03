@@ -16,6 +16,7 @@ import { useCloseGuard } from '../lib/closeGuard'
 import { setCaptureIndicator } from '../lib/captureIndicator'
 import { unlinkScriptFromSessions } from '../lib/sessionToScript'
 import { describeImportTooLarge } from '../lib/scriptImport'
+import { shouldReuseEmptyDraft, UNTITLED_TITLE } from '../lib/scriptDraft'
 
 function estimateMinutes(content: string, charsPerMin: number): string {
   const chars = content.replace(/\s/g, '').length
@@ -176,18 +177,38 @@ export default function Scripts({
     setDirty(false)
   }
 
+  /**
+   * 「新講稿」連點防護:連點兩下原本會連建兩份**空的**「未命名講稿」
+   * (對照 loadDemo 有 demoBusy —— 同一頁同一種動作不該兩種標準)。
+   * 規則(純函式)在 lib/scriptDraft.ts。
+   */
+  const newBusyRef = useRef(false)
+
   const newScript = async (): Promise<void> => {
+    if (newBusyRef.current) return
     if (dirty && !(await confirmDiscard('建立新講稿會遺失目前的修改。', '放棄變更並新增'))) return
-    const now = Date.now()
-    const id = await db.scripts.add({
-      title: '未命名講稿',
-      content: '',
-      createdAt: now,
-      updatedAt: now
-    })
-    await refresh(id)
-    setDraft({ title: '未命名講稿', content: '' })
-    setDirty(false)
+    // 目前這份稿還沒開始寫(空的「未命名講稿」):再按「新講稿」不該又生一筆 ——
+    // 使用者要的東西已經在畫面上了。連點防護擋的是「同一拍的重複請求」,
+    // 這一條擋的是「過一會兒又按一次」;兩者都會在清單裡留下多餘的空稿。
+    if (selectedId != null && shouldReuseEmptyDraft(draft, dirty)) {
+      toast.info('已經有一份空白講稿了 —— 直接在右邊寫下你的內容吧。')
+      return
+    }
+    newBusyRef.current = true
+    try {
+      const now = Date.now()
+      const id = await db.scripts.add({
+        title: UNTITLED_TITLE,
+        content: '',
+        createdAt: now,
+        updatedAt: now
+      })
+      await refresh(id)
+      setDraft({ title: UNTITLED_TITLE, content: '' })
+      setDirty(false)
+    } finally {
+      newBusyRef.current = false
+    }
   }
 
   /**
@@ -432,6 +453,16 @@ export default function Scripts({
   const chunkErrorRef = useRef<string | null>(null)
   /** 退出流程呼叫 flush 時設起:只收尾,不彈存檔對話框(關機時沒人能回答) */
   const quittingRef = useRef(false)
+  /**
+   * quitGuard 的 flush 掛鉤與 onstop 之間的交接。
+   *
+   * 為什麼需要:關檔(videoRecordingFinish)**只有 onstop 做一次** —— 掛鉤若
+   * 自己再 finish 一次,第二發會落在「沒有進行中的錄影」上回 false,quitGuard
+   * 於是把它記成「退出前存檔失敗」,而檔案其實好好的。掛鉤只負責 stop +
+   * 等 onstop 做完,onstop 在 quitting 分支把結果放進 flushResultRef 並喚醒等待方。
+   */
+  const flushDoneRef = useRef<(() => void) | null>(null)
+  const flushResultRef = useRef(false)
   const recStreamRef = useRef<MediaStream | null>(null)
   const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recPausedRef = useRef(false)
@@ -544,13 +575,21 @@ export default function Scripts({
       const rec = recorderRef.current
       if (!rec) return false
       quittingRef.current = true
+      flushResultRef.current = false
+      const done = new Promise<void>((r) => {
+        flushDoneRef.current = r
+      })
       try {
         if (rec.state !== 'inactive') rec.stop()
       } catch {
-        // 錄音器可能在 stop 的瞬間被裝置層拿掉;下面的 finish 仍然會關檔
+        // 錄音器可能在 stop 的瞬間被裝置層拿掉;onstop 不會來,下面的逾時放行
       }
-      const res = await window.api.videoRecordingFinish()
-      return res.ok
+      // 收尾**只有 onstop 做一次**(它排空分片佇列、關檔):這裡等它,
+      // 而不是自己再 finish 一遍。5 秒是後備 —— 裝置被拔掉等 onstop 不來的
+      // 情況下,退出不能被一個已經消失的錄音器卡住(quitGuard 還有自己的逾時)。
+      await Promise.race([done, new Promise((r) => setTimeout(r, 5000))])
+      flushDoneRef.current = null
+      return flushResultRef.current
     }
     return () => {
       delete w.__aiTpFlushRecording
@@ -632,6 +671,11 @@ export default function Scripts({
           // 退出流程(OS 關機 / 自動更新 / 使用者選了放棄並關閉):
           // 檔案已經在磁碟上,下次啟動會撿回來。不彈任何對話框 ——
           // 那一刻沒有人能回答它,而它會把退出卡住。
+          // 結果交還給 flush 掛鉤(quitGuard 憑它記成功/失敗),
+          // 並把 UI 狀態放下:錄影確實結束了,介面不該看起來還在錄。
+          flushResultRef.current = fin.ok
+          flushDoneRef.current?.()
+          if (activeRecorderAttempt === recordingAttemptRef.current) setRecording(false)
           return
         }
         try {
