@@ -1,4 +1,4 @@
-import { net, protocol } from 'electron'
+import { app, net, protocol } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 import { logMain } from './logging'
@@ -30,6 +30,32 @@ const MIME: Record<string, string> = {
   '.task': 'application/octet-stream'
 }
 
+/**
+ * `app://rec/<basename>` — 錄影完成預覽的來源。
+ *
+ * 為什麼需要一個新 host:錄影現在是**分片寫到磁碟**的(見 videoRecording.ts),
+ * renderer 手上沒有 bytes,做不出 Blob URL。要預覽就只能讓它用一個 URL 去
+ * 讀那個檔案,而 `file://` 在 dev(http origin)會被 webSecurity 擋掉 ——
+ * 「打包版能播、稽核環境不能播」正是這個專案反覆在防的那種測不到的差異。
+ *
+ * 安全邊界(逐項):
+ *   - 只認兩個根目錄:**暫存目錄**與**錄影輸出目錄**,兩者都是本 App 自己建立的
+ *   - 只認副檔名 .webm / .mp4 —— 別的路徑再進來也讀不到
+ *   - basename 解析後再與根目錄組合,並二次檢查 `startsWith`,防 `..` 逃逸
+ * 其餘一律 404。它不是通用檔案伺服器。
+ */
+export const APP_RECORD_HOST = 'rec'
+const RECORDABLE_EXT = ['.webm', '.mp4']
+
+function recordingRoots(): string[] {
+  // 延遲到 ready 之後才取:app.getPath 在 ready 前會丟例外
+  try {
+    return [join(app.getPath('temp'), 'ai-teleprompter-recordings'), join(app.getPath('videos'), 'AI 提詞機')]
+  } catch {
+    return []
+  }
+}
+
 /** 必須在 app ready 之前呼叫(registerSchemesAsPrivileged 的硬性要求) */
 export function registerAppAssetScheme(): void {
   protocol.registerSchemesAsPrivileged([
@@ -52,6 +78,32 @@ export function registerAppAssetProtocol(): void {
     try {
       const url = new URL(request.url)
       const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '')
+
+      // ── 錄影預覽:app://rec/<basename> ──
+      if (url.host === APP_RECORD_HOST) {
+        const ext = rel.slice(rel.lastIndexOf('.')).toLowerCase()
+        // 不允許路徑分隔符:basename 唯一的形狀
+        if (!RECORDABLE_EXT.includes(ext) || rel.includes('/') || rel.includes('\\')) {
+          return new Response('not found', { status: 404 })
+        }
+        for (const root of recordingRoots()) {
+          const abs = join(root, rel)
+          if (!abs.startsWith(root)) continue
+          try {
+            const res = await net.fetch(pathToFileURL(abs).toString(), { bypassCustomProtocolHandlers: true })
+            if (res.ok) {
+              return new Response(res.body, {
+                status: 200,
+                headers: { 'Content-Type': ext === '.mp4' ? 'video/mp4' : 'video/webm', 'Access-Control-Allow-Origin': '*' }
+              })
+            }
+          } catch {
+            /* 換下一個根繼續 */
+          }
+        }
+        return new Response('not found', { status: 404 })
+      }
+
       const base = join(RENDERER_DIR, SERVABLE_PREFIX)
       const abs = join(RENDERER_DIR, rel)
       // host 與前綴雙重檢查:app://bundle/mediapipe/… 之外的請求一律 404

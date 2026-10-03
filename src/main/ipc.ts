@@ -29,6 +29,15 @@ import {
   forceCloseMainWindow
 } from './windows'
 import { logFromRenderer, logDir } from './logging'
+import {
+  abortVideoRecording,
+  appendVideoChunk,
+  beginVideoRecording,
+  finishVideoRecording,
+  listOrphanRecordings,
+  resolveOrphanRecordings,
+  saveVideoRecording
+} from './videoRecording'
 import { recordEvent } from './events'
 import { buildDiagnosticsReport } from './diagnostics'
 import type { EventPayload } from '@shared/observability'
@@ -271,6 +280,8 @@ export function registerIpc(): void {
     // 附在 AppInfo 上是為了讓「熱鍵沒反應」有唯一可查答案:e2e 失敗時把它
     // 印出來,就不必再用「疑似全域熱鍵爭用」去猜(那個說法查過之後不成立)。
     hotkeyConflicts: [...state.hotkeyConflicts],
+    // 待安裝的更新:讓「事件已經送過了」不再等於「永遠看不到」(見 AppInfo 註解)
+    updateInfo: state.updateInfo,
     /**
      * e2e 環境情境。renderer 用它在 getUserMedia / fetch 的邊界注入故障,
      * 而「測試跑在哪個世界裡」需要一個單一出處 —— 否則 e2e 失敗時只能猜。
@@ -406,7 +417,7 @@ export function registerIpc(): void {
     }
   })
 
-  // ---- 錄影存檔 ----
+  // ---- 錄影存檔(舊路徑:整段 bytes 一次過 IPC)----
   ipcMain.handle(IPC.SaveRecording, async (_e, args: { bytes: Uint8Array; defaultName: string }) => {
     if (!state.mainWindow) return { ok: false, error: 'no-window' }
     const { canceled, filePath } = await dialog.showSaveDialog(state.mainWindow, {
@@ -422,6 +433,56 @@ export function registerIpc(): void {
     }
     return { ok: true, filePath }
   })
+
+  // ---- 錄影分片落盤(見 videoRecording.ts;為什麼不是一次把整段丟過來看那裡)----
+  ipcMain.handle(IPC.VideoRecordingBegin, async () => {
+    try {
+      const res = await beginVideoRecording()
+      // 退出流程(quitGuard)只看這個布林。錄影中退出時它必須是 true,
+      // 否則 before-quit 直接放行 —— 而暫存檔雖然已經在磁碟上,
+      // 沒有人會在下次啟動告訴使用者「這裡有一段未完成的錄影」。
+      if (res.ok) state.isRecording = true
+      return res
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  ipcMain.handle(IPC.VideoRecordingChunk, async (_e, bytes: Uint8Array) => {
+    try {
+      return await appendVideoChunk(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayBuffer))
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  // Finish 只關檔不結案:isRecording 要到 Save/Abort 才放下 —— 中間那段是
+  // 存檔對話框,那時使用者關掉 App 一樣會丢掉這一段。
+  ipcMain.handle(IPC.VideoRecordingFinish, async () => {
+    try {
+      const res = await finishVideoRecording()
+      if (!res.ok) state.isRecording = false
+      return res
+    } catch (err) {
+      state.isRecording = false
+      return { ok: false, bytes: 0, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  ipcMain.handle(IPC.VideoRecordingSave, async (_e, args: { defaultName: string }) => {
+    state.isRecording = false
+    try {
+      return await saveVideoRecording(String(args?.defaultName || '提詞錄影.webm'))
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  ipcMain.handle(IPC.VideoRecordingAbort, async () => {
+    state.isRecording = false
+    await abortVideoRecording()
+    return true
+  })
+  ipcMain.handle(IPC.VideoRecordingOrphans, () => listOrphanRecordings())
+  ipcMain.handle(IPC.VideoRecordingResolveOrphans, (_e, args: { mode: 'keep' | 'discard' }) =>
+    resolveOrphanRecordings(args?.mode === 'keep' ? 'keep' : 'discard')
+  )
 
   // ---- 分享前模擬測試:回傳主螢幕擷取縮圖(擷取保護生效時浮層不會出現)----
   ipcMain.handle(IPC.ShareSimulation, async () => {
