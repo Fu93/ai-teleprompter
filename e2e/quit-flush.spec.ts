@@ -195,7 +195,7 @@ test('真的退出 App 再重開:逐字稿還在', async () => {
   // 兩個實例必須共用同一個 userData,否則第二次讀到的是另一個資料庫
   const pinnedUserData = join(tmpdir(), `ai-tp-quit-flush-${Date.now()}`)
   const env = { ...process.env, AI_TP_E2E: '1', AI_TP_AUDIT: '1', AI_TP_E2E_USERDATA: pinnedUserData }
-  let launched = await launchMain(env)
+  const launched = await launchMain(env)
   try {
     await launched.main.locator('aside button', { hasText: '錄音轉錄' }).first().click()
     await expect(launched.main.locator('button', { hasText: '開始聆聽' })).toBeVisible({ timeout: 15_000 })

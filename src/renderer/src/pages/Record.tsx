@@ -24,7 +24,7 @@ import { extractJson, isCancelled, resolvedModelName, startAiChat } from '../lib
 import { CancelableBusy } from '../components/CancelableBusy'
 import { toast } from '../lib/toast'
 import { reportError, reportEvent, reportCode } from '../lib/reportError'
-import { buildSessionReport, sortTranscriptSegments } from '../lib/session-intelligence'
+import { sortTranscriptSegments } from '../lib/session-intelligence'
 import { createSessionPersister } from '../lib/sessionPersist'
 import { buildActionList } from '../lib/actionList'
 import { AudioSegmenter, type AudioSegmentMetadata } from '../lib/audio/segmenter'
@@ -734,10 +734,7 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       if (segsRef.current.length > 0) {
         try {
           const segments = segsRef.current
-          // 會話量化報告:與 session 一起存,供 Dashboard 趨勢使用;
-          // 併入會議期間的 coaching 觸發計數,形成改進閉環
-          const sessionTitle = titleRef.current.trim() || `會議 ${formatDateTime(startedAt)}`
-          // 報告由 persistNow 裡的寫入器算並回傳 —— 這裡**不再自己算第二次**。
+          // 報告與標題都由 persistNow 裡的寫入器算並回傳 —— 這裡**不再自己算第二次**。
           // 算兩次會有兩份統計,而它們只在其中一條路徑(退出前存檔)不一致,
           // 那是最難被使用者自己發現、也最難回報的形狀。
           const saved = await persistNow({ startedAt, endedAt })
