@@ -9,6 +9,7 @@ import { analyzePracticeRun } from '../lib/session-intelligence'
 import { toast } from '../lib/toast'
 import { markPromptSucceeded } from '../lib/onboarding'
 import { DEMO_SCRIPT_CONTENT, DEMO_SCRIPT_TITLE } from '../lib/demoScript'
+import { useHotkeyConflicts } from '../lib/hotkeys'
 import { PreflightCard } from '../components/PreflightCard'
 import { FirstRunSteps } from '../components/FirstRunSteps'
 import type { PreflightResult } from '../lib/preflight'
@@ -97,6 +98,8 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
   /** 範例稿正在建立中:擋連點(建立講稿 + 開浮層是兩次 IPC,連點會建出兩份) */
   const [demoBusy, setDemoBusy] = useState(false)
   const { settings, overlayVisible } = useSettings()
+  /** 註冊失敗的全域熱鍵(見 lib/hotkeys.ts 檔頭) */
+  const conflicts = useHotkeyConflicts()
 
   useEffect(() => {
     void (async () => {
@@ -292,6 +295,16 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
             浮層熱鍵 {settings.hotkeys.toggleOverlay.replaceAll('Control', 'Ctrl')} · 隱藏{' '}
             {settings.hotkeys.hideOverlay.replaceAll('Control', 'Ctrl')} ·
             螢幕擷取隱形 {settings.overlay.captureProtected ? '開' : '關'}
+            {conflicts.length > 0 && (
+              // 這裡原本無條件把熱鍵組合寫出來 —— 在一顆註冊失敗的機器上,
+              // 它承諾了一顆按了沒反應的鍵。與側欄同一份名單(lib/hotkeys.ts)。
+              <>
+                {' · '}
+                <span className="text-rose-400" data-hotkey-conflict="1">
+                  {conflicts.length} 顆熱鍵註冊失敗
+                </span>
+              </>
+            )}
           </div>
         )}
       </div>

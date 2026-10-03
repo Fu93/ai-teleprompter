@@ -171,6 +171,22 @@ export default function OverlayApp(): JSX.Element {
   const o = settings?.overlay
   // 熱鍵提示動態化:自訂熱鍵後工具列文案不再過期(與側欄熱鍵提示同一教訓,這裡是同族漏網)
   const panicKey = settings?.hotkeys.panicRescue ?? 'Alt+P'
+  /**
+   * 真正全域可用的那一顆。
+   *
+   * 工具列原本寫的是「暫停(空白鍵)」,而空白鍵只在**浮層自己有焦點**時才送
+   * 到這裡 —— 浮層是 `showInactive()` 顯示的(windows.ts),刻意不搶焦點,
+   * 否則會打斷使用者正在簡報的那個應用。於是那個提示在真實情境下多半不成立,
+   * 而永遠成立的那一顆(全域 playPause 熱鍵)從未在浮層出現過。
+   * 同理 bullet 的 ←/→。
+   *
+   * title 的身分靠 `normalizeTitle` 在 `(` / `（` / `:` 處切斷維持
+   * (見 scripts/lib/effect-inventory.mjs),所以把捷徑放進括號裡不會讓
+   * 效果稽核的登記表對不上。
+   */
+  const playKey = (settings?.hotkeys.playPause ?? 'Alt+K').replaceAll('Control', 'Ctrl')
+  const speedUpKey = (settings?.hotkeys.speedUp ?? 'Alt+Up').replaceAll('Control', 'Ctrl')
+  const speedDownKey = (settings?.hotkeys.speedDown ?? 'Alt+Down').replaceAll('Control', 'Ctrl')
   const toggleKey = settings?.hotkeys.toggleOverlay
   const toggleHint = toggleKey ? `${toggleKey.replaceAll('Control', 'Ctrl')} 可再開` : '於設定頁設定熱鍵後可再開'
   const displayMode = o?.displayMode ?? 'scroll'
@@ -905,7 +921,7 @@ export default function OverlayApp(): JSX.Element {
         )}
         <button
           onClick={playing ? controls.pause : controls.play}
-          title={playing ? '暫停' : '播放'}
+          title={playing ? `暫停(${playKey})` : `播放(${playKey})`}
           className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-white/72 hover:bg-white/10 hover:text-white/100"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
@@ -1243,10 +1259,10 @@ export default function OverlayApp(): JSX.Element {
           {/* 播放控制(bullet 為手動模式,改顯示前後切換)*/}
           {isBullet ? (
             <>
-              <ToolBtn label="上一個重點" title="上一個重點(←)" onClick={controls.prev}>
+              <ToolBtn label="上一個重點" title={`上一個重點(${speedDownKey};浮層有焦點時可用 ←)`} onClick={controls.prev}>
                 <ChevronLeft size={13} />
               </ToolBtn>
-              <ToolBtn label="下一個重點" title="下一個重點(→)" onClick={controls.next}>
+              <ToolBtn label="下一個重點" title={`下一個重點(${speedUpKey};浮層有焦點時可用 →)`} onClick={controls.next}>
                 <ChevronRight size={13} />
               </ToolBtn>
             </>
@@ -1254,7 +1270,7 @@ export default function OverlayApp(): JSX.Element {
             <>
               <ToolBtn
                 label={playing ? '暫停' : '播放'}
-                title={playing ? '暫停(空白鍵)' : '播放(空白鍵)'}
+                title={playing ? `暫停(${playKey};浮層有焦點時可用空白鍵)` : `播放(${playKey};浮層有焦點時可用空白鍵)`}
                 active={playing}
                 onClick={controls.toggle}
               >
@@ -1271,7 +1287,11 @@ export default function OverlayApp(): JSX.Element {
             <>
               <ToolBtn
                 label="語速 −"
-                title={personalBaseline !== PhraseVisuals.DEFAULT_WPM ? `語速 -（1×＝你的個人語速 ${personalBaseline} 字/分）` : '語速 -'}
+                title={
+                  personalBaseline !== PhraseVisuals.DEFAULT_WPM
+                    ? `語速 -（${speedDownKey}；1×＝你的個人語速 ${personalBaseline} 字/分）`
+                    : `語速 -(${speedDownKey})`
+                }
                 onClick={() =>
                   void patchOverlay({ rate: Math.max(0.5, Math.round((o.rate - 0.1) * 10) / 10) })
                 }
@@ -1283,7 +1303,11 @@ export default function OverlayApp(): JSX.Element {
               </span>
               <ToolBtn
                 label="語速 +"
-                title={personalBaseline !== PhraseVisuals.DEFAULT_WPM ? `語速 +（1×＝你的個人語速 ${personalBaseline} 字/分）` : '語速 +'}
+                title={
+                  personalBaseline !== PhraseVisuals.DEFAULT_WPM
+                    ? `語速 +（${speedUpKey}；1×＝你的個人語速 ${personalBaseline} 字/分）`
+                    : `語速 +(${speedUpKey})`
+                }
                 onClick={() =>
                   void patchOverlay({ rate: Math.min(3, Math.round((o.rate + 0.1) * 10) / 10) })
                 }
@@ -1295,17 +1319,12 @@ export default function OverlayApp(): JSX.Element {
             <>
               <ToolBtn
                 label="減速"
-                title="速度 -"
+                title={`速度 -(${speedDownKey})`}
                 onClick={() => void patchOverlay({ speed: Math.max(10, o.speed - 10) })}
               >
                 <ChevronLeft size={13} />
               </ToolBtn>
-              <span className="w-9 select-none text-center font-mono text-[10px] text-white/52">{o.speed}</span>
-              <ToolBtn
-                label="加速"
-                title="速度 +"
-                onClick={() => void patchOverlay({ speed: Math.min(600, o.speed + 10) })}
-              >
+              <span className="w-9 select-none text-center font-mono text-[10px] text-white/52">{o.speed}</span>              <ToolBtn label="加速" title={`速度 +(${speedUpKey})`} onClick={() => void patchOverlay({ speed: Math.min(600, o.speed + 10) })}>
                 <ChevronRight size={13} />
               </ToolBtn>
             </>
