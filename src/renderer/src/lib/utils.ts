@@ -58,6 +58,23 @@ export function formatDateTime(ts: number): string {
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/**
+ * formatClock — 只有時分(14:32)。
+ *
+ * 為什麼需要一個比 formatDateTime 短的版本:自動存檔完成後,按鈕上要能
+ * 告訴使用者「剛剛存過、存到幾點」。但 formatDateTime 會印出
+ * `2026/10/03 14:32` —— 整個日期對「剛才存過」這個訊息毫無資訊量,
+ * 卻把按鈕撐得很寬、擠掉旁邊的「開始提詞」。
+ *
+ * 補零是刻意的:9:05 和 09:05 在同一列數字裡對齊,否則每次存檔按鈕寬度
+ * 都會跳動一下。
+ */
+export function formatClock(ts: number): string {
+  const d = new Date(ts)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 let uidCounter = 0
 export function uid(): string {
   uidCounter += 1

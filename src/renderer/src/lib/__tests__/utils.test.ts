@@ -1,5 +1,23 @@
 import { describe, it, expect } from 'vitest'
-import { degrade, formatDuration, formatTransport, normalizeScriptTitle } from '../utils'
+import { degrade, formatClock, formatDuration, formatTransport, normalizeScriptTitle } from '../utils'
+
+describe('formatClock', () => {
+  /** 固定時區才能斷言 —— 否則這條測試在 CI 的 TZ 與本機不同時會紅 */
+  const at = (h: number, m: number): number => new Date(2026, 9, 3, h, m, 0, 0).getTime()
+
+  it('只印時分,捨去秒', () => {
+    expect(formatClock(at(14, 32))).toBe('14:32')
+  })
+
+  it('小於十點要補零,否則按鈕寬度會在每次存檔時跳動', () => {
+    expect(formatClock(at(9, 5))).toBe('09:05')
+    expect(formatClock(at(0, 0))).toBe('00:00')
+  })
+
+  it('午夜前後不會變成 24:xx', () => {
+    expect(formatClock(at(23, 59))).toBe('23:59')
+  })
+})
 
 /** 回歸:藥丸「下一個關鍵詞」從句中切字,曾顯示「，今天想跟」以逗號開頭 */
 describe('degrade(漸進揭露)', () => {
