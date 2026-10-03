@@ -5,9 +5,11 @@ dist/
 .DS_Store
 test-results/
 playwright-report/
-dist/
 .freebuff/
 *.tsbuildinfo
+
+# ZCode 的 AI session 產物(計畫草稿等):不是專案原始碼
+.zcode/
 
 # UI 稽核產物(每次執行重新產生)
 docs/audit/
