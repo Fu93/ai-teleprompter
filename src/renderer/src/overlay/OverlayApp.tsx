@@ -841,6 +841,7 @@ export default function OverlayApp(): JSX.Element {
               // 「穿透」兩個字是刻意的寬度選擇:它比預設的計時器(5 字元等寬)
               // 還窄,所以在 1.00× 的滿載預算下不會從標題身上搶寬度。
               <span
+                data-pill-notice="1"
                 className="shrink-0 whitespace-nowrap text-[11px] font-medium text-amber-200"
                 title={OVERLAY_STATE_TITLE.clickThrough}
               >
@@ -1267,6 +1268,7 @@ export default function OverlayApp(): JSX.Element {
               </ToolBtn>
               <span className="w-9 select-none text-center font-mono text-[10px] text-white/52">{o.speed}</span>
               <ToolBtn
+                label="加速"
                 title="速度 +"
                 onClick={() => void patchOverlay({ speed: Math.min(600, o.speed + 10) })}
               >

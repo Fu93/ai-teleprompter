@@ -691,9 +691,19 @@ async function main() {
             const btns = [...shell.querySelectorAll('button')]
             return {
               total: btns.length,
+              // 診斷要**指名**是哪一顆。名稱的來源與列舉端一致:text → aria-label
+              // → title。只看 aria-label 的話,失敗清單會印出一排「(無名稱)」——
+              // 那等於叫人自己去 17 顆裡找一顆沒標籤的按鈕。
               missing: btns
                 .filter((b) => !b.hasAttribute('data-tooltip-short'))
-                .map((b) => (b.getAttribute('aria-label') || '(無名稱)').slice(0, 14))
+                .map((b) =>
+                  (
+                    (b.textContent || '').trim() ||
+                    b.getAttribute('aria-label') ||
+                    b.getAttribute('title') ||
+                    '(無名稱)'
+                  ).slice(0, 14)
+                )
             }
           })
           .catch(() => null)

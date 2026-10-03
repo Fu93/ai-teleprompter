@@ -196,9 +196,17 @@ icon-only 按鈕才是缺陷)。所以「只有 tooltip 的揭露」在稽核眼
 **修法**
 1. 工具列分成三組並加上可見的分隔(播放/前進;顯示與字級;救援與視窗),
    讓「20 顆按鈕」變成「3 組各 4–8 顆」
-2. 自製 tooltip:滑鼠進入時顯示**一眼可讀的短標籤**(播放、貼鏡、穿透…)加上
-   原本的長說明當第二行,取代原生 `title`(原生 tooltip 無法控制延遲與樣式,
-   也無法顯示兩行)
+2. 說明列:游標/鍵盤焦點落在哪一顆,浮層底欄就報那一顆的**一眼可讀短標籤**
+   (播放、貼鏡、穿透…),長說明當第二行(底欄是既有的一列,不被裁切、不佔寬度)
+3. **原生 `title` 留著**,不取代(原計畫寫的是「取代」,實作時推翻了):
+   - 六支稽核與大量 e2e 定位器以 `title` 找浮層控制項 —— 拿掉會讓它們回報
+     「找不到控制項」(那是工具壞了,不是 UI 壞了)
+   - 貼鏡形態的視窗只有 170px 高、沒有說明列,`title` 是那裡唯一的長說明
+
+   ⚠️ 也不可以「順手」再加 `aria-label={title}`:效果稽核的列舉端只對 `title`
+   做收斂(括號/冒號處切斷),`aria-label` 一旦並存,身分會從「暫停」變成
+   「暫停(空白鍵)」,20 幾筆登記當場對不上(實測:probe-not-found +
+   no-effect-probe 各一片)。理由寫在 [Surfaces.tsx:19](../src/renderer/src/overlay/Surfaces.tsx#L19)。
 
 **驗收**
 audit-deep 新增規則:浮層工具列的每個 icon-only 控制項,其可見標籤覆蓋率
@@ -284,6 +292,13 @@ domAudit 沒有任何規則在問「這個控制項為什麼不能按」。
 | 每個 onboarding 步驟都有具體動作 | 既有 `onboarding.test.ts` | 純函式 |
 | 空狀態 → 範例稿 → 浮層開啟且帶到內容 | audit-journey(新步驟) | 端到端 |
 | 設定頁每個區塊都出現在目錄中 | audit-states | `[data-settings-section]` id ↔ 目錄連結 |
-| 藥丸狀態必須有非顏色的區分 | audit-deep | `[data-overlay-state]` 非空 |
+| 藥丸狀態必須有非顏色的區分(預設 vs 穿透的形狀簽章不得相同) | audit-deep | `[data-pill-dot]` + `data-overlay-state` + 穿透必須有文字 |
 | 時間列不得產生負號時間(含剩餘 0) | 單元測試 | 純函式 |
-| 浮層 icon-only 控制項的可見標籤覆蓋率 | audit-deep(advisory) | `data-tooltip-label` |
+| 浮層工具列每一顆按鈕都有短標籤 | audit-deep | `[data-toolbar-shell]` 下的按鈕都帶 `data-tooltip-short` |
+| 範例稿鈕真的建稿 + 開浮層(總覽 / 講稿各一) | audit-effects | `data-effect-id="demo-script"`(兩筆登記) |
+| 校準提醒那一行真的導到校準頁 | audit-effects | `data-effect-id="onboarding-calibration"`(scope=onboarding) |
+| 目錄的區塊鈕真的捲動頁面 | audit-effects | `settings\|id:settings-toc`(九顆共用一筆登記) |
+
+上表在實作後全數綠燈;兩條新版 audit-deep 規則另外做過負向驗證(拿掉「穿透」
+文字與一顆短標籤 → 當場 `pill-state-no-text` + `overlay-toolbar-unlabelled`,
+還原後回 44 個狀態 / 0 筆問題)。
