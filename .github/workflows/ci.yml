@@ -24,6 +24,21 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # lint 分兩個步驟,而且順序有意義:
+      #   1) eslint .          —— error 當場擋(未使用變數、失效的 disable 指示…)
+      #   2) lint-baseline.mjs —— warning 不得**增加**(上限在 eslint-baseline.json)
+      # 只有第 1 步的話,既有 21 筆 warning 會變成一個只增不減的黑洞;
+      # 只有第 2 步的話,新增的 error 又會被上限定義的規則集合漏掉。
+      #
+      # 第 1 步擋下來的**真實缺陷**範例:App.tsx 的導航橋原本登錄了一份
+      # 閉包快照(scriptsDirty=false),按一下 toast 的「前往設定」就會靜默
+      # 丟掉未存講稿 —— 正是那支橋存在的理由。exhaustive-deps 抓到它。
+      - name: Lint
+        run: npm run lint
+
+      - name: Lint baseline (warnings must not increase)
+        run: npm run lint:baseline
+
       - name: Unit tests
         run: npm test
 
@@ -40,21 +55,25 @@ jobs:
       - name: Generate audio fixture (required by practice-generation e2e)
         run: npm run make-audio-fixture
 
-      # 封鎖套件 = package.json 的 test:e2e(18 個 spec,單一來源避免兩處清單漂移):
-      # 含資料安全(backup)、關閉守衛(confirm-close)、崩潰復原(error-boundary)、
-      # 設定持久化(settings-persistence)、逐字稿存成講稿(transcript-to-script)、
-      # 完整使用者旅程(user-journey/blindspot)等回歸。meeting-flow 不在此列 ——
-      # 它自我宣告為時序敏感的演示 spec,由下一步 best-effort 執行、不擋 merge。
+      # 封鎖套件的清單在 e2e/manifest.mjs —— 單一來源。CI 與本地閘門
+      # (release-gate.mjs)都從那裡讀,不再各自列一份檔名。
+      # e2eManifest.test.ts 會擋住「新增一支 spec 卻沒登記」的情況:
+      # 未登記的 spec 在 CI 上不會被跑到,而「沒被跑到」在報告上與「通過」
+      # 長得一樣 —— 這是本專案記錄過最貴的一次教訓。
       - name: E2E (blocking suite)
         run: npm run test:e2e
 
-      # meeting-flow 是時序敏感的演示 spec:CI 上嘗試執行但不擋 merge
-      - name: E2E meeting-flow (best effort)
-        run: npx playwright test e2e/meeting-flow.spec.ts
+      # 非阻塞但**一定有報告**的一組(manifest.mjs 裡寫明了每一支的理由)。
+      # 沒有 continue-on-error 之外的任何 suppression:它紅了就紅,報告照上傳。
+      - name: E2E advisory suite (non-blocking, always reported)
+        run: npm run test:e2e:advisory
         continue-on-error: true
 
+      # 上傳條件是 always() 而不是 failure():
+      # 「跑了但紅」與「沒跑」必須在 artifacts 上可分辨。原先只在 failure()
+      # 上傳,而全綠時使用者無從知道那一組到底跑了沒有。
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
           name: e2e-artifacts
           path: |

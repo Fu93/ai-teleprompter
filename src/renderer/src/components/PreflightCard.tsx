@@ -16,7 +16,7 @@
  *     永遠會回來(它還沒解決)。這個差別是刻意的:提示可以消失,阻斷不行。
  */
 import type { JSX } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronUp, Copy, ExternalLink, Info, RefreshCw } from 'lucide-react'
 import { useSettings } from '../lib/store'
 import { registerAuditControl } from '../lib/auditBridge'
@@ -54,9 +54,21 @@ export interface PreflightCardProps {
   /** compact:只顯示一行摘要(總覽頁用);full:完整卡片(設定頁用) */
   variant?: 'compact' | 'full'
   onNavigate?: (page: 'settings' | 'record' | 'practice') => void
+  /**
+   * 把判定結果回報給呼叫端(總覽頁的「3 分鐘上手」卡片需要它)。
+   *
+   * 為什麼用回呼而不是把卡片拆成「hook + 兩個元件」:探測邏輯(Ollama 連線、
+   * safeStorage 金鑰)有五個 effect 與兩個非同步嘗試計數,拆出去等於把那些
+   * 狀態搬到呼叫端,然後 compact 與 full 兩種形態各自要一份。**两份判斷一定
+   * 會漂移**,而漂移的結果是「卡片說 AI 還差 2 項、上手卡片說可以開始了」。
+   * 單一出處比乾淨的職責劃分重要。
+   *
+   * 契約:結果**改變**時才呼叫(內部以 useMemo + effect 收敛),不是每次 render。
+   */
+  onResult?: (result: PreflightResult | null) => void
 }
 
-export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardProps): JSX.Element | null {
+export function PreflightCard({ variant = 'full', onNavigate, onResult }: PreflightCardProps): JSX.Element | null {
   const settings = useSettings((s) => s.settings)
   // 訂閱 audit 覆寫狀態:它改變時要重跑查詢並重畫(見下方 effect 的 deps)
   const auditOverride = useOllamaAuditOverride()
@@ -205,18 +217,35 @@ export function PreflightCard({ variant = 'full', onNavigate }: PreflightCardPro
     }
   }, [])
 
-  const result: PreflightResult = evaluatePreflight({
-    settings,
-    ollamaModels: reachable ? models : null,
-    ollamaReachable: reachable ?? false,
-    cloudSttKeyPresent: keys.stt,
-    cloudAiKeyPresent: keys.ai
-  })
-
+  // useMemo 不可省:每次 render 產生新物件的話,下面那個 effect 會在每個
+  // keystroke 都通知呼叫端「結果變了」,而呼叫端通常會 setState —— 那就變成
+  // 無限 render 迴圈(症狀是畫面卡住,而且看起來像 React 的問題)。
   // 還在查 ollama 時不要急著宣布「你少東西」—— 那會是一個假的紅字。
+  // 這兩行必須宣告在 useMemo/effect **之前**:stillChecking 會被下面那個
+  // effect 用到,而 hooks 的順序就是宣告順序。
   const needsKeyCheck = settings?.stt.engine === 'cloud' || settings?.ai.provider === 'openai-compatible'
   const stillChecking =
     (settings?.ai.provider === 'ollama' && reachable === null) || (needsKeyCheck && !keysReady)
+
+  const result: PreflightResult = useMemo(
+    () =>
+      evaluatePreflight({
+        settings,
+        ollamaModels: reachable ? models : null,
+        ollamaReachable: reachable ?? false,
+        cloudSttKeyPresent: keys.stt,
+        cloudAiKeyPresent: keys.ai
+      }),
+    [settings, reachable, models, keys.stt, keys.ai]
+  )
+
+  // 仍在查詢時回 null:「還不知道」不能被當成「都準備好了」。
+  // 上手卡片若拿到一份空結果就會說「AI 可用」,那是這一輪最不能犯的錯 ——
+  // 它會讓使用者按下去才被擋。
+  useEffect(() => {
+    onResult?.(stillChecking ? null : result)
+  }, [onResult, result, stillChecking])
+
   if (!settings || stillChecking) return null
 
   const visible = result.items.filter((i) => i.severity === 'blocking' || !dismissed.includes(i.id))

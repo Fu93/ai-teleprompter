@@ -208,7 +208,9 @@ export function useFollowMode(params: UseFollowModeParams): UseFollowModeResult 
       }
       streamRef.current = stream
       segmenter = new AudioSegmenter({
-        onSegment: (audio, sr) => {
+        // sr 不需要:transcribe 只需要 PCM 資料本身,取樣率由 whisperClient 從
+// audio 的長度推回。帶著它只是把一個用不到的參數帶進閉包。
+        onSegment: (audio) => {
           void client
             .transcribe(audio, settings.stt.language)
             .then((text) => {

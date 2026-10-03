@@ -2,6 +2,7 @@ import type { JSX } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AudioLines,
+  BellOff,
   ChevronLeft,
   ChevronRight,
   FlipHorizontal2,
@@ -21,9 +22,10 @@ import {
   X,
   Crosshair
 } from 'lucide-react'
-import type { AppSettings, OverlayDisplayMode } from '@shared/types'
+import type { AppSettings, CoachingKind, OverlayDisplayMode } from '@shared/types'
+import type { CoachingHint } from './useCoaching'
 import type { OverlayShowPayload } from '@shared/api'
-import { cn, degrade, formatDuration } from '../lib/utils'
+import { cn, degrade, formatDuration, formatTransport } from '../lib/utils'
 import { PhraseVisuals } from '../lib/teleprompter/constants'
 import { effectiveEngineRate } from '../lib/calibration'
 import { useTeleprompterEngine } from './useTeleprompterEngine'
@@ -41,6 +43,7 @@ import { RescueCard } from './RescueCard'
 import { Segmented } from '../components/Segmented'
 import {
   BulletSurface,
+  Divider,
   KaraokeSurface,
   LensSurface,
   MODES,
@@ -79,6 +82,35 @@ export default function OverlayApp(): JSX.Element {
    * appInfo().audit === true 時才掛 window.__auditForce,而打包版不會是 true。
    */
   const [auditPill, setAuditPill] = useState<{ keyword: string; bars: boolean } | null>(null)
+  /**
+   * 稽核專用:強制顯示一則即時教練提示。null = 正常運作。
+   *
+   * 為什麼需要這個(與 auditPill 同一個理由,只是更極端):教練提示只有真的
+   * 說話到那個程度才會出現 —— 語速過快要真的很快、填充詞要真的很多、
+   * 冷場要真的停很久。而它帶著這一輪最該被驗的兩個控制項:
+   * 「按提示條靜默這一種」與「本場已靜默 N 種」的恢復鈕。
+   *
+   * 那兩個控制項若沒有探針,效果是:使用者按了靜默鈕之後
+   * 「教練還是一直響」與「我明明按過了怎麼又響」兩種狀況在發布閘門裡
+   * **完全看不出來** —— 而它們都只會在使用者真的在講話時才發生。
+   */
+  const [auditCoaching, setAuditCoaching] = useState<CoachingHint | null>(null)
+
+  useEffect(
+    () =>
+      registerAuditControl('overlay.coachingHint', (arg) => {
+        const a = arg as { kind?: unknown; message?: unknown } | null
+        if (a === null || a === undefined) {
+          setAuditCoaching(null)
+          return true
+        }
+        if (typeof a !== 'object') return false
+        const kind = String(a.kind ?? 'filler') as CoachingKind
+        setAuditCoaching({ kind, message: String(a.message ?? '稽核教練提示') })
+        return true
+      }),
+    []
+  )
 
   /**
    * 稽核控制項:把藥丸列「本來到不了的可選內容」塞進來。
@@ -185,7 +217,17 @@ export default function OverlayApp(): JSX.Element {
         : '對方已停頓 — 該接話了'
 
   // ---- 即時教練(Phase B+):語速過快/填充詞/搶話/冷場/獨白過長 ----
-  const { hint: coachingHint } = useCoaching(o?.coaching ?? true)
+  const {
+    hint: realCoachingHint,
+    mutedKinds: coachingMuted,
+    muteKind: muteCoachingKind,
+    unmuteAll: unmuteCoaching
+  } = useCoaching(o?.coaching ?? true)
+
+  // 稽核覆寫優先於真實提示。放在這裡而不是 useCoaching 裡面:那個 hook 是
+  // 「main 送來的訊號 → 顯示 → 8 秒後淡出」的純流程,把它摻進一個只在
+  // audit 模式存在的開關會讓它的每一次狀態變化都有兩個來源。
+  const coachingHint = auditCoaching ?? realCoachingHint
 
   const controlsRef = useRef(controls)
   controlsRef.current = controls
@@ -254,6 +296,22 @@ export default function OverlayApp(): JSX.Element {
       if (followStatusRef.current === 'idle' && content) controlsRef.current?.play()
     }
   }, [content])
+
+  /**
+   * 教練訊號種類的人話標籤。
+   *
+   * 用在「本場已靜默:搶話、冷場」那一列。為什麼需要它:靜默狀態必須**看得見**
+   * —— 使用者按過之後如果畫面上什麼都沒變,三小時後他會認為按鈕壞了,
+   * 然後在「教練怎麼都不響」的困惑裡去翻設定。內部識別碼(fast/filler/…)
+   * 不能直接顯示:那是我們的字,不是他的。
+   */
+  const COACHING_KIND_LABEL: Record<CoachingKind, string> = {
+    fast: '語速過快',
+    filler: '填充詞過多',
+    interrupt: '搶話',
+    dead_air: '冷場',
+    monologue: '講太久'
+  }
 
   // ---- 靈動島:事件內容優先序(該你了 > 教練 > panic)----
   // 事件發生時升為藥丸主角,結束後淡出回常规內容
@@ -386,6 +444,50 @@ export default function OverlayApp(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey)
   }, [controls, displayMode])
 
+  /**
+   * 工具列圖示的說明列(toolbar legend)。
+   *
+   * 為什麼不是 tooltip:展開面板的根是 overflow-hidden,而工具列本身是
+   * overflow-x-auto —— 任何從按鈕往上長的原生 tooltip 都會被裁掉,而這正是
+   * 原本的 title 在「一邊捲一邊看」時失效的原因。島的寬度也不允許把標籤畫在
+   * 圖示旁邊(1.00× 的內容預算已經滿載,見 audit-deep 的 note)。
+   * 所以說明顯示在**既有的一條底欄**上:滑鼠或鍵盤焦點落在哪一顆就報哪一顆。
+   * 那一個位置不會被裁、不佔寬度,而且是滑鼠與鍵盤共用同一條路。
+   *
+   * 延遲 120ms 才顯示:純鍵盤/滑鼠經過不該讓底欄一直閃(原生 tooltip 的
+   * 一秒延遲是在解同一個問題,只是它同時把「想學這一顆是什麼」的人也擋掉了)。
+   */
+  const [toolbarHint, setToolbarHint] = useState<{ label: string; detail: string } | null>(null)
+  const toolbarHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /** 事件委派:讀 ToolBtn 自己宣告的 data 屬性,不必讓 20 個呼叫端各接一個 callback */
+  const onToolbarPointer = (e: React.SyntheticEvent): void => {
+    const target = e.target as HTMLElement | null
+    const btn = target?.closest?.('[data-tooltip-label]')
+    if (!btn) return
+    const label = btn.getAttribute('data-tooltip-label') ?? ''
+    const detail = btn.getAttribute('data-tooltip-detail') ?? ''
+    if (!label) return
+    if (toolbarHintTimer.current) clearTimeout(toolbarHintTimer.current)
+    toolbarHintTimer.current = setTimeout(() => {
+      // 同一個標籤不重覆 setState:hover 事件會從子元素冒泡上來,
+      // 每一次都換一個新物件等於讓整棵樹白重畫(而這是每秒可能數十次的熱路徑)。
+      setToolbarHint((cur) => (cur && cur.label === label && cur.detail === detail ? cur : { label, detail }))
+    }, 120)
+  }
+
+  const offToolbarPointer = (e: React.SyntheticEvent): void => {
+    // 只在真的離開工具列(而不是在兩顆鈕之間移動)時收起
+    const next = (e as React.FocusEvent | React.MouseEvent).relatedTarget as HTMLElement | null
+    if (next && next.closest?.('[data-toolbar-shell]')) return
+    if (toolbarHintTimer.current) clearTimeout(toolbarHintTimer.current)
+    setToolbarHint(null)
+  }
+
+  useEffect(() => () => {
+    if (toolbarHintTimer.current) clearTimeout(toolbarHintTimer.current)
+  }, [])
+
   // 貼鏡模式提示(每次開啟顯示 6 秒)
   const [lensHint, setLensHint] = useState(false)
   const lensOn = o?.lensMode ?? false
@@ -396,7 +498,9 @@ export default function OverlayApp(): JSX.Element {
     return () => clearTimeout(t)
   }, [lensOn])
 
-  const { morphSize, enterCompact, exitCompact, enterLens, exitLens, morphing } = useMorph({ patchOverlay })
+  // morphSize 不在這裡解構:那是 useMorph 的內部動作(animate→patch),
+  // 組件這層只宣告「進/出 compact、進/出 lens」四個意圖。
+  const { enterCompact, exitCompact, enterLens, exitLens, morphing } = useMorph({ patchOverlay })
 
   // ── Liquid Glass 真折射(P2-13)──
   // morphing 傳進去:動畫途中位移圖快取的是舊尺寸/舊半徑,那時候套折射會把背景
@@ -521,6 +625,39 @@ export default function OverlayApp(): JSX.Element {
       }}
     />
   )
+
+  /**
+   * 浮層狀態的**單一出處**(藥丸與展開的工具列共用,貼鏡不需要:它的工具列只有四顆)。
+   *
+   * 為什麼要一個名字:改動前,同一個狀態在兩個地方各寫一串巢狀三元運算式 ——
+   * 藥丸的點與展開列標題旁的小點。結果兩處都把「滑鼠穿透」與「已播畢」
+   * 畫成同一個色相的兩個明度(amber / amber-80),使用者分不出「我按不到它」
+   * 與「它講完了」。更關鍵的是穿透狀態下視窗**收不到任何滑鼠事件**,所以那顆點
+   * 上唯一的說明(title)在該狀態永遠不可能顯示 —— 最需要解釋的狀態剛好是最沒
+   * 辦法解釋的一個(見 docs/UX_FINDINGS.md P1-1)。
+   *
+   * 所以:(1) 形狀必須不同(空心環 / 實心圓 / 方塊 / 滑鼠圖示),
+   * (2) 穿透狀態必須有文字(島上放「穿透」兩字,見 pill 分支),
+   * (3) 狀態值要能被離線稽核讀到(`data-overlay-state`)。
+   */
+  const overlayState: 'clickThrough' | 'following' | 'playing' | 'completed' | 'idle' =
+    o.clickThrough
+      ? 'clickThrough'
+      : followStatus === 'listening'
+        ? 'following'
+        : playing
+          ? 'playing'
+          : state.status === 'completed'
+            ? 'completed'
+            : 'idle'
+  /** 小点的說明文字。四處(藥丸/展開 × 狀態)共用一份,不各自寫一次。 */
+  const OVERLAY_STATE_TITLE: Record<typeof overlayState, string> = {
+    clickThrough: '滑鼠穿透中:浮層收不到點擊;熱鍵或主視窗「提詞」重新顯示時自動解除',
+    following: '跟讀中:麥克風正在聽,捲動跟著你念',
+    playing: '播放中',
+    completed: '已播畢',
+    idle: '待機'
+  }
 
   if (o.compact) {
     // 漸進揭露:pill 顯示「下一個關鍵詞」(各模式游標的下一單元開頭);
@@ -653,32 +790,27 @@ export default function OverlayApp(): JSX.Element {
           <>
             <span
               data-pill-dot="1"
-              // 狀態改用小圓點表達(iOS 靈動島的方式):待機時不發光、
-              // 播放時一個綠點。原先的彩色呼吸光暈已移除,這裡是唯一的狀態指示。
-              // 待機色從 bg-ink-600(#3a4256,幾乎看不見)改成 white/25,
-              // 否則在沒有光暈襯底之後會整個消失在深色藥丸裡。
-              // 「已播畢」原本與「待機」一樣是灰點(使用者視角試用發現:稿子講完了
-              // 跟從沒開始長得一模一樣),現在用琥珀點 + title 區分。
+              // 狀態用**形狀**區分,顏色只當輔助:
+              //   待機 = 空心環、跟讀 = 會呼吸的實心圓、播放 = 實心圓、
+              //   已播畢 = 方塊、滑鼠穿透 = 滑鼠圖示(四個形狀互不相同)。
+              // 8px 的足跡刻意不變:藥丸在 1.00× 的內容預算是「剛好裝滿」
+              // (見 audit-deep 的 overlay.pill.1x.loaded note),放大這顆點
+              // 就是從標題身上搶寬度(滑鼠圖示是 10px 的 svg,畫出 8px 的框
+              // 之外各 1px,不影響 flex 寬度)。
+              data-overlay-state={overlayState}
               className={cn(
-                'h-2 w-2 shrink-0 rounded-full',
-                o.clickThrough
-                  ? 'bg-amber-450'
-                  : playing
-                    ? 'bg-emerald-400'
-                    : state.status === 'completed'
-                      ? 'bg-amber-450/80'
-                      : 'bg-white/25'
+                'flex h-2 w-2 shrink-0 items-center justify-center',
+                overlayState === 'following' && 'animate-pulse rounded-full bg-emerald-400',
+                overlayState === 'playing' && 'rounded-full bg-emerald-400',
+                overlayState === 'completed' && 'rounded-[2px] bg-amber-450',
+                overlayState === 'idle' && 'rounded-full border border-white/40'
               )}
-              title={
-                o.clickThrough
-                  ? '滑鼠穿透中:熱鍵或主視窗「提詞」按鈕重新顯示時自動解除'
-                  : playing
-                    ? '播放中'
-                    : state.status === 'completed'
-                      ? '已播畢'
-                      : '待機'
-              }
-            />
+              title={OVERLAY_STATE_TITLE[overlayState]}
+            >
+              {overlayState === 'clickThrough' && (
+                <MousePointerClick size={10} className="text-amber-450" />
+              )}
+            </span>
             {/* 這一列的規則:尺寸固定的內容一律 shrink-0,只有標題可以截斷。
                 沒有 min-w 下限時,flex-shrink 會把標題壓成 16px 寬的細條 ——
                 max-w 是上限不是下限,給了它等於沒給。視窗拖到最小時實測如此。 */}
@@ -702,7 +834,19 @@ export default function OverlayApp(): JSX.Element {
                 <i />
               </div>
             )}
-            {showPillKeyword ? (
+            {o.clickThrough ? (
+              // 穿透狀態的文字補位。島上只有這條內容通道讀得到(視窗收不到滑鼠,
+              // tooltip 永遠不會出現),所以把字寫在這裡 —— 否則使用者看到的
+              // 只有一顆琥珀色的點,而它不會回應任何點擊。
+              // 「穿透」兩個字是刻意的寬度選擇:它比預設的計時器(5 字元等寬)
+              // 還窄,所以在 1.00× 的滿載預算下不會從標題身上搶寬度。
+              <span
+                className="shrink-0 whitespace-nowrap text-[11px] font-medium text-amber-200"
+                title={OVERLAY_STATE_TITLE.clickThrough}
+              >
+                穿透
+              </span>
+            ) : showPillKeyword ? (
               // shrink-0 + nowrap:沒有這兩個時,最小視窗下它被壓到 11px 寬,
               // 每個中文字各佔一行變成 66px 高,直接溢出視窗
               <span
@@ -860,10 +1004,19 @@ export default function OverlayApp(): JSX.Element {
               </div>
             )}
             {/* 教練提示在藥丸與展開分支都會出現,貼鏡原本漏了 ——
-                語速過快/填充詞/冷場恰好在最像簡報的場景無聲。樣式對齊另外兩形態。 */}
+                語速過快/填充詞/冷場恰好在最像簡報的場景無聲。樣式對齊另外兩形態。
+                藥丸與貼鏡形態是**唯讀**的:那兩個視窗小到放不下一顆可點的按鈕
+                而不破壞尺寸計算(pillSizeOf 是量出來的硬尺寸),而放不下的
+                控制項比沒有更糟。展開態是唯一能靜默的地方,而展開態也是
+                使用者真正會停下來讀提示的地方。 */}
             {coachingHint && (
               <div className="flex items-center justify-center gap-1.5 rounded-full bg-amber-500/20 px-3 py-1 text-[10px] font-medium text-amber-300">
                 <Gauge size={11} /> {coachingHint.message}
+              </div>
+            )}
+            {coachingMuted.length > 0 && (
+              <div className="flex items-center justify-center gap-1.5 rounded-full bg-black/40 px-2.5 py-0.5 text-[10px] text-ink-400">
+                <BellOff size={10} /> 已靜默 {coachingMuted.length} 種
               </div>
             )}
           </div>
@@ -892,7 +1045,9 @@ export default function OverlayApp(): JSX.Element {
           : followStatus === 'error'
             ? '跟讀啟動失敗'
             : '')
-  const followBarVisible = followStatus !== 'idle' || !!followNotice
+  // 說明列也佔用同一條底欄:提示 pill 的避讓判斷必須一起看它,
+  // 否則 tooltip 出現的那一瞬間,提示条會與它疊印(兩行都讀不了)。
+  const followBarVisible = !!toolbarHint || followStatus !== 'idle' || !!followNotice
 
   return (
     <div
@@ -911,16 +1066,18 @@ export default function OverlayApp(): JSX.Element {
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <div className="mr-1 flex items-center gap-1.5">
+          {/* 展開態的狀態點:與藥丸那顆同一份狀態與同一套形狀語彙(見 overlayState)。
+              這裡原本是 clickThrough 琥珀、其餘綠/灰的圓點 —— 同樣有「穿透與
+              已播畢分不出來」的問題,只是半徑更小(6px)。 */}
           <span
+            data-overlay-state={overlayState}
+            title={OVERLAY_STATE_TITLE[overlayState]}
             className={cn(
-              'h-1.5 w-1.5 rounded-full',
-              o.clickThrough
-                ? 'bg-amber-450'
-                : followStatus === 'listening'
-                  ? 'animate-pulse bg-emerald-500'
-                  : playing
-                    ? 'bg-emerald-500'
-                    : 'bg-ink-600'
+              'flex h-1.5 w-1.5 shrink-0 items-center justify-center',
+              overlayState === 'following' && 'animate-pulse rounded-full bg-emerald-500',
+              overlayState === 'playing' && 'rounded-full bg-emerald-500',
+              overlayState === 'completed' && 'rounded-[1px] bg-amber-450',
+              overlayState === 'idle' && 'rounded-full border border-white/35'
             )}
           />
           <span
@@ -956,34 +1113,36 @@ export default function OverlayApp(): JSX.Element {
         <div
           className="min-w-0 shrink overflow-x-auto"
           data-allow-h-scroll="1"
+          data-toolbar-shell="1"
+          // 說明列的輸入來自這裡(事件委派):mouseover / focus 都掛在同一個壳上,
+          // 所以 20 顆按鈕沒有一顆需要記得接線。
+          // 用 React 的 onFocus/onBlur 而不是原生 onFocusIn/onFocusOut:React
+          // 把這兩個合成事件底層實作成 focusin/focusout(會冒泡),語意一致,
+          // 而 JSX 型別面上只有前者存在。
+          onMouseOver={onToolbarPointer}
+          onMouseOut={offToolbarPointer}
+          onFocus={onToolbarPointer}
+          onBlur={offToolbarPointer}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <div className="flex w-max items-center gap-0.5">
-          <span className="mr-1.5 select-none font-mono text-[10px] text-white/52">
-            {formatDuration(elapsedSec)}
-            {remainingMs !== null && ` / -${formatDuration(remainingMs / 1000)}`}
+          {/* 時間列。文案由 formatTransport 產生(純函式,有測試):
+              原本是 `{已播} / -{剩餘}`,播完時顯示 `0:00 / -0:00`。
+              負號在這裡讀起來是「負的剩餘」而不是「倒數」,而且剩 0 秒是一個
+              沒有意義的敘述 —— 見 docs/UX_FINDINGS.md P0-3。 */}
+          <span
+            className="mr-1.5 select-none whitespace-nowrap font-mono text-[10px] text-white/52"
+            title="已播時間 · 估計剩餘時間"
+          >
+            {formatTransport(elapsedSec, remainingMs)}
           </span>
 
-          {/* turn-yield 開關(即時回饋用)*/}
+          {/* ── 群組一:救援與即時提示 ──
+              Panic 放在最左邊是刻意的:它是「被問倒」當下要按的鈕,
+              而這條工具列是可橫捲的 —— 擺在中段就等於「高風險時刻還得先捲一下」。
+              熱鍵(Alt+P)仍然存在,但那是最後的備援,不該是唯一順手的那條路。 */}
           <ToolBtn
-            title={o.turnYield ? '關閉「該你說話了」提示' : '開啟「該你說話了」提示:對方講完問句時提醒你接話'}
-            active={o.turnYield}
-            onClick={() => void patchOverlay({ turnYield: !o.turnYield })}
-          >
-            <Hand size={13} />
-          </ToolBtn>
-
-          {/* 即時教練開關 */}
-          <ToolBtn
-            title={o.coaching ? '即時教練開啟中(語速/填充詞/冷場)— 點擊關閉' : '開啟即時教練:語速過快、填充詞、冷場時提醒你'}
-            active={o.coaching}
-            onClick={() => void patchOverlay({ coaching: !o.coaching })}
-          >
-            <Gauge size={13} />
-          </ToolBtn>
-
-          {/* Panic 救援:被問倒時即時給答案(熱鍵見提示)*/}
-          <ToolBtn
+            label="救援"
             title={`Panic 救援:即時回答要點(${panicKey})`}
             active={panicPhase !== 'idle'}
             onClick={triggerPanic}
@@ -991,29 +1150,49 @@ export default function OverlayApp(): JSX.Element {
             <Siren size={13} className={panicPhase === 'thinking' ? 'animate-pulse' : undefined} />
           </ToolBtn>
 
-          {/* 置中:拔螢幕/改解析度後浮層可能跑到看得到的地方之外,
-              自動防護只能接「遮住最多」的那台,使用者需要手動拉回主螢幕的出口 */}
-          <ToolBtn title="浮層置中(找不到浮層時按這裡)" onClick={() => void window.api.recenterOverlay()}>
-            <Crosshair size={13} />
-          </ToolBtn>
-
-          {/* 收合成藥丸 */}
-          <ToolBtn title="收合成藥丸(低存在感)" onClick={() => enterCompact(o)}>
-            <Minimize2 size={13} />
-          </ToolBtn>
-
-          {/* 貼鏡模式 */}
+          {/* turn-yield 開關(即時回饋用)*/}
           <ToolBtn
-            title="貼鏡模式:貼近攝影機 5cm 內,眼神自然對準鏡頭(建議搭配逐句短語)"
-            active={o.lensMode}
-            onClick={() => enterLens(o)}
+            label="接話提示"
+            title={o.turnYield ? '關閉「該你說話了」提示' : '開啟「該你說話了」提示:對方講完問句時提醒你接話'}
+            active={o.turnYield}
+            onClick={() => void patchOverlay({ turnYield: !o.turnYield })}
           >
-            <ScanFace size={13} />
+            <Hand size={13} />
           </ToolBtn>
 
-          {/* 語音跟讀(scroll 模式限定):唸到哪、捲到哪 */}
+          {/* 即時教練開關。
+              title 要講清楚「它會不會打斷我」—— 使用者在會議中不會去讀設定頁,
+              而這顆鈕的常見反應是「關掉之後就不會響了」,那會讓他失去
+              「該你說話了」那種真正有價值的提示。 */}
+          <ToolBtn
+            label="即時教練"
+            title={
+              o.coaching
+                ? `即時教練開啟中:語速過快、填充詞、冷場時會在浮層出現提示（本場想關某一種,直接點提示條;已靜默 ${
+                    coachingMuted.length
+                  } 種）— 點擊永久關閉`
+                : '開啟即時教練:語速過快、填充詞、冷場時提醒你'
+            }
+            active={o.coaching}
+            onClick={() => void patchOverlay({ coaching: !o.coaching })}
+          >
+            <Gauge size={13} />
+            {coachingMuted.length > 0 && (
+              <span
+                className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-400"
+                aria-hidden
+              />
+            )}
+          </ToolBtn>
+
+          <Divider />
+
+          {/* ── 群組二:語音跟讀 ──
+              跟讀是唯一「會驅動捲動」的開關,與播放控制同組但它自己一段 ——
+              它需要麥克風,所以旁邊的按鈕不該讓它看起來像純播放控制。 */}
           {displayMode === 'scroll' && (
             <ToolBtn
+              label="語音跟讀"
               title="語音跟讀:唸到哪、捲到哪(需麥克風)"
               active={following}
               onClick={toggleFollow}
@@ -1029,23 +1208,24 @@ export default function OverlayApp(): JSX.Element {
           {/* 播放控制(bullet 為手動模式,改顯示前後切換)*/}
           {isBullet ? (
             <>
-              <ToolBtn title="上一個重點(←)" onClick={controls.prev}>
+              <ToolBtn label="上一個重點" title="上一個重點(←)" onClick={controls.prev}>
                 <ChevronLeft size={13} />
               </ToolBtn>
-              <ToolBtn title="下一個重點(→)" onClick={controls.next}>
+              <ToolBtn label="下一個重點" title="下一個重點(→)" onClick={controls.next}>
                 <ChevronRight size={13} />
               </ToolBtn>
             </>
           ) : (
             <>
               <ToolBtn
+                label={playing ? '暫停' : '播放'}
                 title={playing ? '暫停(空白鍵)' : '播放(空白鍵)'}
                 active={playing}
                 onClick={controls.toggle}
               >
                 {playing ? <Pause size={13} /> : <Play size={13} />}
               </ToolBtn>
-              <ToolBtn title="回到開頭" onClick={controls.restart}>
+              <ToolBtn label="回到開頭" title="回到開頭" onClick={controls.restart}>
                 <span className="text-[11px] font-bold">↺</span>
               </ToolBtn>
             </>
@@ -1055,6 +1235,7 @@ export default function OverlayApp(): JSX.Element {
           {isTimedMode ? (
             <>
               <ToolBtn
+                label="語速 −"
                 title={personalBaseline !== PhraseVisuals.DEFAULT_WPM ? `語速 -（1×＝你的個人語速 ${personalBaseline} 字/分）` : '語速 -'}
                 onClick={() =>
                   void patchOverlay({ rate: Math.max(0.5, Math.round((o.rate - 0.1) * 10) / 10) })
@@ -1066,6 +1247,7 @@ export default function OverlayApp(): JSX.Element {
                 {(o.rate ?? 1).toFixed(1)}×
               </span>
               <ToolBtn
+                label="語速 +"
                 title={personalBaseline !== PhraseVisuals.DEFAULT_WPM ? `語速 +（1×＝你的個人語速 ${personalBaseline} 字/分）` : '語速 +'}
                 onClick={() =>
                   void patchOverlay({ rate: Math.min(3, Math.round((o.rate + 0.1) * 10) / 10) })
@@ -1076,32 +1258,68 @@ export default function OverlayApp(): JSX.Element {
             </>
           ) : !isBullet ? (
             <>
-              <ToolBtn title="速度 -" onClick={() => void patchOverlay({ speed: Math.max(10, o.speed - 10) })}>
+              <ToolBtn
+                label="減速"
+                title="速度 -"
+                onClick={() => void patchOverlay({ speed: Math.max(10, o.speed - 10) })}
+              >
                 <ChevronLeft size={13} />
               </ToolBtn>
               <span className="w-9 select-none text-center font-mono text-[10px] text-white/52">{o.speed}</span>
-              <ToolBtn title="速度 +" onClick={() => void patchOverlay({ speed: Math.min(600, o.speed + 10) })}>
+              <ToolBtn
+                title="速度 +"
+                onClick={() => void patchOverlay({ speed: Math.min(600, o.speed + 10) })}
+              >
                 <ChevronRight size={13} />
               </ToolBtn>
             </>
           ) : null}
 
+          <Divider />
+
+          {/* ── 群組三:顯示(字級與鏡像)── */}
           <ToolBtn
+            label="字體縮小"
             title="字體縮小"
             onClick={() => void patchOverlay({ fontSize: Math.max(16, o.fontSize - 2) })}
           >
             <span className="text-[11px] font-bold">A-</span>
           </ToolBtn>
           <ToolBtn
+            label="字體放大"
             title="字體放大"
             onClick={() => void patchOverlay({ fontSize: Math.min(72, o.fontSize + 2) })}
           >
             <span className="text-[13px] font-bold">A+</span>
           </ToolBtn>
-          <ToolBtn title="鏡像(提詞器反射罩用)" active={o.mirror} onClick={setMirror}>
+          <ToolBtn label="鏡像" title="鏡像(提詞器反射罩用)" active={o.mirror} onClick={setMirror}>
             <FlipHorizontal2 size={13} />
           </ToolBtn>
+
+          <Divider />
+
+          {/* ── 群組四:視窗與形態(置中 / 收合 / 貼鏡 / 擷取 / 穿透 / 關閉)──
+              這六顆是「改變浮層本身」而不是「改變內容」的操作。 */}
           <ToolBtn
+            label="浮層置中"
+            title="浮層置中(找不到浮層時按這裡)"
+            onClick={() => void window.api.recenterOverlay()}
+          >
+            <Crosshair size={13} />
+          </ToolBtn>
+          <ToolBtn label="收成藥丸" title="收合成藥丸(低存在感)" onClick={() => enterCompact(o)}>
+            <Minimize2 size={13} />
+          </ToolBtn>
+          <ToolBtn
+            label="貼鏡模式"
+            title="貼鏡模式:貼近攝影機 5cm 內,眼神自然對準鏡頭(建議搭配逐句短語)"
+            active={o.lensMode}
+            onClick={() => enterLens(o)}
+          >
+            <ScanFace size={13} />
+          </ToolBtn>
+          <ToolBtn
+            label="螢幕擷取隱形"
             title={o.captureProtected ? '螢幕擷取隱形:開(分享畫面看不到此視窗)' : '螢幕擷取隱形:關'}
             active={o.captureProtected}
             onClick={() => void window.api.overlaySetCaptureProtection(!o.captureProtected)}
@@ -1109,13 +1327,14 @@ export default function OverlayApp(): JSX.Element {
             <ScanEye size={13} />
           </ToolBtn>
           <ToolBtn
+            label="滑鼠穿透"
             title={o.clickThrough ? '滑鼠穿透:開(浮層已收不到點擊;熱鍵或主視窗「提詞」重新顯示時自動解除)' : '滑鼠穿透:關'}
             active={o.clickThrough}
             onClick={() => void window.api.overlaySetClickThrough(!o.clickThrough)}
           >
             <MousePointerClick size={13} />
           </ToolBtn>
-          <ToolBtn title={`關閉(${toggleHint})`} onClick={() => void window.api.overlayHide()}>
+          <ToolBtn label="關閉浮層" title={`關閉(${toggleHint})`} onClick={() => void window.api.overlayHide()}>
             <X size={13} />
           </ToolBtn>
           </div>
@@ -1147,8 +1366,20 @@ export default function OverlayApp(): JSX.Element {
           {displayMode === 'bullet' && <BulletSurface model={model} state={state} fontSize={o.fontSize} />}
           {displayMode === 'karaoke' && <KaraokeSurface model={model} state={state} fontSize={o.fontSize} />}
 
-          {/* 跟讀狀態條;跟讀已停止時的提示也走同一條(見 onOverlayVisibility 的自動停止) */}
-          {followStatus !== 'idle' || followNotice ? (
+          {/* 工具列說明列 / 跟讀狀態條:同一條底欄的兩個使用者(見 toolbarHint)。
+              說明列優先:它是使用者當下滑鼠所在的那一顆(即時意圖),
+              而跟讀狀態是背景事實;兩者同時存在時,先回答他正在問的問題。 */}
+          {toolbarHint ? (
+            <div
+              data-toolbar-legend="1"
+              className="pointer-events-none absolute bottom-1.5 left-1/2 flex max-w-[92%] -translate-x-1/2 items-center gap-2 rounded-full bg-black/75 px-3 py-1 text-[10px] text-white/72"
+            >
+              <span className="shrink-0 font-medium text-white/95">{toolbarHint.label}</span>
+              {toolbarHint.detail && toolbarHint.detail !== toolbarHint.label && (
+                <span className="truncate">{toolbarHint.detail}</span>
+              )}
+            </div>
+          ) : followStatus !== 'idle' || followNotice ? (
             <div className="pointer-events-none absolute bottom-1.5 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-3 py-1 text-[10px] text-white/72">
               {followStatus === 'loading' && <Loader2 size={10} className="animate-spin" />}
               {followStatus === 'listening' && <AudioLines size={10} className="text-emerald-400" />}
@@ -1186,10 +1417,36 @@ export default function OverlayApp(): JSX.Element {
             </div>
           )}
           {coachingHint && (
-            <div className="flex items-center justify-center gap-2 rounded-full bg-amber-500/25 px-4 py-2 text-xs font-medium text-amber-200 shadow-lg">
+            /* 整條提示可點:點下去把「這一種」靜默到本場結束。
+               為什麼要放在提示條**本體**而不是工具列:使用者看到提示的那一刻
+               才是他決定「不想再看到這種」的時刻 —— 那時他正在說話,
+               而浮層工具列在展開態要捲動才看得到。把控制項放在他剛才讀到
+               建議的位置,是唯一不用移動視線的設計。 */
+            <button
+              type="button"
+              data-effect-id="coaching-mute"
+              onClick={() => muteCoachingKind(coachingHint.kind)}
+              className="pointer-events-auto flex cursor-pointer items-center gap-2 rounded-full bg-amber-500/25 px-4 py-2 text-xs font-medium text-amber-200 shadow-lg transition-colors hover:bg-amber-500/40"
+              title={`不再提示「${COACHING_KIND_LABEL[coachingHint.kind]}」這一種(本場有效)`}
+            >
               <Gauge size={14} className="shrink-0" />
               {coachingHint.message}
-            </div>
+              <BellOff size={12} className="shrink-0 opacity-70" />
+            </button>
+          )}
+          {/* 已靜默的種類:必須一直看得到,否則使用者會忘記自己按過,
+              然後在「教練怎麼都不響了」的困惑裡去找設定。 */}
+          {coachingMuted.length > 0 && (
+            <button
+              type="button"
+              data-effect-id="coaching-unmute"
+              onClick={unmuteCoaching}
+              className="pointer-events-auto flex cursor-pointer items-center gap-1.5 rounded-full bg-black/45 px-3 py-1.5 text-[11px] text-ink-400 shadow-lg transition-colors hover:bg-black/60 hover:text-ink-300"
+              title="恢復所有即時教練提示"
+            >
+              <BellOff size={11} className="shrink-0" />
+              本場已靜默：{coachingMuted.map((k) => COACHING_KIND_LABEL[k]).join('、')}
+            </button>
           )}
         </div>
       )}

@@ -25,7 +25,7 @@ import { _electron as electron } from 'playwright-core'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { domAudit } from '../src/renderer/src/lib/domAudit.ts'
-import { createReport, fileHash, guardSerializable } from './lib/audit-report.mjs'
+import { createReport, guardSerializable } from './lib/audit-report.mjs'
 
 process.env.AI_TP_E2E = '1'
 process.env.AI_TP_AUDIT = '1'
@@ -60,12 +60,18 @@ async function seed(page) {
         r.onerror = () => rej(r.error)
         r.onupgradeneeded = () => {
           const db = r.result
-          for (const [name, key] of [
+          for (const [name, schema] of [
             ['scripts', '++id, title, updatedAt, lastUsedAt'],
             ['sessions', '++id, startedAt, endedAt'],
             ['practiceRuns', '++id, createdAt']
           ]) {
-            if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id', autoIncrement: true })
+            if (db.objectStoreNames.contains(name)) continue
+            // keyPath 從 schema 推導,不要另外寫死 'id'。
+            // 寫死的話,新增一個 keyPath 不同的 store 時這裡會安靜地建出一個
+            // schema 不符的 object store —— 而且症狀是「寫入後查不到」,
+            // 與真正的 schema 錯誤長得一模一樣。
+            const keyPath = schema.split(',')[0].replace(/^\+\+/, '').trim()
+            db.createObjectStore(name, { keyPath, autoIncrement: true })
           }
         }
       })
@@ -223,7 +229,8 @@ async function typeInto(main, placeholderFragment, text) {
     const el = [...document.querySelectorAll('input,textarea')].find((i) => (i.placeholder || '').includes(frag))
     if (!el) return false
     const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set
-    setter ? setter.call(el, val) : (el.value = val)
+    if (setter) setter.call(el, val)
+    else el.value = val
     el.dispatchEvent(new Event('input', { bubbles: true }))
     return true
   }, [placeholderFragment, text])
@@ -489,13 +496,14 @@ async function phaseToasts(main, tag) {
  */
 async function phaseKeyboard(main, tag, pages) {
   await resetMain(main)
-  for (const [id, label] of pages) {
+  for (const [id] of pages) {
     await nav(main, id)
     await sleep(1100)
     // 先把焦點丟回 body,確保 Tab 從頁面開頭開始
     await main.evaluate(() => document.activeElement?.blur?.())
     let stops = 0
-    let bad = []
+    // 只 push 不重新賦值 —— const 對這裡才是正確的語意。
+    const bad = []
     for (let i = 0; i < 40; i++) {
       await main.keyboard.press('Tab').catch(() => {})
       await sleep(70)
@@ -541,7 +549,7 @@ async function phaseKeyboard(main, tag, pages) {
 
 // ───────────────────────── A4 有資料的頁面 ─────────────────────────
 async function phaseData(main, tag) {
-  for (const [id, label] of [
+  for (const [id] of [
     ['scripts', '提詞講稿'],
     ['record', '錄音轉錄'],
     ['practice', '面試練習'],
@@ -713,6 +721,149 @@ async function phaseBranchStates(main, tag) {
   }
 }
 
+/**
+ * A6 結構不變量:首用卡片唯一性 + 設定頁目錄。
+ *
+ * 為什麼需要這一相(2026-10-03 新增):
+ *   前面五相量的都是**單一元素**的性質 —— 幾何、對比、命中區、遮擋、狀態是否到達。
+ *   但有兩類缺陷不屬於任何單一元素:
+ *     (1) 「同一頁上有兩張在講同一件事的卡」。總覽頁原本同時有「3 分鐘上手」
+ *         與「開始三部曲」,兩張都是三欄按鈕格 + 進度語意,卻定義了不同的三步
+ *         —— 而 domAudit 看到的是兩組各自合格的按鈕。只有「數一數有幾張」
+ *         量得到它。
+ *     (2) 「長頁面上找不到東西」。設定頁九個區塊疊成一頁,每個區塊都合格,
+ *         合起來是一個沒有索引的長捲動。目錄的價值在於**跳得到**,
+ *         所以這一相不只比對集合,還會真的按最後一個連結一次。
+ *
+ * 兩個檢查都用新的 data 錨點([data-onboarding] / [data-settings-section] /
+ * [data-settings-toc-link])—— 不靠文字比對,因為文字會改,而「找不到元素」
+ * 與「這一頁沒問題」在報告上長得一模一樣(同 audit-ui.mjs 檔頭的教訓)。
+ */
+async function phaseStructure(main) {
+  const tag = ''
+
+  // (1) 首用卡片唯一性
+  await goto(main, 'dashboard')
+  const onboarding = await main
+    .evaluate(() => {
+      const cards = [...document.querySelectorAll('[data-onboarding]')]
+      return {
+        count: cards.length,
+        labels: cards.map((c) => (c.getAttribute('aria-label') || (c.textContent || '').trim().slice(0, 18)) || '')
+      }
+    })
+    .catch(() => null)
+  const label = `structure/onboarding${tag}`
+  if (!onboarding) {
+    report.unreached(label, '讀不到 [data-onboarding] 數量')
+  } else if (onboarding.count > 1) {
+    report.add(
+      'onboarding-duplicate',
+      label,
+      `總覽頁有 ${onboarding.count} 張首用進度卡:${onboarding.labels.join(' | ')} —— 使用者會看到兩套「三步」`
+    )
+  } else {
+    report.measured(`${label}(${onboarding.count} 張首用卡)`)
+  }
+
+  // (2) 設定頁目錄 ↔ 區塊。雙向相等:
+  //     目錄漏一個區塊 = 那個區塊沒有入口;目錄多一個 = 點下去沒有反應,
+  //     而「按了沒反應」比「沒有入口」更糟(它看起來像壞掉)。
+  await goto(main, 'settings')
+  const toc = await main
+    .evaluate(() => {
+      const sections = [...document.querySelectorAll('[data-settings-section]')].map((s) =>
+        s.getAttribute('data-settings-section')
+      )
+      const links = [...document.querySelectorAll('[data-settings-toc-link]')].map((a) =>
+        a.getAttribute('data-settings-toc-link')
+      )
+      return {
+        sections,
+        links,
+        // 有 id 屬性但 getElementById 找不到 = 目錄的捲動目標不存在
+        brokenAnchors: sections.filter((id) => !document.getElementById(id))
+      }
+    })
+    .catch(() => null)
+  const tocLabel = `structure/settings-toc${tag}`
+  if (!toc) {
+    report.unreached(tocLabel, '讀不到設定頁目錄')
+    return
+  }
+
+  const missing = toc.sections.filter((id) => !toc.links.includes(id))
+  const extra = toc.links.filter((id) => !toc.sections.includes(id))
+  if (missing.length) report.add('settings-toc-missing', tocLabel, `目錄缺少區塊:${missing.join('、')}`)
+  if (extra.length) report.add('settings-toc-extra', tocLabel, `目錄指向不存在的區塊:${extra.join('、')}`)
+  if (toc.brokenAnchors.length) {
+    report.add('settings-toc-broken-anchor', tocLabel, `這些 id 過不了 getElementById:${toc.brokenAnchors.join('、')}`)
+  }
+  if (toc.sections.length === 0 || toc.links.length === 0) {
+    report.add('settings-toc-missing', tocLabel, `沒有量到區塊或目錄(sections=${toc.sections.length}, links=${toc.links.length})`)
+    return
+  }
+
+  // 真的按一次最後一個連結:目錄的用途就是「跳得到」
+  const last = toc.links[toc.links.length - 1]
+  const before = await main.evaluate(() => document.querySelector('main')?.scrollTop ?? 0)
+  // 點擊失敗要現形。這裡原本是 `.catch(() => {})` —— 而「點不到」與
+  // 「點下去但沒反應」在報告上長得一模一樣,兩者的修正方向卻完全不同
+  // (一個是工具找不到元素,一個是產品壞了)。
+  const clickErr = await main
+    .click(`[data-settings-toc-link="${last}"]`, { timeout: 5000 })
+    .then(() => null)
+    .catch((e) => e.message.split('\n')[0])
+  if (clickErr) {
+    report.add('settings-toc-not-clickable', tocLabel, `目錄項「${last}」點不到:${clickErr}`)
+    return
+  }
+
+  // 等捲動**停下來**,而不是假設一個時間。
+  // 這一版是被自己的誤報逼出來的:原本固定等 800ms,而 1180×780 的設定頁有
+  // 3657px 可捲 —— 平滑捲動跑完要 ~1.7s,於是量到的 top=807(還在視窗外),
+  // 被報成「目錄跳不到」。那是**量測時機**的錯,不是產品的錯,而這種誤報
+  // 會讓人開始不信任整份報告。
+  let prevScroll = -1
+  let stable = 0
+  for (let i = 0; i < 20 && stable < 2; i++) {
+    await sleep(200)
+    const now = await main.evaluate(() => document.querySelector('main')?.scrollTop ?? 0)
+    if (now === prevScroll) stable += 1
+    else stable = 0
+    prevScroll = now
+  }
+
+  const jumped = await main
+    .evaluate(
+      (id) => {
+        const el = document.getElementById(id)
+        if (!el) return { ok: false, top: null, scroll: 0 }
+        const r = el.getBoundingClientRect()
+        // 「跳得到」的判準是「區塊真的在視窗裡」,不是「它正好貼齊頂端」:
+        // 最後一個區塊跳過去時,頁面已經到底、不能再捲,它會停在視窗下半部
+        // (實測 960×640 時 top=390)。要求貼齊頂端會把「正常」報成缺陷 ——
+        // 而誤報正是這份報告最容易被丟掉的原因。
+        return {
+          ok: r.top > -4 && r.top < window.innerHeight - 40,
+          top: Math.round(r.top),
+          scroll: document.querySelector('main')?.scrollTop ?? 0
+        }
+      },
+      last
+    )
+    .catch(() => ({ ok: false, top: null, scroll: 0 }))
+  if (!jumped.ok) {
+    report.add('settings-toc-no-scroll', tocLabel, `點了「${last}」但區塊沒有進入視窗(top=${jumped.top})`)
+  } else if (jumped.scroll <= before) {
+    report.add('settings-toc-no-scroll', tocLabel, `點了「${last}」但頁面沒有捲動(scrollTop ${before} → ${jumped.scroll})`)
+  } else {
+    report.measured(
+      `${tocLabel}(${toc.sections.length} 個區塊 ↔ ${toc.links.length} 個目錄項,雙向相符;點「${last}」會捲到 top=${jumped.top})`
+    )
+  }
+}
+
 // ───────────────────────── main ─────────────────────────
 async function main_() {
   const srcLen = guardSerializable(domAudit, 'domAudit')
@@ -762,6 +913,11 @@ async function main_() {
     console.log('A5 會改變版面的頁面內狀態…')
     await phaseBranchStates(main, tag)
   }
+
+  // A6 只跑一次:這兩個不變量與視窗尺寸無關(它們是結構,不是版面),
+  // 兩個尺寸各跑一次只會讓報告多一倍同樣的結論。
+  console.log('\nA6 結構不變量(首用卡片唯一性 / 設定頁目錄)…')
+  await phaseStructure(main)
 
   const problems = report.finish(join(OUT, 'report.json'))
   console.log(`\n輸出: ${OUT}/`)

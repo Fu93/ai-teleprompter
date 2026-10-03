@@ -12,6 +12,7 @@ import { registerHotkeys, registerIpc } from './ipc'
 import { saveSettings } from './settings'
 import { syncCoachingTimer } from './liveCoaching'
 import { initLogging, logMain } from './logging'
+import { recordEvent } from './events'
 import { DEBUG } from './debug'
 import { initUpdater } from './updater'
 import { migrateLegacyKeys } from './ai/aiProvider'
@@ -54,6 +55,13 @@ if (!gotLock) {
     if (migrateLegacyKeys(state.settings)) {
       saveSettings(state.settings)
     }
+    /**
+     * 啟動耗時的起點。
+     *
+     * 為什麼量這個:使用者回報「開很久」時,我們手上只有症狀。
+     * 而啟動慢有兩個完全不同的成因(視窗建立 vs 遷移/熱鍵),分不出來就只能猜。
+     */
+    const startupT0 = Date.now()
     registerIpc()
     createMainWindow()
     createOverlayWindow()
@@ -64,6 +72,21 @@ if (!gotLock) {
     registerHotkeys()
     syncCoachingTimer()
     initUpdater()
+    /**
+     * `startup_main_ready` —— 這個事件名在 shared/observability.ts 裡早已宣告,
+     * 但一直到這裡都沒有任何呼叫端。
+     *
+     * 沒有它,「他開不起來」與「他根本沒開過」在診斷報告裡長得一模一樣:
+     * 兩者都沒有任何 startup 事件,而報告裡那份事件清單是唯一的證據。
+     *
+     * 熱鍵衝突數一起帶上:它是回報率最高的問題之一(「我的快捷鍵沒反應」),
+     * 而它在啟動的同一刻就已經知道了 —— 不順手記下來就要等他自己另外去猜。
+     */
+    recordEvent({
+      name: 'startup_main_ready',
+      metrics: { ms: Date.now() - startupT0, conflicts: state.hotkeyConflicts.length },
+      fields: { debug: DEBUG }
+    })
   })
 
   app.on('window-all-closed', () => {

@@ -2,8 +2,8 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import { CrashProbe, ErrorBoundary, setCrashProbe } from './components/ErrorBoundary'
-import { initAuditBridge, installToastBridge, registerAuditControl } from './lib/auditBridge'
-import { toast } from './lib/toast'
+import { initAuditBridge, registerAuditControl } from './lib/auditBridge'
+import { runBootstrap } from './lib/bootstrap'
 import { installCloseGuard } from './lib/closeGuard'
 // 備份函式走靜態 import:BackupSection 已靜態引入同一模組,這裡再動態引入
 // 沒有任何分塊收益,只會讓 vite 每次建置都警告「dynamic import will not move module」。
@@ -77,28 +77,41 @@ registerAuditControl('backup.restore', async (arg) => {
   return { counts: r.counts, after: await currentCounts() }
 })
 
-// toast 橋只掛在 audit 模式(與 __auditForce 同一個開關),正式安裝包不會有。
-void window.api
-  ?.appInfo()
-  ?.then((info) => {
-    if (info?.audit) installToastBridge((kind, message) => toast[kind](message))
-  })
+/**
+ * 掛載前必須完成:toast 橋(僅 audit 模式)與 e2e 環境故障注入。
+ *
+ * **render 必須等這裡 resolve** —— 這不是風格,是這段程式碼存在的理由:
+ * `void runBootstrap(...)` 之後緊接著同步 render 的寫法,與舊版的
+ * `void appInfo().then(...)` + 同步 render 是**同一個競態**;差別只在
+ * 「該做的事」被抽成了 runBootstrap,而順序保證仍然沒有發生。
+ * bootstrap.test 驗的是 runBootstrap 本身,驗不到這個檔案的接線 ——
+ * 所以「注入先於掛載」只能由這裡的 `.then` 結構保證,不能由測試保證。
+ *
+ * getUserMedia 是「麥克風可用性」的唯一入口(見 lib/e2eFaults.ts),
+ * 而 Record 頁掛載後就可能呼叫它:注入晚到一步,麥克風拒絕路徑就量不到,
+ * 而且量測層不會知道自己量到的是正常路徑。
+ *
+ * 為什麼這值得多等一次 IPC:這只影響 audit / e2e 模式(正式安裝包走乾淨環境,
+ * 只是白等一次本地往返),換來的是「注入先於掛載」從註解變成順序事實。
+ */
+void runBootstrap(() => window.api?.appInfo?.())
   .catch(() => undefined)
+  .then(() => {
+    // 關閉視窗守衛:main 擋下 close 之後由此顯示 App 內的確認對話框。
+    // 同樣放在這裡而不是元件裡:它與 React 生命週期無關,且必須比任何元件更早存在。
+    installCloseGuard()
 
-// 關閉視窗守衛:main 擋下 close 之後由此顯示 App 內的確認對話框。
-// 同樣放在這裡而不是元件裡:它與 React 生命週期無關,且必須比任何元件更早存在。
-installCloseGuard()
-
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  // ErrorBoundary 在 StrictMode **外面**（見元件檔頭）：StrictMode 會在開發時把
-  // 子樹重掛一次,邊界在裡面時 componentDidCatch 的時序會走樣;而且邊界本身就是
-  // 「出錯時怎麼辦」,不需要被 dev 模式演一次。
-  // 它也必須包住 App —— App 一旦崩潰,ToastHost / ConfirmHost 會跟著消失,
-  // 所以復原畫面自帶行為,不依賴它們。
-  <ErrorBoundary>
-    <React.StrictMode>
-      <CrashProbe />
-      <App />
-    </React.StrictMode>
-  </ErrorBoundary>
-)
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      // ErrorBoundary 在 StrictMode **外面**（見元件檔頭）：StrictMode 會在開發時把
+      // 子樹重掛一次,邊界在裡面時 componentDidCatch 的時序會走樣;而且邊界本身就是
+      // 「出錯時怎麼辦」,不需要被 dev 模式演一次。
+      // 它也必須包住 App —— App 一旦崩潰,ToastHost / ConfirmHost 會跟著消失,
+      // 所以復原畫面自帶行為,不依賴它們。
+      <ErrorBoundary>
+        <React.StrictMode>
+          <CrashProbe />
+          <App />
+        </React.StrictMode>
+      </ErrorBoundary>
+    )
+  })

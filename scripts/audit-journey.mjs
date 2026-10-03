@@ -120,6 +120,33 @@ async function clickByText(main, fragment) {
     .catch(() => false)
 }
 
+/**
+ * scripts store 現在有幾筆。
+ *
+ * 為什麼要用「數量變化」來驗成效:這個 App 的資料層是 renderer 直接讀寫
+ * IndexedDB(lib/db.ts 的 Dexie),不走 IPC —— 所以直接開同一個資料庫就是
+ * 最接近事實的證據。
+ *
+ * 抽成模組層級(原本是 stepAfterMeeting 裡的區域函式)是因為
+ * stepFirstOverlayEver 也要用它;兩份實作漂移的症狀是「一邊說有建、
+ * 一邊說沒建」,而那種分歧最難查。
+ */
+async function countScripts(main) {
+  return main.evaluate(async () => {
+    const req = indexedDB.open('ai-teleprompter')
+    const db = await new Promise((res, rej) => {
+      req.onsuccess = () => res(req.result)
+      req.onerror = () => rej(req.error)
+    })
+    const tx = db.transaction('scripts', 'readonly')
+    return new Promise((res) => {
+      const r = tx.objectStore('scripts').count()
+      r.onsuccess = () => res(r.result)
+      r.onerror = () => res(-1)
+    })
+  })
+}
+
 // ─────────────────────────── 步驟 ───────────────────────────
 
 /**
@@ -181,6 +208,94 @@ async function stepSeeOverlayWithoutScript(main) {
     )
   }
   await shoot(main, '02-想看浮層但沒講稿')
+}
+
+/**
+ * 3.5 第一次看到浮層:空狀態有沒有把使用者帶到**成品**?
+ *
+ * 為什麼要新增這一則(2026-10-03):
+ *   步驟 2 原本就會把「無講稿時顯示浮層的按鈕:(無)」寫進 notes —— 而
+ *   notes 不會擋人。那一行觀察在報告裡放了很久,卻沒有任何一則斷言在乎它。
+ *   這一則把它變成斷言,而且是使用者視角的斷言:空狀態要有**一顆按得下去**
+ *   的鈕,按下去之後浮層要真的開起來、而且帶著內容(不是一個空視窗)。
+ *
+ * 為什麼順序必須在這裡:它要的是「真的一個講稿都沒有」的狀態,而後面
+ * 每一則都會寫資料進來。順序即前置條件,不是排版偏好。
+ *
+ * 為什麼斷言要分兩段(先驗講稿、再驗浮層):
+ *   只驗浮層開沒開,無法分辨「按鈕沒生效」與「生效了但浮層壞了」——
+ *   而這兩件事的修正方向完全不同。
+ */
+async function stepFirstOverlayEver(app, main) {
+  const label = '第一次看到浮層'
+  await nav(main, 'scripts')
+  const text = await main.evaluate(READ_TEXT)
+  if (!/尚未建立講稿/.test(text)) {
+    report.unreached(label, '講稿列表不是空的 —— 這一則需要零資料狀態')
+    return
+  }
+
+  const before = await countScripts(main)
+  const clicked = await clickByText(main, '用範例稿試提詞')
+  if (!clicked) {
+    report.add(
+      'journey-dead-end',
+      label,
+      '空狀態裡沒有「用範例稿試提詞」(或它名稱變了)—— 浮層需要一份有內容的講稿才出現,' +
+        '所以「只想看看浮層長什麼樣」的人必須先自己想出一段稿子才看得到這個產品的' +
+        '門面。這與 preflight / onboarding 檔頭寫的「不擋路」設計直接衝突'
+    )
+    return
+  }
+
+  await sleep(2600)
+  const after = await countScripts(main)
+  if (after <= before) {
+    report.add(
+      'journey-broken-flow',
+      label,
+      `按下「用範例稿試提詞」之後講稿數沒有變化(${before} → ${after})—— ` +
+        '鈕存在但沒有真的建立任何東西'
+    )
+    return
+  }
+
+  // 浮層視窗是非同步開的:等它出現,而不是睡固定時間後假設它在
+  let overlay = null
+  for (let i = 0; i < 12 && !overlay; i++) {
+    overlay = app.windows().find((w) => w !== main)
+    if (!overlay) await sleep(500)
+  }
+  if (!overlay) {
+    report.add(
+      'journey-broken-flow',
+      label,
+      '範例講稿建立了,但浮層視窗沒有出現 —— 使用者還是看不到這個產品的門面'
+    )
+    return
+  }
+
+  await overlay.waitForLoadState('domcontentloaded').catch(() => {})
+  await sleep(900)
+  const overlayText = await overlay.evaluate(() => document.body?.innerText || '').catch(() => '')
+  // 範例稿的內容是共用的那一份(lib/demoScript.ts);這裡只取一句特徵字串,
+  // 不整段比對 —— 這樣改文案不會讓這條檢查變成「永遠紅的檢查」。
+  const gotContent = /Flow|市場痛點/.test(overlayText)
+  report.note('範例稿 → 浮層文字前 40 字', JSON.stringify(overlayText.replace(/\s+/g, ' ').slice(0, 40)))
+  if (!gotContent) {
+    report.add(
+      'journey-broken-flow',
+      label,
+      `浮層開起來了但沒有帶到範例內容:${JSON.stringify(overlayText.replace(/\s+/g, ' ').slice(0, 60))}`
+    )
+  } else {
+    await shoot(main, '03b-用範例稿看到浮層')
+    report.measured(`${label}(範例稿建立成功,浮層帶著內容開啟)`)
+  }
+
+  // 收掉浮層:後續步驟會自己開它,留著會讓「視窗多一個」這種判斷失準
+  await main.evaluate(() => window.api.overlayHide()).catch(() => {})
+  await sleep(700)
 }
 
 /** 4. 零資料的講稿頁。問:我知道下一步該做什麼嗎? */
@@ -292,21 +407,8 @@ async function stepAfterMeeting(main) {
   // 所以真的點下去,再去 IndexedDB 確認 scripts 真的多了一筆。
   let actuallyWorks = false
   if (canMakeScript) {
-  /** scripts 這個 store 現在有幾筆 —— 用來證明「按下去真的有生效」。 */
-  const scriptCount = async () =>
-    main.evaluate(async () => {
-      const req = indexedDB.open('ai-teleprompter')
-      const db = await new Promise((res, rej) => {
-        req.onsuccess = () => res(req.result)
-        req.onerror = () => rej(req.error)
-      })
-      const tx = db.transaction('scripts', 'readonly')
-      return new Promise((res) => {
-        const r = tx.objectStore('scripts').count()
-        r.onsuccess = () => res(r.result)
-        r.onerror = () => res(-1)
-      })
-    })
+  /** scripts 這個 store 現在有幾筆 —— 用來證明「按下去真的有生效」(實作在 countScripts)。 */
+  const scriptCount = () => countScripts(main)
 
     const before = await scriptCount()
 
@@ -498,6 +600,8 @@ async function main_() {
   await stepSeeOverlayWithoutScript(main)
   console.log('步驟 3：講稿列表空狀態…')
   await stepEmptyScripts(main)
+  console.log('步驟 3.5：空狀態 → 用範例稿看到浮層…')
+  await stepFirstOverlayEver(app, main)
   console.log('步驟 4：錄完一場會議之後…')
   await stepAfterMeeting(main)
   console.log('步驟 5：匯入既有講稿之後…')

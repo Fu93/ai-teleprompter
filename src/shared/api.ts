@@ -9,6 +9,7 @@ import type {
   DebugOverlayAction,
   DomFinding
 } from './types'
+import type { DiagnosticsReport, EventPayload } from './observability'
 
 export interface OverlayShowPayload {
   title?: string
@@ -102,8 +103,17 @@ export interface Api {
   // AI
   ollamaListModels(baseUrl: string): Promise<OllamaModelsResult>
   ollamaChat(req: OllamaChatApiRequest): Promise<{ ok: boolean; text?: string; error?: string }>
+  /**
+   * 取消一個在飛的 AI 請求。
+   *
+   * 命名沿用 ollama 前綴是歷史包袱:它現在同時服務 Ollama 與 OpenAI 相容路徑
+   * (共用 main 端同一張登錄表,見 src/main/ai/aiAbort.ts)。沒有改成 aiAbort
+   * 是為了不動所有呼叫端 —— 而它只有一個呼叫端(lib/ai.ts 的 startAiChat)。
+   */
   ollamaAbort(requestId: string): Promise<void>
   openAiChat(req: {
+    /** 與 Ollama 共用同一個取消命名空間 */
+    requestId: string
     baseUrl: string
     apiKey: string
     model: string
@@ -196,6 +206,21 @@ export interface Api {
   openExternal(url: string): Promise<boolean>
   /** renderer 錯誤落盤到 main 日誌(產品化:崩潰回報的最低可行形式) */
   logFromRenderer(level: 'ERROR' | 'WARN' | 'INFO', message: string): Promise<void>
+  /**
+   * 記一筆結構化事件(純本機)。
+   *
+   * 與 logFromRenderer 的差別:那個是自由文字,這個帶錯誤碼與已遮蔽的欄位,
+   * 診斷報告靠它統計。**不要**用 logFromRenderer 記會需要被統計的事。
+   */
+  logEvent(payload: EventPayload): Promise<void>
+  /**
+   * 產生診斷報告(設定頁「複製診斷報告」)。
+   *
+   * 回傳的是**已遮蔽**的內容:不含逐字稿、講稿內容與 API 金鑰。
+   * 遮蔽在 main 端做(shared/observability.ts 的 redactEventFields)——
+   * 放在 renderer 做的話,任何一條未來新增的取值路徑都會漏掉它。
+   */
+  diagnosticsReport(): Promise<DiagnosticsReport>
   /** 開啟記錄資料夾(設定頁用) */
   openLogDir(): Promise<void>
 }

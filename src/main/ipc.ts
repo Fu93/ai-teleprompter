@@ -10,10 +10,11 @@ import {
 } from '@shared/types'
 import { EXPANDED_MIN, overlayShapeOf } from '@shared/overlayShapes'
 import type { DebugOverlayInfo } from '@shared/api'
-import { AUDIT, DEBUG } from './debug'
+import { AUDIT, DEBUG, E2E_ENV } from './debug'
 import { deepMerge, saveSettings } from './settings'
 import { abortOllamaChat, ollamaChat, ollamaListModels, ollamaVersion } from './ollama'
 import { chatCompletion, testConnection, getUserKeys, setUserKeys } from './ai/aiProvider'
+import { releaseRequest, trackRequest } from './ai/aiAbort'
 import { listAllScenes } from './packs'
 import { broadcastSettings, state } from './state'
 import {
@@ -26,6 +27,9 @@ import {
   forceCloseMainWindow
 } from './windows'
 import { logFromRenderer, logDir } from './logging'
+import { recordEvent } from './events'
+import { buildDiagnosticsReport } from './diagnostics'
+import type { EventPayload } from '@shared/observability'
 import {
   getCoachingCounts,
   handlePanic,
@@ -100,6 +104,22 @@ export function registerHotkeys(): void {
     // 寫進診斷快照,讓 DebugPanel 的「複製診斷 JSON」與使用者的回報裡
     // 看得到「你的熱鍵根本沒有註冊上去」,而不只是一句「沒反應」。
     state.hotkeyConflicts = taken
+    /**
+     * `startup_hotkey_conflict` —— 宣告了很久,但沒有任何呼叫端。
+     *
+     * 沒有這一筆的症狀很難講:使用者說「Ctrl+Shift+P 沒反應」,而我們看到的
+     * 日誌裡「App 正常啟動、主視窗正常」—— 兩邊都對,拼不出問題。
+     * 有了它,`grep startup_hotkey_conflict` 就能分出「沒衝突」與「有衝突但
+     * 他不知道是什麼」;而 conflict count 是**數量**而不是名單,因為六個欄位
+     * 名稱都是已知的(與 diagnostics.ts 的 hotkey_conflict_count 同一個理由)。
+     */
+    recordEvent({
+      name: 'startup_hotkey_conflict',
+      // 只放**數量**,不放 accelerator 本身。
+      // accelerator 是使用者自己設定的字串,而日誌會隨著「回報問題時附上」
+      // 離開這台電腦 —— 「有幾個被佔走 / 總共幾個」就足以定位問題。
+      metrics: { count: taken.length, total: Object.keys(state.settings.hotkeys).length }
+    })
   } else {
     state.hotkeyConflicts = []
   }
@@ -199,7 +219,14 @@ export function registerIpc(): void {
     audit: AUDIT,
     // 附在 AppInfo 上是為了讓「熱鍵沒反應」有唯一可查答案:e2e 失敗時把它
     // 印出來,就不必再用「疑似全域熱鍵爭用」去猜(那個說法查過之後不成立)。
-    hotkeyConflicts: [...state.hotkeyConflicts]
+    hotkeyConflicts: [...state.hotkeyConflicts],
+    /**
+     * e2e 環境情境。renderer 用它在 getUserMedia / fetch 的邊界注入故障,
+     * 而「測試跑在哪個世界裡」需要一個單一出處 —— 否則 e2e 失敗時只能猜。
+     *
+     * 打包版裡這一定是 E2E_ENV_DEFAULT(兩個 'ok'),見 debug.ts 的說明。
+     */
+    e2eEnv: E2E_ENV
   }))
 
   // ---- AI (Ollama) ----
@@ -226,12 +253,17 @@ export function registerIpc(): void {
 
   // ---- OpenAI 相容 chat 代理 ----
   ipcMain.handle(IPC.OpenAiChat, async (_e, req: {
+    requestId: string
     baseUrl: string
     apiKey: string
     model: string
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
     temperature?: number
   }) => {
+    // 雲端也進同一張登錄表:「只有本地 Ollama 可取消」是使用者最不會預期的組合
+    // —— 他按了取消,本機模型停了,雲端那邊還在跑而且仍在計費。
+    const controller = trackRequest(req.requestId)
+    const timeout = setTimeout(() => controller.abort(), 180_000)
     try {
       const secureAiKey = getUserKeys()?.apiKey
       const apiKey = typeof secureAiKey === 'string' && secureAiKey ? secureAiKey : req.apiKey
@@ -246,7 +278,7 @@ export function registerIpc(): void {
           messages: req.messages,
           temperature: req.temperature ?? 0.7
         }),
-        signal: AbortSignal.timeout(180_000)
+        signal: controller.signal
       })
       if (!res.ok) {
         const detail = await res.text().catch(() => '')
@@ -257,7 +289,12 @@ export function registerIpc(): void {
       }
       return { ok: true, text: data.choices?.[0]?.message?.content ?? '' }
     } catch (err) {
+      // 逾時與取消共用這條路徑,對呼叫端來說是同一件事:這次呼叫沒有結果。
+      if (controller.signal.aborted) return { ok: false, error: '已取消' }
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    } finally {
+      clearTimeout(timeout)
+      releaseRequest(req.requestId)
     }
   })
 
@@ -502,6 +539,21 @@ export function registerIpc(): void {
 
   ipcMain.handle(IPC.OpenLogDir, () => {
     shell.openPath(logDir())
+  })
+
+  // ---- 結構化事件(純本機)----
+  // 遮蔽在 main 端的 recordEvent 裡做(shared/observability.ts 的 redactEventFields),
+  // 這裡**不**再過濾一次:兩層各過濾一次會讓「到底遮了什麼」沒有單一出處,
+  // 而遮蔽規則正是這個功能唯一不能出錯的部分。
+  ipcMain.handle(IPC.LogEvent, (_e, payload: EventPayload) => {
+    recordEvent(payload)
+  })
+
+  ipcMain.handle(IPC.DiagnosticsReport, () => {
+    recordEvent({ name: 'diagnostics_report_requested' })
+    // 熱鍵衝突數**必須傳進去**:不傳的話報告會寫 0,而「六個熱鍵全部被佔走」
+    // 正是使用者會來回報的那件事 —— 一個寫 0 的欄位會讓我們主動排除它。
+    return buildDiagnosticsReport(state.settings, { hotkeyConflicts: state.hotkeyConflicts.length })
   })
 
   // ---- 匯出檔案 ----

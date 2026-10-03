@@ -15,7 +15,7 @@ interface SettingsState {
 // (React 子組件 effect 先跑),重複註冊會讓同一則廣播被處理多次且數量持續膨脹。
 let broadcastBound = false
 
-export const useSettings = create<SettingsState>((set, get) => ({
+export const useSettings = create<SettingsState>((set) => ({
   settings: null,
   loaded: false,
   overlayVisible: false,

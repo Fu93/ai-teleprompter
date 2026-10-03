@@ -7,6 +7,346 @@
 
 ## [Unreleased]
 
+### 合流深度檢查:讓上一輪的宣稱與程式碼對齊
+
+兩輪深度打磨(「綠燈狀態下的深度除錯」與 UX 深度打磨)合流入 master 之前,
+逐檔深查 + 全套閘門重跑,抓到四件「**宣稱與程式碼不一致**」——每一件都讓
+某句話變回真的:
+
+1. **bootstrap 的順序保證仍然是假的**:`main.tsx` 的註解寫「await runBootstrap()
+   之後才 render」,實際是 `void runBootstrap(...)` 接著**同步** render ——
+   上一輪自己定義的那個競態原樣保留,而測試只測了 runBootstrap 本身、
+   沒測 main.tsx 的接線,所以永遠綠。改為 `.then()` 之後才掛 CloseGuard 與
+   render,「注入先於掛載」從宣稱變成結構事實。
+2. **`transcribe_started` 在失敗路徑冒名**:它只在「第一次轉錄失敗」時被記
+   (帶著 `metrics.streak`),語意錯置;而 `transcribe_succeeded` 宣告了卻
+   **沒有任何呼叫端**。改為:started 在真的開始聆聽時記(engine/model 進
+   fields)、succeeded 在會議存檔成功時記(帶段落數)、失敗事件的 fields
+   直接帶 engine/model —— 「從來沒按過開始」與「按了但全失敗」在診斷報告裡
+   從此長得不一樣。
+3. **mic-denied 的斷言用錯型別**:`expect.poll(...).toMatch()` 的 received
+   必須是字串,而它餵的是 `string[]` —— 注入明明已經成功,兩條 mic 測試卻
+   卡在「received value must be a string」。修正後 4/4 綠:錯誤碼的三段文案
+   **第一次**在真瀏覽器裡被完整執行到。
+4. **UX_FINDINGS 的錨點名漂移**:文檔寫 `data-pill-state`,實作與 audit-deep
+   的規則都是 `data-overlay-state` —— 文檔對齊實作。
+
+附帶(同批提交的 UI 修復):卡拉OK分詞的兩個邊角(小數點 `1.4` 不再拆成
+三個 tick、行首 `…` 掛下一塊開頭)、校準頁「用手動距離繼續」不再斷行、
+貼鏡提示與預讀行不再疊印。
+
+### 綠燈狀態下的深度除錯:六個沒有任何閘門看得到的缺陷
+
+這一輪的起點是一個問題:「應該有很多還沒完善的」。先量一下現況——
+**所有既有閘門都是綠的**:typecheck exit 0、529 個單元測試全過、
+eslint 0 error / 21 warning(等於 baseline 上限)、五份稽核報告 `problems: 0`。
+
+所以結論不是「品質不好」,而是**「還沒完善的東西全都在閘門看不到的地方」**。
+六個缺陷全部是既有程式碼裡的問題,全部經過實測驗證(而且**排除了兩個看起來
+像缺陷、推演後證偽的誤判** —— 見文末)。
+
+#### 真缺陷 1:換語音模型會讓三個入口永久卡死,並且可能「設了新模型卻用舊的」
+
+`whisperClient.load()` 一開頭就覆寫 `this.loadPromise` 與 `this.rejectActiveLoad`。
+於是換模型時,**舊的那個 promise 既不 resolve 也不 reject**。
+
+症狀與 `dispose()` 那條已修的缺陷一模一樣(按鈕永久停著、沒有錯誤訊息),
+但**成因不同**,所以那條測試抓不到它 —— `whisperClient.test.ts` 的兩條測試
+都只呼叫 `dispose()`,從未中途換過 key。受影響的是三個 `await client.load()`
+的呼叫端:開始聆聽、語音跟讀、個人化校準。
+
+**第二層更難察覺**:worker 端的 `load()` 是 async 且無序列化。實測兩個請求交錯:
+
+```
+loaded model2 (key=small)   → p2 ready
+loaded model1 (key=base)    → p1 ready
+最終 worker 持有的模型: base   ← 應該是 small
+```
+
+慢的舊請求晚到會覆蓋快的。結果是**使用者設了 small、UI 也顯示切換成功,
+實際轉錄仍用 base,而且沒有任何錯誤訊息** —— 比卡死更難察覺,因為它看起來
+完全正常。
+
+修法:client 端在覆寫指標**之前**先讓舊輪落地;worker 端加載入世代計數,
+晚到的舊世代 `ready` 不覆寫 `transcriber` / `currentKey`,並丟棄剛載好的
+pipeline(它會佔幾百 MB)。
+
+負向驗證:拿掉 `abandonActiveLoad` 後,3 條測試紅 2 條(其中一條是 5 秒逾時
+—— 那是懸掛的證據)。
+
+#### 真缺陷 2:e2e 故障注入的註解在說謊,靠 sleep 掩蓋了三個月
+
+`main.tsx` 的註解寫著「刻意不 await:這一段要在 React 掛載**之前**完成
+(否則第一個頁面可能已經在呼叫 getUserMedia 了)」。
+
+而程式碼是 `void appInfo().then(...)` 接著**同步** `render`。`appInfo()` 是一次
+IPC 往返 —— 沒有任何保證。
+
+當時之所以沒事,是因為 `mic-denied.spec.ts` 每一條都寫了
+`waitForTimeout(1200)` 硬等。那是**用 sleep 蓋住一個競態**:測試綠不代表
+注入先於掛載,只代表睡夠了。而這是量測層的可信度問題 —— 「麥克風拒絕路徑
+被測到了」變成一個依賴 sleep 長短的假設。
+
+修法:抽出 `lib/bootstrap.ts`,`await runBootstrap()` 之後才 render;
+注入完成後掛 `window.__injectedFaults`,e2e 改等**可觀察的事實**而不是秒數
+(Ollama 那兩條的 `waitForTimeout(2500)` 也一併換成 poll)。
+
+負向驗證:把 bootstrap 退回非 await 版本後,4 條測試紅 2 條,核心那條的失敗訊息
+正是「注入沒趕上掛載」。
+
+#### 真缺陷 3:量測層自己被中斷時,會留一份被投毒的報告
+
+`audit:selftest` 有正確的 `try/finally` —— 但 **finally 只保得住它自己察覺的
+離開**。Ctrl-C、CI job 逾時、SIGKILL 都不會跑到它。
+
+這一輪調查時就實證了:`npm run audit:selftest` 被逾時砍掉之後,
+`docs/audit/effects/report.json` **不見了**,只剩 backup。而 release-gate 的
+分母是「報告裡有幾個狀態」—— 讀不到報告時那條規則的行為不等於「通過」。
+**量測層自己壞掉時不會有任何東西報錯。**
+
+修法三道防線(新增 `scripts/lib/report-guard.mjs`,7 條測試直接用真檔案系統驅動):
+1. `SIGINT` / `SIGTERM` 走同一條還原路徑
+2. 中斷時連子行程一起收掉 —— 否則它結束後會把**被破壞的報告寫回來蓋掉還原**
+3. 開頭自我修復:偵測到殘留備份就先還原,處理 SIGKILL 這種無法攔截的情況
+
+順手刪掉一處多餘的防禦:原本寫了 `rmSync` 再 `rename`,註解說「Windows 的
+rename 不覆蓋目標」。實測之後發現**會覆蓋**(Node 走 MoveFileEx +
+REPLACE_EXISTING)。多餘的防禦比沒有防禦更難 review:它看起來像在處理一個
+真實的失敗模式,於是沒有人會去驗它。
+
+#### 真缺陷 4:三個幽靈 IPC channel
+
+`OverlayApplySettings`、`SystemAudioStart`、`OllamaChatChunk` 宣告了,而全專案
+(preload / ipc.ts / renderer / e2e)**零引用**。逐一比對過 `Api` 介面的 58 個
+方法 —— 那些都有呼叫端,問題只限於這三個常數。
+
+它們的形狀是「宣告過所以看起來存在」,而那比沒有更糟:`OllamaChatChunk`
+暗示有串流,但 `ollamaChat()` 只回傳完整字串。已刪除,並在 types.ts 留下
+「未來要做串流應該一起設計 requestId + 分塊協定 + 取消」的說明。
+
+#### 真缺陷 5:AI 呼叫完整鏈路做完了,卻沒有中止能力
+
+`ollamaAbort` 從一開始就完整:`IPC.OllamaAbort` handler、`abortOllamaChat()`、
+`abortControllers` map、preload 暴露、ollama.ts 裡正確的轉「已取消」。
+
+**而它沒有任何呼叫端。** 四個 AI 呼叫點的主按鈕全是 `disabled={busy !== null}`:
+Practice 出題、逐題回饋、整體總評,Record 會議摘要。使用者只能等 —— 雲端
+逾時 10 秒,本地 Ollama 首次回答常更久。`GenerationGate` 能丟棄晚到的結果,
+但**不能終止請求**:連線開著、雲端仍在計費。
+
+修法:新增 `main/ai/aiAbort.ts` 共用登錄表,`lib/ai.ts` 的 `startAiChat()`
+回傳 `{ promise, cancel }`,並抽出 `CancelableBusy` 元件讓四個呼叫點共用。
+
+一個刻意的決定:**雲端路徑也收進同一張登錄表**。「只有本地 Ollama 可取消、
+雲端不可取消」是使用者最不會預期的組合 —— 他按了取消,本機模型停了,雲端的
+還在跑。
+
+取消後**不算錯誤**:不跳紅色 toast、不記 `ai_request_failed`。但 Practice 的
+逐題回饋取消時**保留已作答的逐字稿** —— 他已經開口講完了,不能因為不想等
+評論就把內容丟掉。
+
+#### 缺陷 6:一段看起來在防護、實際是死碼的程式碼
+
+`SettingsPage.tsx` 的 hotkey effect 算出 `const sig = JSON.stringify(...)` 然後
+在 cleanup 裡 `void sig`。`sig` 的唯一用途是讓 eslint 不報未使用變數,而它
+旁邊的註解讀起來像 `sig` 是這個 effect 的守門條件(實際依賴是
+`settings?.hotkeys`)。
+
+我一度以為這是效能缺陷(拖字級滑桿就重跑一次 IPC),**實測後證偽**:`deepMerge`
+只在 patch 觸及該鍵時才換子物件參考,所以它只在熱鍵真的變動時重跑。降級為清理。
+
+#### 兩個被證偽的誤判(記下來,因為它們長得像缺陷)
+
+- **`OrderedTranscript.finalize()` 之後晚到的 `resolve()` 回傳空陣列**,文字被丟棄。
+  實測確認這是**設計正確**的:逾時路徑就是要把沒回來的段落釋放,而
+  `Practice.tsx` 的世代閘門確保舊答案不會污染新一題。
+- **`toTurns()` 合併同一說話者時用 `last.text += ' ' + seg.text`**,會讓 CJK
+  得到「你 好世 界」。確認 `turns[].text` 只在內部用於統計、不送到任何 UI。
+
+#### 順帶修掉的一個刻意留紅
+
+`practiceBusy.test.ts` 有一條測試**故意斷言缺陷存在**:`busy === 'overall'`
+只有 spinner 沒有文字(檔頭寫明「修好之後這個測試會失敗,那時應該把它改成
+斷言有文字——留下的紅是設計的」)。接上 `CancelableBusy` 時順手補上了
+「產生總評中…」,所以把這條翻正成斷言「有文字」。
+
+#### 這一輪的量測
+
+- 單元測試 529 → **569**(52 個檔案)。新增 40 條全部針對上述六項。
+- eslint 維持 0 error / 21 warning —— **沒有調高 baseline**。
+  過程中 eslint 抓到 3 個 error:兩個是 `CancelableBusy` 忘了傳
+  `onIdleClick`,那會讓「開始練習」與「下一題」變成**點不動的死按鈕**。
+  這是本專案的 lint 管道第二次攔下真缺陷(上一次是 `nav.ts` 的 stale closure)。
+
+---
+
+### 把「沒有機制會在出錯時變紅」補上:lint 管道、覆蓋率對帳、以及它們抓到的五個真缺陷
+
+這一輪的主軸不是新增功能,而是**把兩種「看起來很安全的失敗」變成紅燈**。
+五個真缺陷全部是既有程式碼裡的問題,不是新寫的;而其中最有價值的幾個,
+是量測層自己找到的 —— 包括一個「斷言恆為真」的測試。
+
+#### 一、lint 管道:0 error / 21 warning,上限由檔案釘住
+
+新增 `eslint.config.mjs`(五個區塊)與 `scripts/lint-baseline.mjs`。
+
+**為什麼要 baseline 而不是「要求 0 warning」**:這個工作樹有 21 筆既有
+warning(13 筆 `no-explicit-any`、8 筆 `react-hooks/exhaustive-deps`)。
+一次清光它們會讓這條檢查在接下來幾個月裡天天紅,而「天天紅的檢查」等於沒有
+檢查 —— 這是本專案寫過的教訓。所以做法是:**記下當前數量作為上限**,
+超出就擋,並且在 baseline 腳本裡提示「可以調低了」。
+本輪的驗證是真的把上限擋下來:新增一支 spec 時 `no-explicit-any` 變 14 > 13
+而 exit 1,於是把那個 `any` 修掉而不是調高上限。
+
+`reportUnusedDisableDirectives: 'error'` 同時拔掉了 4 個多餘的 `eslint-disable`
+(ToastHost、Calibration 兩處、sttAligner 一處)—— 從此「多餘的指示」會變紅,
+而不是像從前那樣靜靜躺在那裡。
+
+> 順帶記一個設定上的坑:把 `linterOptions` 與 `ignores` 放進**同一個**物件,
+> 會讓全域 ignore 變成區域性的,於是 `out/` 的建置產物被 lint 並報出一堆假錯誤。
+> 這件事寫在 `eslint.config.mjs` 的檔頭,因為它看起來完全合理。
+
+#### 二、lint 抓到的三個真缺陷
+
+**1. `nav.test.ts` 的 stale closure(最嚴重,影響真實使用者)**
+
+```ts
+useEffect(() => registerNavigator(p => void navigate(p)), [page])
+```
+
+這個 effect 在 `scriptsDirty === false` 時註冊了 navigate,而它**capturing 的是
+當下的 `navigate` 閉包**。之後使用者改了講稿(還沒存)、然後按了一個帶
+「前往設定」行動鈕的錯誤 toast —— 那顆鈕走的是**註冊時**那個 navigate,
+所以離開守衛被繞過了,未存的修改被靜靜丟棄。
+
+而 `nav.ts` 整個模組存在的理由就是防這件事。修法是 `navigateRef`
+(每次 render 賦值)+ `useEffect(..., [])`,讓註冊的那個 navigate 永遠看得到
+最新的 `navigate`。
+
+**2. `e2eManifest.test.ts` 裡一個恆為真的斷言**
+
+```ts
+expect(ADVISORY_SPECS.includes(s))  // s 是字串,ADVISORY_SPECS 是 {file, reason}[]
+```
+
+字串拿去比一串物件,**永遠是 false**。所以那條「兩份清單不得重疊」的斷言
+從寫下來的那天起就是**通過的**,不管清單有多亂。
+
+這是本專案最貴的一種失敗:一個看起來在保護你的測試,實際上什麼都沒檢查。
+修法之後我做了負向驗證 —— 塞一份 `smoke.spec.ts` 進 ADVISORY_SPECS,測試變紅;
+移除後恢復綠。**沒有做這一步的話,我會盯著全綠的測試以為它有在工作。**
+
+**3. `scripts/audit-effects.mjs` 裡四段從沒被呼叫的死碼**
+
+`stepMediaResidue()`、`toggleSwitch()`、`panicBefore`,以及一行
+`pManual.works(...) === undefined`。最後那行特別值得記:它是一個**對布林值
+做自我檢查的 no-op**,寫的人顯然想確認什麼,但實際上什麼都沒做。
+
+`stepMediaResidue()` 與 `toggleSwitch()` 更麻煩一點:它們各自帶著一段
+「環境限制」的記錄,看起來像有效的量測結論。刪掉它們之後,那四筆紀錄
+從此**不會再出現在報告裡** —— 而那正是它們原本就沒做到的(從沒被呼叫)。
+
+同一輪裡還修掉的:`audit-states.mjs` 的 `keyPath` 改成從 schema 字串推導
+(原本硬寫成 `'id'`,是一個靜默的 schema 漂移地雷)、`probe-corners.mjs` 每張圖
+呼叫 `sharp()` 兩次改成一次。
+
+#### 三、覆蓋率對帳:3 個「有登記、有探針、卻沒有任何狀態渲染它」
+
+`audit:effects` 的最後三個 probe-not-found 不是登記過期,是**狀態清單少了三格**:
+
+- `toast|id:toast-action` —— 宣告的 `toast` 狀態發的是沒有 action 的 toast,
+  所以那顆按鈕從來沒被渲染。而**沒有 action 可發本身是個已修的缺陷**:
+  `installToastBridge` 早期丟掉了第三個參數,稽核因此從來無法製造可行動的
+  toast ——「錯誤要能導到該去的頁」這個使用者價值,量測層從來碰不到。
+- `overlay|id:coaching-mute` / `coaching-unmute` —— 五個浮層狀態都不帶教練訊號,
+  提示條永遠不掛載。修法是新增**兩個**狀態而不是一個:「恢復全部」的渲染條件是
+  `coachingMuted.length > 0`,也就是**必須先按過靜默**才會出現。用同一格去列舉
+  兩者,第二顆永遠量不到 —— 而它恰好是使用者「我明明按過了怎麼又響」時
+  唯一能按回去的那顆。
+
+我選「宣告狀態」而不是「標成豁免」:豁免只要一行,而那會讓「使用者按了有沒有
+反應」變成一個永遠不再有人回頭看的問題。豁免數維持 25,一個都沒加。
+
+**負向驗證**:刪掉登記表裡的 `copy-diagnostics` 一筆 → 閘門 exit 1、
+`no-effect-probe×1`,即使探針仍然跑過、仍然結論 `works`。
+這正是那條規則存在的理由:**有探針但沒登記,會產生一個沒有說明的結論。**
+
+> 這一步踩到一個值得記的坑。第一次的移除腳本用 `line + '\n'` 去比對,
+> 而這個檔是 CRLF 行尾 —— 所以**替換靜靜地什麼都沒做**,腳本卻印了
+> 「removed」。我盯著一個「已經刪掉一筆登記」的稽核結果看了很久才發現。
+> 後來改成比對 `\r\n` 並在寫入後驗證計數真的減了 —— **量測層自己說謊時,
+> 驗證動作本身也要能被驗證。**
+
+#### 四、兩個量測層自己會說謊的地方(接線時發現)
+
+補上 `startup_main_ready` / `startup_hotkey_conflict` / `coaching_fired`
+三個事件(它們在 `shared/observability.ts` 裡**宣告了很久卻沒有任何發射者**)
+時,發現兩個更嚴重的問題:
+
+**`metrics` 從來沒有進過記憶體。** `recordEvent` 只把它寫進日誌**檔案**,
+而「複製診斷報告」是**從記憶體組的**。後果:「啟動花了 4.2 秒」有寫進去,
+使用者複製報告時卻看不到 —— 而那份報告才是他會貼給我們的東西。
+
+順帶補上一道守門:`metrics` **不會**經過 `redactEventFields`(那條路徑只處理
+`fields`),所以型別上的 `Record<string, number>` 必須在執行期真的過濾。
+否則未來有人寫 `metrics: { note: 使用者輸入 }`,它會繞過遮蔽直接進報告。
+數字不可能是秘密 —— 這跟既有那條「敏感命名的欄位只准放布林或數字」是同一個推理。
+
+**診斷報告的「熱鍵衝突數」永遠是 0。** 呼叫端從來不傳 `hotkeyConflicts`,
+而預設值是 0。也就是說「六個熱鍵全部被別的程式佔走」的使用者,複製出來的
+報告會寫著「衝突數 0」。
+
+這比沒有這個欄位更糟:它讓我們**主動排除**回報率最高的問題假設。一個永遠是 0
+的診斷欄位和沒有欄位一樣是空白,但多了一層「看起來量過了」的假象。
+
+而 `npm run typecheck` 抓不到它 —— 少傳一個有預設值的選項是完全合法的型別
+(實測過,改回去 typecheck 仍然 exit 0)。所以測試必須寫在**呼叫端**:
+`hotkeys.test.ts` 直接呼叫被註冊的 IPC handler,而不是測那個函式。
+同樣做了負向驗證:把參數拿掉,那條測試變紅(`expected +0 to be 6`)。
+
+#### 五、e2e 環境適配器:讓兩面牆第一次被執行
+
+「麥克風權限被拒」與「Ollama 沒開」是使用者最常撞到的兩面牆,而它們在 CI 上
+測不到 —— 麥克風權限是 OS 層級的,Ollama 要真的跑服務並下載幾百 MB 模型。
+
+後果是 `E_MIC_PERMISSION_DENIED` / `E_MIC_BUSY` / `E_MIC_NOT_FOUND` 三個
+錯誤碼與三段中文,**從來沒有被執行過一次**。單元測試測的是「`NotAllowedError`
+會對應到 `E_MIC_PERMISSION_DENIED`」,而「所以使用者會看到『請到設定 →
+隱私權與安全性 → 麥克風』」這個推論從未被驗過 —— 而它正是這個 App 對
+新使用者做的第一個承諾。
+
+新增 `e2e/helpers/env.ts` 與 `src/shared/e2eEnv.ts`,在**邊界**注入
+(`getUserMedia` 與 main 端的 Ollama 探測),產品程式碼一行不動。
+新增 `e2e/mic-denied.spec.ts`(blocking)四條測試,已對真實 App 驗證通過。
+
+三個刻意的設計決定:
+
+1. **預設乾淨。** 不指定情境就是 `ok`,而每一個 e2e 都會繼承乾淨的預設 ——
+   否則每一條測試都在一個有假故障的世界裡跑,那種偏差**不會讓任何測試失敗**。
+2. **注入點不碰 contextBridge。** `window.api` 是被凍結的,在 renderer 改寫它
+   會丟 TypeError 而讓整個入口檔中止(這個坑 `preflight.ts` 的檔頭已經記過)。
+   所以麥克風在 renderer 注入、Ollama 在 main 注入 —— 後者反而更好,
+   preflight 與設定頁「測試連線」兩個呼叫點都會看到同一個故障。
+3. **`busy` 與 `denied` 必須丟不同的錯誤名。** 兩者若都丟 `NotAllowedError`,
+   使用者會被導去「Windows 設定 → 麥克風權限」,而他真正的問題是另一個程式
+   占著麥克風。診斷錯了,代價是他的時間。單元測試專門釘住這三個名稱。
+
+安全邊界:這些變數只有在 `!app.isPackaged && AI_TP_E2E=1` 時才會被讀。
+條件寫錯的話,使用者在正式安裝包上按「開始錄音」會拿到假的權限錯誤,
+而他會**照著指示**去 Windows 設定裡改權限。
+
+e2e 同樣做了負向驗證:把注入那一行拿掉,`麥克風權限被拒` 那條測試變紅。
+
+#### 六、其他
+
+- `report.json` 裡同時有兩個「覆蓋率」數字(132/154 與 145),分母不同卻長得
+  幾乎一樣 —— 讀者只會以為其中一個是錯的。已把單位寫進字串。
+- README 的測試數字(414)與 `npm run test:all`(已刪除)都過時了,一併修正。
+- 發布閘門新增 `lint` 與 `lint:baseline` 兩個步驟(共 12 步),
+  `audit:effects` 的基線調成實跑數字並逐條寫上 provenance。
+
+---
+
 ### 深度驗證這一輪的七塊改動:抓到三個真缺陷,其中一個的證明力是三次才建立起來的
 
 這一輪的工作樹上有 17 檔、581 行未提交的改動(VAD 語音時長語意、Record 時間戳、

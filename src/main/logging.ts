@@ -1,5 +1,13 @@
 import { app } from 'electron'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync
+} from 'fs'
 import { join } from 'path'
 
 /**
@@ -14,7 +22,14 @@ const LOG_DIR = (): string => join(app.getPath('userData'), 'logs')
 const MAX_BYTES = 1_000_000 // 1MB
 const KEEP = 3
 
-function rotateIfLarge(): void {
+/**
+ * 輪替檢查,匯出給 events.ts 共用。
+ *
+ * 為什麼要共用:輪替的邏輯(檔名、大小門檻、保留幾檔)只該有一份。
+ * 兩處各寫一份的話,調整保留檔數時很容易只改一邊 —— 而症狀是「第 3 個檔案
+ * 忽然不見了」,那種問題通常在半年後才會有人注意到,而且很難回溯。
+ */
+export function rotateIfLarge(): void {
   try {
     const p = logFile()
     if (!existsSync(p) || statSync(p).size < MAX_BYTES) return
@@ -27,8 +42,10 @@ function rotateIfLarge(): void {
         else {
           if (existsSync(to)) unlinkSync(to)
           try {
-            const fs = require('fs') as typeof import('fs')
-            fs.renameSync(from, to)
+            // 這裡原本是一個 require('fs')。它不會換來任何東西:檔案頂端已經
+            // import 了同一個模組,而 Electron 打包後 fs 一定被解析得到。
+            // 保留 require 只會讓讀者以為 renameSync 有什麼取得成本上的顧慮。
+            renameSync(from, to)
           } catch {
             /* 忽略:輪替失敗不影響本體 */
           }

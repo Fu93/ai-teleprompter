@@ -368,7 +368,6 @@ async function main() {
     // 每一個都要與它的「上一個狀態」比對:沒變代表強制沒生效。
     // Record 展開列 -> 摘要/報告(報告數字在極端資料下的排版)
     {
-      const base = `${vpTag}/record`
       const state = `${vpTag}/record-expanded`
       if (await force(main, state, 'app.navigate', 'record')) {
         await sleep(900)
@@ -586,6 +585,128 @@ async function main() {
           )
         } else {
           report.measured(`${state}(${Math.round(geo.w)}x${Math.round(geo.h)},radius ${geo.radius}px)`)
+        }
+      }
+
+      /**
+       * 藥丸的狀態可辨識性(2026-10-03 新增)。
+       *
+       * 為什麼要量這個:四個狀態原本擠在兩種顏色上 —— 「滑鼠穿透」(bg-amber-450)
+       * 與「已播畢」(bg-amber-450/80)只差 20% 不透明度。而穿透狀態下視窗**收不到
+       * 任何滑鼠事件**,所以那顆點上唯一的說明(title)在該狀態永遠不會顯示:
+       * 最需要解釋的狀態剛好是最沒辦法解釋的一個。
+       * domAudit 的對比規則逐元素算顏色比值,兩顆 8px 的點各自都合格 ——
+       * 要看出「這兩個是不同狀態」需要跨元素比較語意,而沒有任何規則在做那件事。
+       *
+       * 量兩件事:
+       *   (a) 狀態點必須帶 data-overlay-state。沒有它,狀態就無從指涉,
+       *       也就無從檢查「它跟別的狀態長得不一樣」。
+       *   (b) 預設狀態與穿透狀態的**形狀簽章**必須不同。簽章刻意不含顏色 ——
+       *       顏色正是這次要拿掉的依賴。
+       *   (c) 穿透狀態在藥丸上必須有文字(見下)。
+       */
+      if (id === 'pill') {
+        const STATE_PROBES = [
+          ['default', false],
+          ['clickThrough', true]
+        ]
+        const signatures = {}
+        for (const [name, on] of STATE_PROBES) {
+          const state = `overlay/pill@state-${name}`
+          await main
+            .evaluate((v) => window.api.setSettings({ overlay: { clickThrough: v } }), on)
+            .catch(() => {})
+          await sleep(500)
+          const probe = await overlay
+            .evaluate(() => {
+              const dot = document.querySelector('[data-pill-dot]')
+              if (!dot) return null
+              const cs = getComputedStyle(dot)
+              const child = dot.firstElementChild
+              const notice = document.querySelector('[data-pill-notice]')
+              return {
+                state: dot.getAttribute('data-overlay-state'),
+                // 形狀簽章:邊框寬 / 圓角 / 子節點(滑鼠圖示)。**不含顏色**。
+                shape: [cs.borderTopWidth, cs.borderTopLeftRadius, child ? child.tagName : '-'].join('|'),
+                notice: notice ? (notice.textContent || '').trim() : ''
+              }
+            })
+            .catch(() => null)
+          if (!probe) {
+            report.unreached(state, '藥丸上找不到狀態點([data-pill-dot])—— 藥丸可能不在預設內容分支')
+            continue
+          }
+          if (!probe.state) {
+            report.add(
+              'pill-state-unlabelled',
+              state,
+              '狀態點沒有 data-overlay-state —— 狀態無從檢查,也就無從保證它跟別的狀態長得不一樣'
+            )
+            continue
+          }
+          signatures[name] = probe
+          report.note(`overlay.pill.state.${name}`, `state=${probe.state} shape=${probe.shape} notice=${probe.notice || '(無)'}`)
+          if (name === 'clickThrough' && !probe.notice) {
+            report.add(
+              'pill-state-no-text',
+              state,
+              '滑鼠穿透狀態下藥丸上沒有任何文字 —— 這個狀態收不到滑鼠事件,所以唯一的說明只能靠文字,而它不在'
+            )
+          }
+        }
+        const def = signatures.default
+        const ct = signatures.clickThrough
+        if (def && ct && def.shape === ct.shape) {
+          report.add(
+            'pill-state-indistinguishable',
+            'overlay/pill@state-compare',
+            `預設(${def.state})與滑鼠穿透的形狀簽章相同(${def.shape})—— 兩個狀態只靠顏色區分,而穿透狀態下 tooltip 永遠顯示不出來`
+          )
+        } else if (def && ct) {
+          report.measured(`overlay/pill@state-compare(形狀可區辨:${def.state}=${def.shape} vs ${ct.state}=${ct.shape})`)
+        }
+        // 還原:後面的狀態不該繼承這個探針設下的穿透(它會讓 hover 類檢查失效)
+        await main.evaluate(() => window.api.setSettings({ overlay: { clickThrough: false } })).catch(() => {})
+        await sleep(400)
+      }
+
+      /**
+       * 浮層工具列的可學性(2026-10-03 新增)。
+       *
+       * 展開面板是一條 20 顆純圖示按鈕的可橫捲工具列,它們的說明原本只有原生
+       * title(hover 約一秒才出現、內容是一整句、還會被可橫捲的容器裁掉)。
+       * 改成「底欄說明列」之後,「有沒有接上」變成**資料上可檢查**的事:
+       * 每一顆都必須帶 data-tooltip-short(有短標籤)。
+       *
+       * 這一條抓的是「新增一顆按鈕時忘了給標籤」—— 那顆按鈕在畫面上永遠不
+       * 解釋自己,而沒有任何既有規則會發現(no-accessible-name 把 title 當成
+       * 合格的名稱,所以它在稽核眼裡甚至是加分項)。
+       */
+      if (id === 'expanded') {
+        const state = 'overlay/expanded@toolbar-labels'
+        const toolbar = await overlay
+          .evaluate(() => {
+            const shell = document.querySelector('[data-toolbar-shell]')
+            if (!shell) return null
+            const btns = [...shell.querySelectorAll('button')]
+            return {
+              total: btns.length,
+              missing: btns
+                .filter((b) => !b.hasAttribute('data-tooltip-short'))
+                .map((b) => (b.getAttribute('aria-label') || '(無名稱)').slice(0, 14))
+            }
+          })
+          .catch(() => null)
+        if (!toolbar || toolbar.total === 0) {
+          report.unreached(state, '找不到浮層工具列([data-toolbar-shell])')
+        } else if (toolbar.missing.length) {
+          report.add(
+            'overlay-toolbar-unlabelled',
+            state,
+            `${toolbar.missing.length}/${toolbar.total} 顆沒有短標籤:${toolbar.missing.join('、')} —— 它們只能靠 hover 一秒後的原生 tooltip,而底欄說明列不會報它們`
+          )
+        } else {
+          report.measured(`${state}(${toolbar.total} 顆全部有短標籤)`)
         }
       }
 

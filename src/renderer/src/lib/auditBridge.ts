@@ -30,6 +30,8 @@
  *   所以:控制項同步就回傳物件,非同步就回傳 Promise —— 兩種都能被
  *   `await`(Playwright 的 evaluate 與稽核腳本的 await 都吃這個)。
  */
+import type { ToastAction } from './toast'
+
 export type AuditControlResult = boolean | void | Record<string, unknown>
 
 type AuditControl = (arg: unknown) => AuditControlResult | Promise<AuditControlResult>
@@ -97,8 +99,16 @@ export function forceAuditState(name: string, arg: unknown): AuditForceResult | 
  *
  * 與 forceAuditState 分開(而不是塞進 args):toast 不是「設定狀態」而是「產生事件」,
  *   而且稽核要的正是這個事件本身。
+ *
+ * ⚠️ action 必須原樣傳下去(第三個參數)。原本這個橋只接( kind, message ),
+ *   把 action 丟掉了 —— 結果是**可行動錯誤的按鈕在稽核裡根本造不出來**:
+ *   沒有任何一個「造出錯誤 toast」的入口會產生一則帶按鈕的 toast。
+ *   那一顆按鈕是這輪改動裡最重要的使用者面向成果(帶著「前往設定」),
+ *   而它沒有探針等於它在發布閘門裡是隱形的。
  */
-export function installToastBridge(push: (kind: 'error' | 'success' | 'info', message: string) => void): void {
+export function installToastBridge(
+  push: (kind: 'error' | 'success' | 'info', message: string, action?: ToastAction) => void
+): void {
   if (typeof window === 'undefined') return
   const w = window as unknown as { __auditToast?: typeof push }
   if (w.__auditToast) return

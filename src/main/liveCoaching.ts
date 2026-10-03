@@ -1,6 +1,6 @@
 import { IPC, type RescuePayload } from '@shared/types'
 import { chatCompletion, resolveProvider } from './ai/aiProvider'
-import { getScene, resolveScene, ConversationTracker, buildPanicSystemPrompt, pickFallbackTemplate } from './context-engine/scenes'
+import { resolveScene, ConversationTracker, buildPanicSystemPrompt, pickFallbackTemplate } from './context-engine/scenes'
 import { listAllScenes } from './packs'
 import { buildPanicPrompt, parseRescueResponse, computeConfidence, structuredFallback } from './context-engine/panicAi'
 import { pushTranscript, getRecentContext, clearContext } from './liveContext'
@@ -17,6 +17,7 @@ import {
 } from './context-engine/coachingRules'
 import { state } from './state'
 import { setOverlayVisible } from './windows'
+import { recordEvent } from './events'
 
 // panic 的 provider 差異化 timeout(v3:Groq 900ms / Ollama 2500ms / 其他 1500ms)
 function panicTimeoutMs(): number {
@@ -66,6 +67,20 @@ function syncCoachingTimer(): void {
 function deliverCoaching(signal: EngineSignal): void {
   coachingCounts[signal.kind] = (coachingCounts[signal.kind] ?? 0) + 1
   if (!state.overlayWindow || state.overlayWindow.isDestroyed()) return
+  /**
+   * `coaching_fired` —— 宣告了,但沒有任何呼叫端。
+   *
+   * 放在 `isDestroyed()` 那道檢查**之後**:浮層不在時不記事件。
+   * 理由是這兩件事對使用者來說不一樣 ——
+   *   浮層不在 → 使用者當下根本看不到提示(問題在浮層沒開)
+   *   浮層在   → 使用者看到了卻覺得它吵(問題在教練規則)
+   * 記在一起就分不出來了。而 recordEvent 本身有 5 秒 rate limit,
+   * 冷場訊號每 2 秒一次,沒有那個抑制會把報告洗掉。
+   */
+  recordEvent({
+    name: 'coaching_fired',
+    fields: { kind: signal.kind, total: coachingCounts[signal.kind] ?? 0 }
+  })
   state.overlayWindow.webContents.send(IPC.CoachingSignal, {
     kind: signal.kind,
     message: signal.message,

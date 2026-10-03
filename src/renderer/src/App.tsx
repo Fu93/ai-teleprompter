@@ -1,5 +1,5 @@
 import type { JSX } from "react"
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AudioLines,
   GraduationCap,
@@ -23,6 +23,7 @@ import { ConfirmHost } from './components/ConfirmDialog'
 import { useDebug } from './lib/debug'
 import { registerAuditControl } from './lib/auditBridge'
 import { confirmDialog } from './lib/confirm'
+import { registerNavigator } from './lib/nav'
 
 type PageId = 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings'
 
@@ -109,6 +110,30 @@ function MainApp(): JSX.Element {
   useEffect(() => {
     window.history.replaceState(null, '', `#/${page}`)
   }, [page])
+
+  /**
+   * 把 navigate 登錄給全域 toast(可行動錯誤的「前往設定」按鈕)。
+   *
+   * 為什麼需要這個橋而不是讓 toast 直接改 hash:hash 會**繞過下面那兩道
+   * 守衛**。講稿有未存變更時按「前往設定」就會靜默丟掉內容 —— 而「導航到
+   * 設定」正是錯誤提示最常建議的下一步,那會讓它變成一個常見的資料遺失觸發器。
+   * 登錄的是 App 自己的 navigate,守衛與訊息都在同一處。
+   *
+   * ⚠️ 這裡**不能**直接把 navigate 放進依賴列,也不能只依賴 [page]。
+   * navigate 每次 render 都是新的函式,會讀到當下的 scriptsDirty / leaveGuard。
+   * 若只登錄一次(或只在 page 改變時重新登錄),登錄進去的是某一次 render 的
+   * 快照 —— 使用者在講稿頁打了字(page 沒變)之後從 toast 按「前往設定」,
+   * 拿到的是 scriptsDirty=false 的舊閉包,守衛直接失效,未存內容就這樣消失。
+   * 這正是本檔存在的理由,不能由它自己引入。
+   *
+   * 正確做法是「永遠指向最新」的 ref:註冊一次,ref 每次 render 更新。
+   */
+  const navigateRef = useRef(navigate)
+  navigateRef.current = navigate
+  useEffect(
+    () => registerNavigator((p) => void navigateRef.current(p)),
+    []
+  )
 
   /**
    * 稽核用:依頁面 id 導航。

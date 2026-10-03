@@ -17,7 +17,7 @@
  *
  * 執行需先 `npm run build`。
  */
-import { test, expect, _electron as electron } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import { launchApp as launchMain } from './helpers/launch'
 
 test('錄完的逐字稿能存成講稿,而且真的存進去了', async () => {

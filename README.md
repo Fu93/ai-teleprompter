@@ -43,15 +43,24 @@
 
 **資料會上傳嗎？** 轉錄（本地引擎）、講稿、會議紀錄全部只存在你的電腦。只有當你主動設定雲端 STT／OpenAI 相容 API 時，對應內容才會送往你填寫的端點。
 
+**回報問題時該附什麼？** 設定頁 → 疑難排解 →「複製診斷報告」，會把版本、設定摘要（已遮蔽金鑰與逐字稿）、錯誤碼統計與近期事件一起產出。那份報告預設會離開這台電腦，所以遮蔽規則寫成了單元測試（`src/main/__tests__/observability.test.ts`）。
+
 ## 開發
 
 ```bash
 npm install
-npm run dev        # 開發（兩視窗熱重載）
-npm test           # 414 單元測試
-npm run test:e2e   # Playwright e2e 封鎖套件(先 npm run build;與 CI 同一份清單)
-npm run dist       # NSIS 安裝包
+npm run dev          # 開發（兩視窗熱重載）
+npm test             # 569 單元測試（52 個檔案）
+npm run lint         # ESLint（0 error；warning 上限由 eslint-baseline.json 釘住）
+npm run lint:baseline # 確認 warning 沒有超過 baseline（發布閘門會跑）
+npm run test:e2e     # Playwright e2e 封鎖套件（先 npm run build；與 CI 同一份清單）
+npm run test:e2e:advisory # 會跑但不擋 merge 的那一支（理由写在 e2e/manifest.mjs）
+npm run release      # 發布閘門：build → lint → typecheck → unit → 6 支稽核 → e2e
+npm run dist         # NSIS 安裝包
 ```
+
+**e2e 測試清單的唯一出處是 [e2e/manifest.mjs](e2e/manifest.mjs)**：分成「擋 merge 的封鎖套件」與「會跑但不擋的 advisory」，每一支都必須寫明理由。
+新增一支 spec 沒登記會讓 `e2eManifest.test.ts` 紅燈——那是為了防止「本地閘門擋的東西比 CI 多一支」這種漂移再發生。
 
 技術棧：Electron 44 / React 19 / TypeScript / Tailwind 4 / transformers.js（Whisper WebGPU）/ Dexie / vitest / Playwright。
 

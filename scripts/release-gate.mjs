@@ -29,6 +29,10 @@ const ROOT = process.cwd()
 const isWin = process.platform === 'win32'
 const npm = isWin ? 'npm.cmd' : 'npm'
 const npx = isWin ? 'npx.cmd' : 'npx'
+const node = process.execPath
+// e2e 檔案清單的單一出處。原先這裡是 `playwright test`(全 20 支),
+// 而 CI 跑的是 package.json 的 19 支 —— 兩者對「什麼算通過」有不同答案。
+import { blockingArgs } from '../e2e/manifest.mjs'
 
 // ---------------------------------------------------------------------------
 // 基線:每支稽核「至少」要量到幾個狀態。
@@ -60,12 +64,32 @@ const BASELINE = {
    */
   'audit:effects': {
     file: 'docs/audit/effects/report.json',
-    minStates: 131,
-    minWorks: 130,
-    minControls: 100,
+    // 131 → 145(2026-10-02):每個數字都取自這一輪實跑,而非估算。
+    // 狀數 131 → 145 是因為把 audit-states 認列的形態也併進來了
+    // (含本輪新增的 overlay/coaching-hint 與 overlay/coaching-muted)。
+    //
+    // **這兩個 coaching 狀態是為了修一個真缺口才加的**,不是為了讓數字變大:
+    // 「點提示條靜默這一種」與「恢復全部」原本是「有登記、有探針、卻沒有一個
+    // 宣告狀態渲染它」的 probe-not-found —— 而它們恰好是使用者會議中
+    // 唯一能處理教練提示的兩個控制項。必須是**兩個**狀態:「恢復全部」的
+    // 渲染條件是 coachingMuted.length > 0,也就是必須先按過靜默才會出現。
+    minStates: 145,
+    // 130 → 143:works 是「真的觀察到效果並附上證據來源」的控制項數。
+    // dead 維持 0 —— 這一欄不設門檻是故意的:dead 應該是 0,
+    // 而它只要不是 0 就已經是紅燈(問題數 ≠ 0 會擋),不需要另一個門檻。
+    minWorks: 143,
+    // 100 → 145:控制項實例數(= 列舉到的、不含豁免的實例)。
+    // 它與 minWorks 幾乎同值,是因為這一輪已做到「每一顆畫面上的控制項
+    // 都有結論或豁免」—— 兩者差距拉大就是真的縮水了。
+    minControls: 145,
     // 24 → 25(2026-10-02):preflight 輪新增的 preflight-action / preflight-dismiss
     // 兩個豁免族當時沒有同步這裡,閘門重跑時就會紅 —— 這正是這個門檻的用途:
     // 逼著把「豁免又多了一顆」變成有意識的決定,而不是靜默爬升。此輪決定:接受 25。
+    //
+    // 本輪**沒有新增任何豁免**:onboarding / toast-action / coaching-mute /
+    // coaching-unmute 四個缺口一律用「宣告狀態」解決。
+    // 這是刻意的 —— 標成豁免只要一行,而那會讓「使用者按了有沒有反應」
+    // 變成一個永遠不再有人回頭看的問題。
     maxExempt: 25
   }
 }
@@ -98,6 +122,8 @@ export function checkEffectsCoverage(data) {
 
 const STEPS = [
   { name: 'build', cmd: [npm, 'run', 'build'] },
+  { name: 'lint', cmd: [npm, 'run', 'lint'] },
+  { name: 'lint:baseline', cmd: [npm, 'run', 'lint:baseline'] },
   { name: 'typecheck', cmd: [npm, 'run', 'typecheck'] },
   { name: 'unit', cmd: [npm, 'run', 'test'] },
   { name: 'audit:ui', cmd: [npm, 'run', 'audit:ui'] },
@@ -106,7 +132,12 @@ const STEPS = [
   { name: 'audit:edge', cmd: [npm, 'run', 'audit:edge'] },
   { name: 'audit:journey', cmd: [npm, 'run', 'audit:journey'] },
   { name: 'audit:effects', cmd: [npm, 'run', 'audit:effects'] },
-  { name: 'e2e', cmd: [npx, 'playwright', 'test'], special: 'e2e' }
+  // e2e 走 run-e2e.mjs(讀 e2e/manifest.mjs),不是 npx playwright test。
+  // 原先這裡是 `playwright test` = **全部** spec,比 CI 的封鎖清單多一支 ——
+  // 本地閘門與 CI 對「什麼算通過」有不同答案,而沒有任何地方寫著這件事。
+  // 那一支不是被刪掉,是移到 advisory:它仍然會跑,只是不擋 merge
+  // (理由見 manifest.mjs 裡那一條)。
+  { name: 'e2e', cmd: [node, 'scripts/run-e2e.mjs', 'blocking'], special: 'e2e' }
 ]
 
 // 所有稽核都必須在這個 gate 下開啟,否則量到的是關閉除錯層的版本。
@@ -229,13 +260,15 @@ async function runE2E() {
   rmSync(jsonOut, { force: true })
 
   process.stdout.write(C.dim('  (第一次嘗試,收集失敗清單…)\n'))
-  const first = await run(npx, ['playwright', 'test', '--reporter=list,json'], {
+  // 直接呼叫 playwright 而不是走 run-e2e.mjs:這裡需要拿到 JSON 報告來
+  // 抽出失敗清單做「只重跑失敗的那幾支」。檔案清單仍然來自 manifest。
+  const first = await run(npx, ['playwright', 'test', ...blockingArgs(), '--reporter=list,json'], {
     env: { PLAYWRIGHT_JSON_OUTPUT_NAME: jsonOut }
   })
   if (first === 0) return { code: 0, flaky: [] }
 
   // 從 JSON 報告抽出失敗的檔案與標題
-  let failures = []
+  const failures = []
   try {
     const data = JSON.parse(readFileSync(jsonOut, 'utf8'))
     const walk = (suites) => {

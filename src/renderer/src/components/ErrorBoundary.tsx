@@ -27,7 +27,7 @@
  *   而那句通用話術必須誠實:內容「可能」不見,不能說「沒有」不見。
  */
 import type { ErrorInfo, JSX, ReactNode } from 'react'
-import { Component, useEffect, useState } from 'react'
+import { Component, useState } from 'react'
 import { create } from 'zustand'
 import { AlertOctagon, Check, Copy, ExternalLink, RotateCcw } from 'lucide-react'
 import { peekCloseBlocker } from '../lib/closeGuard'

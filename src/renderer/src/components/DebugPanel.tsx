@@ -37,15 +37,12 @@ import { PhraseVisuals } from '../lib/teleprompter/constants'
 /** 面板預設寬度;拖曳邊界用 */
 const PANEL_W = 404
 
-/** 範例稿:與 scripts/capture-ui.mjs 同一份,讓截圖與手動除錯看到的內容一致 */
-const DEMO_SCRIPT = `各位好,今天要向大家介紹我們的新產品 Flow。
-首先,為什麼我們要做這件事?因為每場重要對話,你都只有一次機會。
-接下來三個重點:第一,市場痛點;第二,我們的解法;第三,為什麼是現在。
-市場痛點很簡單——資訊不對等。會議中你可能在想上一句話,就已經錯過下一句。
-我們的解決方案是即時的語意追蹤與提示,像副駕駛一樣安靜地幫你補位。
-為什麼是現在?因為本地語音模型剛好跨越了延遲的門檻。
-總結一句話:我們不是取代你的注意力,而是保護它。
-謝謝大家,接下來是實機示範。`
+/**
+ * 範例稿內容:與 scripts/capture-ui.mjs 及使用者首用的「載入範例講稿」
+ * 共用同一份(見 lib/demoScript.ts)。三處各寫一份會漂移,而漂移的症狀是
+ * 「截圖上的浮層」與「使用者第一次看到的浮層」不是同一個東西。
+ */
+import { DEMO_SCRIPT_CONTENT as DEMO_SCRIPT } from '../lib/demoScript'
 
 type Tab = 'state' | 'layout' | 'audit' | 'events' | 'actions'
 

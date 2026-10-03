@@ -43,8 +43,10 @@ const CORNER_CONTRAST = 40
 const TOLERANCE_PX = 4
 
 async function analyzeCorners(path) {
-  const { width, height, channels } = await sharp(path).raw().toBuffer({ resolveWithObject: true }).then(r => ({ ...r.info, channels: r.info.channels }))
-  const { data } = await sharp(path).raw().toBuffer({ resolveWithObject: true })
+  // 解碼一次就好:原本這裡呼叫 sharp() 兩次(一次取寬高、一次取 buffer),
+  // 等於把同一張圖讀兩遍。resolveWithObject 同時回傳 info 與 data。
+  const { data, info } = await sharp(path).raw().toBuffer({ resolveWithObject: true })
+  const { width, height } = info
   const ch = data.length / width / height
   const lum = (x, y) => {
     const i = (y * width + x) * ch

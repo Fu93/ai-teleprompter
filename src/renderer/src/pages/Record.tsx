@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronDown,
   ChevronRight,
+  ClipboardCopy,
   Download,
   Loader2,
   Mic,
@@ -19,12 +20,14 @@ import type { CoachingKind, MeetingSession, MeetingSummary, SessionReport, Trans
 import { db } from '../lib/db'
 import { useSettings } from '../lib/store'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
-import { aiChat, extractJson, resolvedModelName } from '../lib/ai'
+import { extractJson, isCancelled, resolvedModelName, startAiChat } from '../lib/ai'
+import { CancelableBusy } from '../components/CancelableBusy'
 import { toast } from '../lib/toast'
-import { describeError } from '../lib/describeError'
+import { reportError, reportEvent, reportCode } from '../lib/reportError'
 import { buildSessionReport, sortTranscriptSegments } from '../lib/session-intelligence'
+import { buildActionList } from '../lib/actionList'
 import { AudioSegmenter, type AudioSegmentMetadata } from '../lib/audio/segmenter'
-import { WhisperClient, WHISPER_MODELS, type WhisperModelKey } from '../lib/audio/whisperClient'
+import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { encodeWav } from '../lib/audio/wav'
 import { registerAuditControl } from '../lib/auditBridge'
 import { createPendingTracker, drainPending, STT_FAILURE_BANNER_THRESHOLD } from '../lib/transcriptionQueue'
@@ -64,6 +67,8 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
   const [sessions, setSessions] = useState<MeetingSession[]>([])
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [aiBusyId, setAiBusyId] = useState<number | null>(null)
+  /** 在飛的摘要請求的取消函式(見 lib/ai.ts 的 startAiChat) */
+  const cancelSummaryRef = useRef<(() => void) | null>(null)
   const [lastReport, setLastReport] = useState<SessionReport | null>(null)
   /**
    * 這份會後報告是哪一場的。
@@ -74,7 +79,6 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
    * 也讀得出來它是誰,並且可以直接關掉。
    */
   const [lastReportMeta, setLastReportMeta] = useState<{ title: string; endedAt: number } | null>(null)
-  const [coachCounts, setCoachCounts] = useState<Partial<Record<CoachingKind, number>>>({})
 
   /**
    * 辨識失敗的累積狀態。
@@ -331,16 +335,29 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
         sttFailStreakRef.current += 1
         const streak = sttFailStreakRef.current
         // 本地引擎的失敗(模型、WebGPU)與雲端 API 的失敗(金鑰、網路、逾時)
-        // 需要不同的診斷;不給 ctx 時 describeError 只會回中性訊息,不臆測。
+        // 需要不同的診斷;不給 ctx 時只給中性訊息,不臆測。
         const ctx = settings.stt.engine === 'cloud' ? { provider: 'cloud-api' as const } : undefined
+        // 事件只在「第一次失敗」時帶環境欄位:連續失敗是同一件事,而診斷報告要的是
+        // 「這場會議轉錄失敗過、當時用的哪個引擎」而不是「失敗了幾十次」
+        // (recordEvent 本身也有 5 秒抑制,這裡先擋掉的主要是「不該因為 banner
+        //  而變得每段都寫一次」)。引擎/模型掛在 transcribe_failed 的 fields 上 ——
+        // 「started」事件在 startInner 真正開始時記,不在这里冒名。
+        const firstFailure = !sttNotifiedRef.current
+        const sttFields = { engine: settings.stt.engine, model: settings.stt.localModel }
         if (streak >= STT_FAILURE_BANNER_THRESHOLD) {
           if (!sttNotifiedRef.current) {
             sttNotifiedRef.current = true
-            toast.error(describeError(err, ctx))
+            reportError('語音辨識失敗', err, { event: 'transcribe_failed', ...ctx, fields: sttFields })
           }
           setSttFailed(true)
         } else {
-          toast.error(describeError(err, ctx))
+          reportError('語音辨識失敗', err, {
+            event: 'transcribe_failed',
+            ...ctx,
+            fields: firstFailure ? sttFields : undefined,
+            // 累積型失敗只寫事件、不跳 toast(quiet):橫幅已經在講同一件事了。
+            quiet: streak > 1
+          })
         }
       }
     }
@@ -408,13 +425,14 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
           throw new Error('系統音訊擷取被取消或不可用')
         }
         streamsRef.current.sys = stream
-      } catch {
+      } catch (err) {
         // main 端 setDisplayMediaRequestHandler核准不到來源時,這裡收到的是
-        // NotAllowedError —— 交給 describeError 會被第一條規則誤診成
-        // 「麥克風權限被拒」,把使用者導去改一個不相關的系統設定。
-        // 這條路的成因已知(handler 回不出來源 / loopback 不可用),直接講。
-        if (attempt === startAttemptRef.current)
-          toast.error('無法擷取系統音訊。請確認有可擷取的螢幕與音訊輸出,或先只用「我的麥克風」開始。')
+        // NotAllowedError —— 交給規則比對會被麥克風那條接走,把使用者導去改
+        // 一個不相關的系統設定。所以這裡**指定**系統音訊的錯誤碼,
+        // 不用 try 的錯誤內容去猜(這個專案記錄過的原則:成因已知就直接講)。
+        if (attempt === startAttemptRef.current) {
+          reportCode('E_SYSTEM_AUDIO_UNAVAILABLE', err, { event: 'transcribe_failed' })
+        }
         return
       }
     }
@@ -441,7 +459,6 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
     sessionStartedAtRef.current = startedAtRef.current
     sessionIdRef.current += 1
     setElapsed(0)
-    setCoachCounts({})
 
     try {
       // 會話邊界:清上一場的語音上下文與即時回饋冷卻狀態
@@ -493,6 +510,13 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
         return
       }
       setRecording(true)
+      // 「這場會議有真的嘗試過轉錄」的唯一錨點。沒有它的話,診斷報告裡
+      // 「從來沒按過開始」與「按了但全部失敗」長得一樣 —— 而那正是回報者
+      // 最常提供的資訊(「我按了,沒反應」)。engine/model 讓報告直接回答
+      // 「他用的是哪個引擎」這個九成問題的第一個。
+      reportEvent('transcribe_started', {
+        fields: { engine: settings?.stt.engine ?? 'local', model: settings?.stt.localModel ?? 'base' }
+      })
     } catch (err) {
       stopAll()
       startedAtRef.current = 0
@@ -501,7 +525,12 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       if (attempt === startAttemptRef.current) {
         startingRef.current = false
         setStarting(false)
-        toast.error(describeError(err))
+        // 開麥失敗是整個 App 最常見的第一個牆。帶 provider 情境讓它知道
+        // 是雲端 STT 還是本地 —— 金鑰錯與模型沒下載的診斷完全不同。
+        reportError('無法開啟麥克風', err, {
+          event: 'transcribe_failed',
+          ...(settings?.stt.engine === 'cloud' ? { provider: 'cloud-api' as const } : {})
+        })
       }
     }
   }
@@ -562,9 +591,17 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
             segments,
             report
           })
+          // 收帳成功的錨點:與 transcribe_started / transcribe_failed 配對,
+          // 「這場會議從開始到存檔」的整條故事在診斷報告裡才讀得完整。
+          reportEvent('transcribe_succeeded', {
+            metrics: { segments: segments.length },
+            fields: { engine: settings?.stt.engine ?? 'local' }
+          })
           await refreshSessions()
         } catch (err) {
-          toast.error(`會議紀錄儲存失敗。${describeError(err)}`)
+          // 寫入失敗 = 整場會議不見了。使用者已經講了十幾分鐘,
+          // 這是這個專案記錄過最貴的失敗模式(靜默失敗讓人以為存好了)。
+          reportError('會議紀錄儲存失敗', err, { event: 'transcribe_failed' })
         }
       } else {
         // 「沒有段落」有兩種完全不同的原因,原本用同一句話講,等於給錯診斷:
@@ -620,7 +657,7 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       })
     } catch (err) {
       // 寫入失敗(IndexedDB 滿/隱私模式)要有聲,而不是靜默失敗讓使用者以為存好了
-      toast.error(`講稿儲存失敗。${describeError(err)}`)
+      reportError('講稿儲存失敗', err, { event: 'backup_failed' })
       return
     }
     // 不跨頁跳轉:Scripts 進頁時本來就會自動選中最新的那一份(orderBy updatedAt desc),
@@ -652,7 +689,34 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       // 原本結果整個沒看:寫入失敗(磁碟滿/無權限)是靜默的,使用者以為匯出成功了。
       if (!res.ok && res.error !== 'canceled') toast.error(`匯出失敗(${res.error ?? '未知錯誤'})`)
     } catch (err) {
-      toast.error(`匯出失敗。${describeError(err)}`)
+      reportError('匯出失敗', err, { event: 'backup_failed' })
+    }
+  }
+
+  /**
+   * 複製行動清單。
+   *
+   * 為什麼這一鍵很重要:會後報告是**觀察**(你講了 62%、冷場 3 次),
+   * 而使用者的下一步需要是**動作**(明天要做什麼)。中間那段轉換原本要他自己
+   * 在腦中做,於是多數人看完報告就關掉了 —— 那是這個產品最常被放棄的一段。
+   *
+   * 刻意**不要求**先有 AI 摘要:沒有摘要時清單仍然有量化建議與練習目標,
+   * 而要求「先按摘要才能複製」會讓沒有雲端 AI 的使用者完全拿不到這一段。
+   */
+  const copyActionList = async (s: MeetingSession): Promise<void> => {
+    const list = buildActionList(s)
+    try {
+      await navigator.clipboard.writeText(list.text)
+      toast.success(
+        list.aiMissing
+          ? '行動清單已複製。這場還沒有 AI 摘要，清單裡是量化建議。'
+          : '行動清單已複製，可以直接貼到你的待辦工具。'
+      )
+    } catch (err) {
+      // 剪貼簿在某些環境不可用。使用者正要拿這份清單去做事,
+      // 所以除了錯誤還要給他看得���的版本 —— 匯出成 .md 是可行的退路。
+      reportError('複製行動清單失敗', err, { event: 'backup_failed' })
+      toast.info(`可以改用「匯出」把這場存成 .md。\n\n${list.text.slice(0, 400)}`)
     }
   }
 
@@ -687,7 +751,11 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
         if (full.length <= 8000) return full
         return `${full.slice(0, 6000)}\n…(中略)…\n${full.slice(-2000)}`
       })()
-      const raw = await aiChat(settings, [
+      const aiStartedAt = Date.now()
+      reportEvent('ai_request_started', {
+        fields: { provider: aiProvider, model: resolvedModelName(settings) }
+      })
+      const chat = startAiChat(settings, [
         {
           role: 'system',
           content:
@@ -698,6 +766,8 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
           content: `根據以下會議逐字稿，輸出 JSON，格式：{"abstract":"三到五句的會議摘要","keyPoints":["重要討論重點"],"todos":["待辦事項，可含負責人"],"followUps":["建議跟進或追問的事項"]}\n\n逐字稿：\n${transcript}`
         }
       ])
+      cancelSummaryRef.current = chat.cancel
+      const raw = await chat.promise
       const summary = extractJson<MeetingSummary>(raw)
       const clean: MeetingSummary = {
         abstract: summary.abstract ?? '',
@@ -710,9 +780,23 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       await db.sessions.update(s.id, { summary: clean })
       await refreshSessions()
       setExpandedId(s.id)
+      // 耗時寫進事件:使用者回報「一直轉圈」時,這是唯一能量到「到底卡了多久」
+      // 的數字 —— 沒有它,15 秒與 15 分鐘在日誌裡長得一樣。
+      reportEvent('ai_request_succeeded', {
+        metrics: { summaryMs: Date.now() - aiStartedAt },
+        fields: { provider: aiProvider }
+      })
     } catch (err) {
-      toast.error(`AI 摘要失敗。${describeError(err, { provider: aiProvider })}`)
+      // 使用者自己按的取消不是失敗:逐字稿已存在 IndexedDB,不需要任何錯誤提示。
+      if (isCancelled(err)) {
+        toast.info('已取消 AI 摘要，逐字稿仍完整保留。')
+        return
+      }
+      // 摘要失敗是使用者最常回報的問題(「按了沒反應」)。帶 provider 情境
+      // 是必要的:同一句 fetch failed 對 Ollama 與雲端 API 是兩種診斷。
+      reportError('AI 摘要失敗', err, { event: 'ai_request_failed', provider: aiProvider })
     } finally {
+      cancelSummaryRef.current = null
       setAiBusyId(null)
     }
   }
@@ -1001,18 +1085,28 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
                     </div>
                   </button>
                   <div className="flex shrink-0 gap-1">
-                    <button
-                      className="btn-ghost text-xs text-accent-300"
-                      onClick={() => generateSummary(s)}
-                      disabled={aiBusyId !== null}
-                    >
-                      {aiBusyId === s.id ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : (
+                    {aiBusyId === s.id ? (
+                      <CancelableBusy
+                        busy
+                        className="btn-ghost text-xs text-accent-300"
+                        busyLabel={
+                          <>
+                            <Loader2 size={12} className="animate-spin" /> 摘要中…
+                          </>
+                        }
+                        idleLabel="AI 摘要"
+                        onCancel={() => cancelSummaryRef.current?.()}
+                      />
+                    ) : (
+                      <button
+                        className="btn-ghost text-xs text-accent-300"
+                        onClick={() => generateSummary(s)}
+                        disabled={aiBusyId !== null}
+                      >
                         <Sparkles size={12} />
-                      )}
-                      {s.summary ? '重新摘要' : 'AI 摘要'}
-                    </button>
+                        {s.summary ? '重新摘要' : 'AI 摘要'}
+                      </button>
+                    )}
                     <button
                       // 這是「錄音 → 提詞」唯一缺的那一步。這個 App 的主功能是提詞,
                       // 但逐字稿原本只能「匯出 .md 到磁碟」—— 那是給人看的,
@@ -1022,6 +1116,14 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
                       title="把這場會議的逐字稿存成一份講稿,之後就能拿去提詞"
                     >
                       <BookPlus size={12} /> 存成講稿
+                    </button>
+                    <button
+                      data-effect-id="copy-action-list"
+                      className="btn-ghost text-xs"
+                      onClick={() => void copyActionList(s)}
+                      title="把待辦、建議追問與下一次練習目標複製成一份清單,直接貼進你的待辦工具"
+                    >
+                      <ClipboardCopy size={12} /> 行動清單
                     </button>
                     <button className="btn-ghost text-xs" onClick={() => exportSession(s)}>
                       匯出

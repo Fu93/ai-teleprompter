@@ -145,29 +145,10 @@ await main.evaluate(() =>
 ).catch(() => {})
 await sleep(1800)
 
-/** 取視窗在「桌面座標」的矩形(CopyFromScreen 從 VirtualScreen 左上角起算)。 */
-const desktopRect = async () => {
-  const r = await overlay.evaluate(() => {
-    const b = Array.from(document.querySelectorAll('button')).find((x) => (x.getAttribute('title') || '').includes('收合成藥丸'))
-    return null
-  }).catch(() => null)
-  void r
-  const [vx, vy] = await overlay.evaluate(() => [window.screenX, window.screenY]).catch(() => [0, 0])
-  const [w, h] = await overlay.evaluate(() => [window.innerWidth, window.innerHeight]).catch(() => [0, 0])
-  const vs = await overlay.evaluate(() => ({
-    sx: window.screen.availLeft ?? 0,
-    sy: window.screen.availTop ?? 0
-  })).catch(() => ({ sx: 0, sy: 0 }))
-  // VirtualScreen 左上角可能不於主螢幕原點;CopyFromScreen 以 VirtualScreen 為 (0,0)。
-  const virtual = await overlay.evaluate(() => {
-    void 0
-    return null
-  }).catch(() => null)
-  void virtual
-  // screenX/screenY 已是「虛擬桌面座標」(與 CopyFromScreen 的基準一致,
-  // 只要我們同時用 VirtualScreen 原點當截圖原點 —— 上面 PowerShell 正是這樣)。
-  return { x: vx, y: vy, w, h, vs, virtual: null }
-}
+// 這裡曾經有一個 desktopRect(),裡面包著兩個回傳 null 的 evaluate() 與
+// `void r` / `void virtual`。它從未被呼叫 —— 而且就算被呼叫也只會回傳
+// null:兩處 evaluate 的主體都是 `return null`。刪掉它,不留一個看起來
+// 能算桌面座標、實際上算不出來的函式。
 
 const SURFACES = [
   ['pill', '收合成藥丸'],
@@ -319,6 +300,9 @@ for (const r of results) {
 console.log('')
 const opaqueWindows = results.filter((r) => r.mode === 'transparent' && r.verdict === 'opaque-window')
 const cornersMaterial = results.filter((r) => r.mode === 'normal' && r.verdict === 'corners-material')
+// suspicious 一直在累加卻從沒被讀出來。印出來:去背探測失敗時,
+  // 「有幾個組合值得看」是使用者(與後續修的人)最先要知道的數字。
+console.log(`不正常的組合: ${suspicious} 筆(狀態失敗,或頁面全透明時桌面上仍看得到)`)
 if (opaqueWindows.length) {
   console.log(`結論:沒有去背。${opaqueWindows.length} 個組合在「頁面全透明」時桌面上仍有一整塊可見矩形 —— 那是視窗層(acrylic/系統)畫的,與頁面無關。`)
   console.log('修法方向:glass 開啟時 acrylic 材質會填滿整個視窗矩形,而頁面只在膠囊形狀內畫材質 —— 兩層形狀不一致。見 probe 的 corners-material 列。')

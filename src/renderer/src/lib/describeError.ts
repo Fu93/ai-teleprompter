@@ -15,7 +15,23 @@
  *   寧可顯示英文原文(至少是真實的),也不要給一個自信但錯誤的診斷。
  *   呼應 Record 停止時那個反例:把「辨識失敗」說成「沒有偵測到語音」,
  *   會讓使用者跑去查麥克風硬體,浪費的是他的時間。
+ *
+ * ── 這一輪的形狀變更 ──
+ *   規則表原本**同時**負責「比對」與「寫文案」,所以每條規則自己帶一段中文。
+ *   現在文案搬到 `src/shared/errorCodes.ts`,這裡只留比對。
+ *
+ *   為什麼要拆:錯誤碼是跨進程的識別碼(renderer 產生、main 落盤、日誌裡 grep),
+ *   而文案是給人看的。兩者綁在一起時,想給同一個錯誤加一句更好的話,
+ *   就得順手發一個新代碼;想讓日誌有代碼,就得順手決定文案。拆開之後
+ *   「同一個診斷、三種供應商目的地」這種情況(連線失敗)可以用**一個** match
+ *   表達,而不是三條各自重寫的 regex。
+ *
+ *   `describeError()`(字串版)保留,是給不需要按鈕的地方用的包裝 ——
+ *   8 個既有呼叫點與 11 條既有測試都不需要改。
  */
+import { errorCodeInfo, type ErrorAction, type ErrorCode, type ErrorContext } from '@shared/errorCodes'
+
+export type { ErrorContext, ErrorProvider, ErrorAction } from '@shared/errorCodes'
 
 /** 取得錯誤的可比對文字:Error 用 name+message,字串直接用本身。 */
 function textOf(err: unknown): string {
@@ -28,90 +44,151 @@ function textOf(err: unknown): string {
   }
 }
 
+/** 從原始錯誤取不含堆疊的使用者可見字串(認不出來時用它)。 */
+function rawMessage(err: unknown): string {
+  if (typeof err === 'string') return err
+  if (err instanceof Error) return err.message
+  return textOf(err)
+}
+
 /**
- * 規則表。順序有意義:先比對具體的 HTTP/網路錯誤,最後才是泛用的名稱比對,
+ * 比對規則。**只負責「是哪一種」,不負責說什麼話。**
+ *
+ * 順序有意義:先比對具體的 HTTP/網路錯誤,最後才是泛用的名稱比對,
  * 避免「連線失敗」被後面的規則蓋掉。
  *
- * 每條規則的訊息都必須回答使用者視角的兩個問題:
- *   1. 到底發生了什麼(用他的語言,不是 Chromium 的)
- *   2. 我接下來該去哪裡改
- * 只回答第一個的訊息等於沒回答 —— 這正是原本 toast.error(err.message) 的問題。
+ * `code` 是一個函式而非一個值,因為連線類必須看 ctx.provider 才決定
+ * 診斷(code 不同)。若把它寫成靜態值,`fetch failed` 在三種情境下會被
+ * 硬編成同一個碼 —— 那正是本檔案自己說不可以犯的錯。
  */
-/**
- * 「連不上」的診斷必須知道使用者把請求送去哪裡。
- *
- * 這是這支檔案最重要的一個情境參數:不論是 Ollama 沒開還是雲端 API 被防火牆擋,
- * 底層(Node undici / Chromium)給的訊息都是同一句 `fetch failed` —— 連 ECONNREFUSED
- * 都只藏在 cause 裡,過了 IPC 就沒了。所以「看錯誤訊息猜供應商」在原理上做不到:
- * 少了這個參數,就只能二選一,而選錯就是把「你的網路不通」說成「去啟動 Ollama」,
- * 正是這支檔案自己說不可以犯的錯。
- */
-export type ErrorProvider = 'ollama' | 'openai-compatible' | 'cloud-api'
-
-export interface ErrorContext {
-  /** 這個請求實際的接收端;未提供時一律給中性的網路訊息,不臆測 */
-  provider?: ErrorProvider
+interface MatchRule {
+  test: RegExp
+  code: ErrorCode | ((ctx: ErrorContext) => ErrorCode)
 }
 
-const CONNECTION_HINT: Record<ErrorProvider | 'generic', string> = {
-  ollama:
-    '無法連線到 Ollama。請確認已安裝並啟動(終端機執行 ollama serve,或直接開啟 Ollama 應用程式)。',
-  'openai-compatible':
-    '無法連線到設定的 AI API。請確認網路可用,並檢查「設定 → AI 助理」的 Base URL 是否正確。',
-  'cloud-api':
-    '無法連線到雲端語音 API。請確認網路可用,並檢查「設定 → 語音辨識」的 Base URL 是否正確。',
-  generic: '網路連線失敗。請確認網路可用後再試。'
-}
-
-const RULES: Array<{ test: RegExp; message: string | ((ctx: ErrorContext) => string) }> = [
+const MATCH_RULES: MatchRule[] = [
   {
     // 麥克風/攝影機權限被拒 —— 全新使用者最常撞到的第一個牆
     test: /NotAllowedError|Permission denied|permission.*denied|denied.*permission/i,
-    message:
-      '麥克風或攝影機權限被拒絕。請到「設定 → 隱私權與安全性 → 麥克風」允許這個 App,再重新錄音。'
+    code: 'E_MIC_PERMISSION_DENIED'
   },
   {
     test: /NotFoundError|Requested device not found|找不到.*裝置|找不到.*麥克風/i,
-    message: '找不到可用的麥克風。請確認麥克風已接上並在「錄音轉錄」頁勾選「我的麥克風」。'
+    code: 'E_MIC_NOT_FOUND'
   },
   {
     test: /NotReadableError|Could not start audio source|device.*(busy|in use)|裝置.*(忙碌|被占用)/i,
-    message: '麥克風正被其他程式占用。請關閉其他使用麥克風的程式(例如視訊會議、錄音軟體)後再試。'
+    code: 'E_MIC_BUSY'
   },
   {
     // 雲端 STT / AI 的金鑰問題
     test: /\b401\b|\b403\b|invalid[_ -]?api[_ -]?key|incorrect api key|unauthorized|authentication/i,
-    message: 'API 金鑰無效或過期。請到「設定」頁重新填寫 API Key 後再試。'
+    code: 'E_AUTH_INVALID_KEY'
   },
   {
     // 連線失敗:訊息本身分不出供應商,靠 ctx.provider 決定要說「啟動 Ollama」
     // 還是「檢查 Base URL」。沒有 ctx 就不猜(見 ErrorContext 的註解)。
     test: /ECONNREFUSED|ECONNRESET|fetch failed|Failed to fetch|NetworkError|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|network.*error|連線.*(失敗|被拒|拒絕|中斷)|無法連線|網路/i,
-    message: (ctx) => CONNECTION_HINT[ctx.provider ?? 'generic']
+    code: (ctx) => {
+      switch (ctx.provider) {
+        case 'ollama':
+          return 'E_NETWORK_OLLAMA'
+        case 'openai-compatible':
+          return 'E_NETWORK_AI_API'
+        case 'cloud-api':
+          return 'E_NETWORK_CLOUD_STT'
+        default:
+          return 'E_NETWORK_GENERIC'
+      }
+    }
   },
   {
     // 本地模型沒下載 —— 第一次使用 Whisper/Ollama 都會撞到
     test: /model.*not found|404.*model|尚未下載|模型未下載|not found.*model/i,
-    message: '找不到對應的本地模型。請先下載模型(或執行 ollama pull qwen2.5:7b)後再試。'
+    code: 'E_MODEL_MISSING'
   }
 ]
 
 /**
- * 把任意錯誤轉成給使用者看的訊息。
- * 認得的錯誤回傳可行動的中文指引;不認得的回退到原始字串 ——
+ * 判斷這個錯誤屬於哪一類。
+ *
+ * 這是本模組唯一的真相來源:`describeError`、`describeErrorAction` 與
+ * `isActionable` 全部走它。三個函式各自寫一份比對表的那個年代,已經有過
+ * 「錯誤提示認得、但日誌沒有代碼」的落差 —— 因為當時根本沒有代碼這回事。
+ */
+export function classifyError(err: unknown, ctx: ErrorContext = {}): ErrorCode {
+  const text = textOf(err)
+  for (const r of MATCH_RULES) {
+    if (!r.test.test(text)) continue
+    return typeof r.code === 'function' ? r.code(ctx) : r.code
+  }
+  return 'E_UNKNOWN'
+}
+
+/** 可行動的錯誤描述:給「有按鈕」的介面用。 */
+export interface ActionableError {
+  /** 跨進程穩定碼,寫進日誌 */
+  code: ErrorCode
+  /** 一行標題 */
+  title: string
+  /** 完整說明 */
+  body: string
+  /** 使用者可以按的下一步 */
+  actions: ErrorAction[]
+  /** 按下去會不會成功;false 時 UI 不該主動給重試鈕 */
+  retryable: boolean
+  /**
+   * 認得嗎?
+   *
+   * 存在的唯一理由:「認得的錯誤」才配給按鈕與標題,不認得的只給原文 ——
+   * 對一個我們不知道成因的錯誤說「請到設定頁」,是給一個自信的假診斷。
+   */
+  known: boolean
+}
+
+/**
+ * 把任意錯誤轉成帶按鈕的可行動描述。
+ *
+ * 認得的錯誤回傳中文指引 + 該按的鈕;不認得的回退到原始字串且 `actions` 為空 ——
  * 寧可顯示真實的英文原文,也不要給一個自信但錯誤的診斷。
  */
-export function describeError(err: unknown, ctx: ErrorContext = {}): string {
-  const raw = typeof err === 'string' ? err : err instanceof Error ? err.message : textOf(err)
-  const text = textOf(err)
-  for (const r of RULES) {
-    if (r.test.test(text)) return typeof r.message === 'function' ? r.message(ctx) : r.message
+export function describeErrorAction(err: unknown, ctx: ErrorContext = {}): ActionableError {
+  const code = classifyError(err, ctx)
+  const info = errorCodeInfo(code)
+  if (code === 'E_UNKNOWN') {
+    const raw = rawMessage(err)
+    return {
+      code,
+      title: info.title,
+      // 空字串的錯誤訊息不能拿來當提示:那會產生一個沒有內容的 toast。
+      body: raw || info.title,
+      actions: [],
+      retryable: info.retryable,
+      known: false
+    }
   }
-  return raw || '發生未預期的錯誤'
+  return {
+    code,
+    title: info.title,
+    body: info.message,
+    actions: info.actions,
+    retryable: info.retryable,
+    known: true
+  }
+}
+
+/**
+ * 把任意錯誤轉成給使用者看的訊息(純文字)。
+ *
+ * 這是 `describeErrorAction().body` 的包裝:只需要一句話的地方(例如寫進
+ * 檔案的匯出結果)不必知道有沒有按鈕。認得的錯誤回傳中文指引;不認得的回退
+ * 到原始字串。
+ */
+export function describeError(err: unknown, ctx: ErrorContext = {}): string {
+  return describeErrorAction(err, ctx).body
 }
 
 /** 是否為「使用者可以自己修」的錯誤(用於決定要不要顯示詳細原文) */
 export function isActionable(err: unknown): boolean {
-  const text = textOf(err)
-  return RULES.some((r) => r.test.test(text))
+  return classifyError(err) !== 'E_UNKNOWN'
 }

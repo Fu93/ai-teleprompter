@@ -1,11 +1,13 @@
 import type { JSX } from "react"
 import { useEffect, useRef, useState } from 'react'
-import { FilePlus2, FolderOpen, Pause, Play, Save, Search, Square, Trash2, Video, X } from 'lucide-react'
+import { FilePlus2, FolderOpen, Pause, Play, Save, Search, Sparkles, Trash2, Video, X } from 'lucide-react'
 import { db } from '../lib/db'
 import type { Script } from '@shared/types'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
 import { toast } from '../lib/toast'
 import { describeError } from '../lib/describeError'
+import { DEMO_SCRIPT_CONTENT, DEMO_SCRIPT_TITLE } from '../lib/demoScript'
+import { markPromptSucceeded } from '../lib/onboarding'
 import { useSettings } from '../lib/store'
 import { registerAuditControl } from '../lib/auditBridge'
 import { confirmDialog } from '../lib/confirm'
@@ -196,6 +198,37 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
     if (dirty && !(await save())) return
     await db.scripts.update(selectedId, { lastUsedAt: Date.now() })
     await window.api.overlayShow({ title: draft.title, content: draft.content })
+    // 「第一段提詞」的里程碑要在這裡也寫。原本只有總覽頁那條路寫,
+    // 於是從講稿頁按下開始提詞的人回總覽頁會看到 3 分鐘上手停在 2/3 ——
+    // 而那一頁的說明正是「先寫一段講稿,再按開始提詞」,也就是他剛剛做過的事。
+    markPromptSucceeded()
+  }
+
+  /**
+   * 首用入口(與總覽頁同一顆钮):建立內建範例稿 → 存起來 → 直接開浮層。
+   *
+   * 為什麼需要它:浮層需要「有內容的講稿」才會出現,所以全新使用者必須先
+   * 自己想出一段稿子才看得到這個產品的門面。這一顆钮把那個門檻拿掉。
+   * 建立的是一份**真的、可以編輯的講稿**(不是唯讀 demo)—— 使用者第一眼
+   * 看到的浮層就是他等一下要用的那份稿,而不是另一種東西。
+   */
+  const loadDemo = async (): Promise<void> => {
+    const now = Date.now()
+    const id = await db.scripts.add({
+      title: DEMO_SCRIPT_TITLE,
+      content: DEMO_SCRIPT_CONTENT,
+      createdAt: now,
+      updatedAt: now
+    })
+    await refresh(id)
+    setSelectedId(id)
+    setDraft({ title: DEMO_SCRIPT_TITLE, content: DEMO_SCRIPT_CONTENT })
+    // 這一顆只會出現在「沒有選取任何講稿」的空狀態,所以沒有未存變更要守。
+    setDirty(false)
+    await db.scripts.update(id, { lastUsedAt: Date.now() })
+    await window.api.overlayShow({ title: DEMO_SCRIPT_TITLE, content: DEMO_SCRIPT_CONTENT })
+    markPromptSucceeded()
+    toast.info('已建立範例講稿 —— 它是真的稿子,可以直接改成你自己的內容。')
   }
 
   // ── 錄影提詞(v3 錄影教練 lite):攝影機+麥克風 MediaRecorder,浮層對錄影隱形 ──
@@ -297,7 +330,7 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
           }
           const res = await window.api.saveRecording({
             bytes,
-            defaultName: `提詞錄影-${formatDateTime(Date.now()).replace(/[\/: ]/g, '-')}.webm`
+            defaultName: `提詞錄影-${formatDateTime(Date.now()).replace(/[/: ]/g, '-')}.webm`
           })
           if (res.ok && res.filePath) {
             // Leaving the page still offers to save the finished recording, but don't
@@ -584,9 +617,22 @@ export default function Scripts({ onDirtyChange }: { onDirtyChange?: (dirty: boo
         {selectedId == null ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-ink-400">
             <span>選擇或建立一份講稿</span>
-            <button className="btn-primary text-xs" onClick={() => void newScript()}>
-              <FilePlus2 size={14} /> 建立第一份講稿
-            </button>
+            <div className="flex items-center gap-2">
+              <button className="btn-primary text-xs" onClick={() => void newScript()}>
+                <FilePlus2 size={14} /> 建立第一份講稿
+              </button>
+              {/* 第二條路:先看到成品再說。放這一顆的理由見 loadDemo 的說明。 */}
+              <button
+                data-effect-id="demo-script"
+                className="btn-outline text-xs"
+                onClick={() => void loadDemo()}
+              >
+                <Sparkles size={14} /> 用範例稿試提詞
+              </button>
+            </div>
+            <span className="max-w-[280px] text-center text-[11px] leading-relaxed text-ink-400">
+              範例稿是一份真的講稿,會存進你的清單,可以直接改成自己的內容。
+            </span>
           </div>
         ) : (
           <>

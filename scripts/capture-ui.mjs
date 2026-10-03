@@ -8,22 +8,17 @@ import { mkdirSync } from 'fs'
 const OUT = 'docs/screenshots'
 mkdirSync(OUT, { recursive: true })
 
-const DEMO_SCRIPT = `各位好,今天要向大家介紹我們的新產品 Flow。
-首先,為什麼我們要做這件事?因為每場重要對話,你都只有一次機會。
-接下來三個重點:第一,市場痛點;第二,我們的解法;第三,為什麼是現在。
-市場痛點很簡單——資訊不對等。會議中你可能在想上一句話,就已經錯過下一句。
-我們的解法是即時的語意追蹤與提示,像副駕駛一樣安靜地幫你補位。
-為什麼是現在?因為本地語音模型剛好跨越了延遲的門檻。
-總結一句話:我們不是取代你的注意力,而是保護它。
-謝謝大家,接下來是實機示範。`
+// 範例稿內容:與除錯面板及使用者首用的「載入範例講稿」共用同一份
+// (見 src/renderer/src/lib/demoScript.ts)。標題留在這裡 —— 截圖要的是
+// 一個示範用的場合名,而使用者自己的第一份稿不該被那個名字綁住。
+// Node 直接匯入 .ts:與 audit-ui.mjs 匯入 domAudit.ts 同一條路。
+import { DEMO_SCRIPT_CONTENT as DEMO_SCRIPT } from '../src/renderer/src/lib/demoScript.ts'
 
 const app = await electron.launch({ args: ['.'], timeout: 60_000 })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // 視窗載入順序隨機,以 DOM 特徵辨識:主視窗有 <aside>,浮層有 .glass-overlay/.glass-pill
 const isMainPage = (p) => p.evaluate(() => !!document.querySelector('aside')).catch(() => false)
-const isOverlayPage = (p) =>
-  p.evaluate(() => !!document.querySelector('.glass-overlay, .glass-pill')).catch(() => false)
 
 let main = await app.firstWindow()
 await main.waitForLoadState('domcontentloaded')

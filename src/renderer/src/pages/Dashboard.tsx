@@ -1,13 +1,17 @@
 import type { JSX } from "react"
 import { useEffect, useState } from 'react'
-import { AudioLines, Check, Circle, Eye, GraduationCap, Play, Ruler, ScrollText, TrendingUp } from 'lucide-react'
+import { AudioLines, Eye, GraduationCap, Play, ScrollText, Sparkles, TrendingUp } from 'lucide-react'
 import { db } from '../lib/db'
 import type { MeetingSession, PracticeRun, Script } from '@shared/types'
 import { formatDateTime } from '../lib/utils'
 import { useSettings } from '../lib/store'
 import { analyzePracticeRun } from '../lib/session-intelligence'
 import { toast } from '../lib/toast'
+import { markPromptSucceeded } from '../lib/onboarding'
+import { DEMO_SCRIPT_CONTENT, DEMO_SCRIPT_TITLE } from '../lib/demoScript'
 import { PreflightCard } from '../components/PreflightCard'
+import { FirstRunSteps } from '../components/FirstRunSteps'
+import type { PreflightResult } from '../lib/preflight'
 
 interface Props {
   onNavigate: (page: 'dashboard' | 'scripts' | 'record' | 'practice' | 'calibration' | 'settings') => void
@@ -82,6 +86,16 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
     minutesCapped: false,
     avgTalkRatio: null as number | null
   })
+  /**
+   * preflight 的判定結果,餵給「3 分鐘上手」卡片。
+   *
+   * 放在這裡而不是讓上手卡片自己去查:preflight 的探測邏輯(連 Ollama、
+   * 讀 safeStorage)已經有一份實作,再寫一份一定會漂移。理由見
+   * PreflightCardProps.onResult 的註解。
+   */
+  const [preflightResult, setPreflightResult] = useState<PreflightResult | null>(null)
+  /** 範例稿正在建立中:擋連點(建立講稿 + 開浮層是兩次 IPC,連點會建出兩份) */
+  const [demoBusy, setDemoBusy] = useState(false)
   const { settings, overlayVisible } = useSettings()
 
   useEffect(() => {
@@ -124,12 +138,52 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
     }
     await db.scripts.update(s.id!, { lastUsedAt: Date.now() })
     await window.api.overlayShow({ title: s.title, content: s.content })
+    // 第一段提詞成功。標記在**真的 show 成功之後**,不是按下鈕時 ——
+    // 這個旗標是「達成」的證明,提前寫等於把一次失敗也算成完成。
+    markPromptSucceeded()
   }
 
   const launchLatest = async (): Promise<void> => {
     const s = recent[0]
     if (!s) return
     await launchScript(s)
+  }
+
+  /**
+   * 首用入口:用內建範例稿開一次浮層(與講稿頁空狀態那顆同一件事)。
+   *
+   * 為什麼總覽頁也要有:沒有講稿時,這張卡片原本只寫「到『提詞講稿』頁建立
+   * 第一份吧」—— 而浮層需要一份**有內容**的講稿才會出現(空稿刻意不開)。
+   * 於是這個產品的門面在「使用者自己寫出一份稿」之前是看不到的,而那與
+   * preflight.ts / onboarding.ts 檔頭寫的「不擋只想看看浮層長什麼樣的人」
+   * 直接衝突:不擋路的代價不該是「看不到」。
+   */
+  const loadDemoScript = async (): Promise<void> => {
+    if (demoBusy) return
+    setDemoBusy(true)
+    try {
+      const now = Date.now()
+      const id = await db.scripts.add({
+        title: DEMO_SCRIPT_TITLE,
+        content: DEMO_SCRIPT_CONTENT,
+        createdAt: now,
+        updatedAt: now
+      })
+      // 走既有那條「開浮層」的路(守衛、lastUsedAt、里程碑旗標都在裡面),
+      // 不另外寫一份 —— 兩份開浮層的程式碼遲早分叉。
+      await launchScript({
+        id,
+        title: DEMO_SCRIPT_TITLE,
+        content: DEMO_SCRIPT_CONTENT,
+        createdAt: now,
+        updatedAt: now
+      })
+      // 導到講稿頁:範例稿是一份真的稿子,使用者會在那裡找到它並改成自己的內容。
+      onNavigate('scripts')
+      toast.info('已建立範例講稿 —— 它是真的稿子,可以直接改成你自己的內容。')
+    } finally {
+      setDemoBusy(false)
+    }
   }
 
   return (
@@ -146,7 +200,24 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
           而擋路的精靈會讓只想看浮層長什麼樣的人永遠進不去,所以這裡是提示、
           不是關卡。判斷在 lib/preflight.ts。 */}
       <div className="mb-5">
-        <PreflightCard variant="compact" onNavigate={onNavigate} />
+        <PreflightCard variant="compact" onNavigate={onNavigate} onResult={setPreflightResult} />
+      </div>
+
+      {/* 首用「3 分���上手」:三步全部可見、可完成,但不擋路。
+          位置在 preflight **之下**是刻意的:preflight 講的是「AI 還差什麼」
+          (一個問題清單),上手卡片講的是「你走到第幾步」(一個進度)。先讓
+          使用者看見缺什麼(那是阻擋級),再看見自己走了多遠。
+          判斷在 lib/onboarding.ts,為什麼不做成精靈見該檔檔頭第一點。 */}
+      <div className="mb-5">
+        <FirstRunSteps
+          micEverWorked={totals.sessions > 0 || totals.runs > 0}
+          preflight={preflightResult}
+          hasScript={recent.some((s) => !!s.content.trim())}
+          // 校準不在三步裡,但它決定字級與滾動速度 —— 沒有它,浮層會用手感
+          // 不對的預設值跑(原本這是「開始三部曲」的第二張卡在提醒的事)。
+          needsCalibration={!settings?.personal?.profile}
+          onNavigate={onNavigate}
+        />
       </div>
 
       <div className="grid grid-cols-3 gap-4">
@@ -200,8 +271,18 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
             </button>
           </div>
         ) : (
-          <div className="text-xs text-ink-400">
-            還沒有講稿——到「提詞講稿」頁建立第一份吧。
+          <div className="space-y-2.5">
+            <div className="text-xs leading-relaxed text-ink-400">
+              還沒有講稿 —— 浮層需要一份有內容的講稿才會出現,所以先用範例稿看它長什麼樣吧。
+            </div>
+            <button
+              data-effect-id="demo-script"
+              className="btn-primary text-xs"
+              disabled={demoBusy}
+              onClick={() => void loadDemoScript()}
+            >
+              <Sparkles size={14} /> 載入範例講稿並試提詞
+            </button>
           </div>
         )}
         {settings && (
@@ -211,48 +292,6 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
           </div>
         )}
       </div>
-
-      {/* 首用三部曲:任一步未完成時顯示 */}
-      {(() => {
-        const hasScript = recent.length > 0
-        const hasProfile = !!settings?.personal?.profile
-        const hasRun = totals.sessions > 0 || totals.runs > 0
-        if (hasScript && hasProfile && hasRun) return null
-        const steps = [
-          { done: hasScript, icon: ScrollText, label: '建立第一份講稿', target: 'scripts' as const },
-          { done: hasProfile, icon: Ruler, label: '個人化校準(語速+視距)', target: 'calibration' as const },
-          { done: hasRun, icon: AudioLines, label: '跑一場錄音轉錄或面試練習', target: 'record' as const }
-        ]
-        return (
-          <div className="mt-8 card p-5">
-            <div className="mb-4 flex items-center gap-2 text-sm font-medium">
-              <TrendingUp size={15} className="text-accent-400" />
-              開始三部曲
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              {steps.map((s) => (
-                <button
-                  key={s.label}
-                  onClick={() => onNavigate(s.target)}
-                  className={
-                    s.done
-                      ? 'flex items-center gap-2.5 rounded-xl border border-emerald-500/25 bg-emerald-500/8 px-3 py-3 text-left text-xs text-ink-300 cursor-default'
-                      : 'flex items-center gap-2.5 rounded-xl border border-white/10 bg-white/4 px-3 py-3 text-left text-xs text-ink-100 transition-colors hover:border-accent-500/50 hover:bg-accent-500/8 cursor-pointer'
-                  }
-                >
-                  {s.done ? (
-                    <Check size={15} className="shrink-0 text-emerald-400" />
-                  ) : (
-                    <Circle size={15} className="shrink-0 text-ink-400" />
-                  )}
-                  <s.icon size={14} className="shrink-0 text-ink-300" />
-                  <span className="leading-snug">{s.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )
-      })()}
 
       {/* 成長軌跡(session intelligence) */}
       {(sessions.length > 0 || runs.length > 0) && (

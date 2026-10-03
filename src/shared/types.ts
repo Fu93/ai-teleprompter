@@ -1,5 +1,7 @@
 // ===== 共用型別與 IPC 通道定義（main / renderer 共用）=====
 
+import type { E2EEnv } from './e2eEnv'
+
 /** 浮層顯示模式:scroll=連續捲動 / phrase=逐句短語 / karaoke=逐詞高亮 / bullet=要點 */
 export type OverlayDisplayMode = 'scroll' | 'phrase' | 'karaoke' | 'bullet'
 
@@ -187,14 +189,21 @@ export const IPC = {
   OverlaySetSize: 'overlay:set-size',
   /** 動畫用即時尺寸(每幀呼叫):只改視窗與記憶體設定,不落盤 */
   OverlaySetSizeLive: 'overlay:set-size-live',
-  OverlayApplySettings: 'overlay:apply-settings',
   AppInfo: 'app:info',
   // Phase 5+
-  SystemAudioStart: 'system-audio:start-approval',
   OllamaListModels: 'ai:ollama-list-models',
   OllamaChat: 'ai:ollama-chat',
   OllamaAbort: 'ai:ollama-abort',
   OpenAiChat: 'ai:openai-chat',
+  // ── 刪除的三個幽靈通道(2026-10-03)──
+  // 這三個常數曾經宣告在這裡,而全專案(preload / ipc.ts / renderer / e2e)
+  // **零引用** —— 沒有 handler、沒有 preload 轉接、沒有呼叫端。它們的形狀是
+  // 「宣告過所以看起來存在」,而那比沒有這個通道更糟:下一個人會照著它假設
+  // 功能已經通了。特別是 OllamaChatChunk —— 它暗示有串流,但 ollamaChat()
+  // 只回傳完整字串。
+  //
+  // 記在這裡而不是只留在 commit:未來若真的要做串流,應該是一起設計
+  // requestId + 分塊協定 + 取消,而不是先放一個常數在這裡。
   // Phase C:統一 AI / 金鑰 / panic / 場景
   AiChatCompletion: 'ai:chat-completion',
   AiTestConnection: 'ai:test-connection',
@@ -234,13 +243,22 @@ export const IPC = {
    */
   ImportJsonFile: 'util:import-json-file',
   LogFromRenderer: 'util:log-from-renderer',
+  /**
+   * 記一筆結構化事件(純本機,見 shared/observability.ts 檔頭的邊界說明)。
+   *
+   * 為什麼不直接沿用 LogFromRenderer:那條通道的 message 是自由文字,而診斷
+   * 報告要統計的是**錯誤碼**。讓事件帶自己的代碼,「使用者貼上報告」才連得
+   * 上「這台機器上發生過什麼」。同一件事寫兩次(一次自由文字、一次事件)
+   * 會產生兩套沒有共同識別碼的紀錄,而那正是這一層要消滅的問題。
+   */
+  LogEvent: 'util:log-event',
+  /** 產生診斷報告(設定頁「複製診斷報告」) */
+  DiagnosticsReport: 'util:diagnostics-report',
   OpenLogDir: 'util:open-log-dir',
   // events (main -> renderer)
   OverlayVisibilityChanged: 'overlay:visibility-changed',
   OverlaySettingsChanged: 'overlay:settings-changed',
-  OllamaChatChunk: 'ai:ollama-chat-chunk',
-  PanicThinking: 'panic:thinking',
-  PanicRescue: 'panic:rescue',
+  PanicThinking: 'panic:thinking',  PanicRescue: 'panic:rescue',
   PanicError: 'panic:error',
   /** turn-yield:對方講完問句 → 該你說話了(main → overlay) */
   TurnYieldSignal: 'context:turn-yield',
@@ -459,4 +477,14 @@ export interface AppInfo {
    * DebugPanel 的診斷快照與 e2e 的失敗訊息共用同一個來源。
    */
   hotkeyConflicts: string[]
+  /**
+   * e2e 的環境情境(麥克風、Ollama),由 main 讀環境變數決定。
+   *
+   * 存在的理由:「麥克風權限被拒」與「Ollama 沒開」是使用者最常撞到的兩面牆,
+   * 而它們在 CI 上測不到(沒有麥克風、沒有模型)。renderer 靠這個值在
+   * getUserMedia / fetch 的邊界注入故障,產品程式碼不需要知道有這件事。
+   *
+   * 打包版裡兩個欄位一定都是 'ok'(見 src/main/debug.ts 的 E2E_ENV)。
+   */
+  e2eEnv: E2EEnv
 }

@@ -747,37 +747,16 @@ async function stepSettings(main) {
     }
   }
 
-  /**
-   * 開關:按「看起來對應的文字」找,不按下標。
+  /*
+   * 這裡曾經有一個 toggleSwitch(controlKey, labelText, path),從未被呼叫。
+   * 真正執行開關探針的是下面 SWITCHES 那個迴圈(用同一個「按文字找」的方法,
+   * 但讀回確認取代了 sleep,並且多記了一層可見性判斷)。
    *
-   * 我第一版寫 `[role="switch"]` 的 .first(),結果量到的是頁面上第一個開關
-   * (鏡像模式),而斷言讀的是 `scenario.aiModeEnabled` —— 點 A 開關卻斷言 B 值,
-   * 報出「aria 翻了但資料沒翻」的假缺陷。**頁面上有 8 個 role=switch。**
+   * 留下這段註解是因為那個函式裡記錄的是這支稽核最貴的一課:**頁面上有 8 個
+   * role=switch。** 第一版用 `[role="switch"]` 的 .first(),量到的是頁面上第一個
+   * 開關(鏡像模式),而斷言讀的是 `scenario.aiModeEnabled` —— 點 A 開關卻斷言 B 值,
+   * 報出「aria 翻了但資料沒翻」的**假缺陷**。開關探針必須按文字找。
    */
-  const toggleSwitch = async (controlKey, labelText, path) => {
-    const p = probe(controlKey, '設定')
-    const target = main.locator('[role="switch"]', { hasText: labelText }).first()
-    if (!(await target.isVisible().catch(() => false))) {
-      p.unreachable(`找不到文字包含「${labelText}」的 [role=switch]`)
-      return
-    }
-    const before = await readSetting(main, path)
-    const ariaBefore = await target.getAttribute('aria-checked')
-    await target.click()
-    await sleep(800)
-    const ariaAfter = await main
-      .locator('[role="switch"]', { hasText: labelText })
-      .first()
-      .getAttribute('aria-checked')
-    const after = await readSetting(main, path)
-    if (after === !before && ariaAfter === String(!before)) {
-      p.works(`${path}: ${before} → ${after},aria-checked ${ariaBefore} → ${ariaAfter}`, EVIDENCE.DATA)
-    } else {
-      p.dead(
-        `點擊後 aria-checked ${ariaBefore} → ${ariaAfter}、資料層 ${path} ${before} → ${after},兩者應該都翻轉`
-      )
-    }
-  }
 
   /** 按鈕群:按下去必須讓資料層換成該按鈕的值。 */
   const buttonGroup = async (controlKey, label, path, expected) => {
@@ -919,6 +898,51 @@ async function stepSettings(main) {
         `打完金鑰且沒有 blur,資料層的 apiKey 是 ${JSON.stringify(got?.apiKey ?? null)}` +
           `（sttApiKey=${JSON.stringify(got?.sttApiKey ?? null)}）—— 使用者關掉視窗就會遺失`
       )
+    }
+  }
+
+  // 頁首的區塊目錄(九顆 chip,共用 data-effect-id=settings-toc)。
+  //
+  // 這一頁是九個區塊的單一長捲頁,而那條目錄是唯一的索引 —— 按下去必須真的捲,
+  // 否則使用者以為自己在用索引,實際上站在原地。效果不讀 chip 自己的 class
+  // (那是 UI 的自我宣稱),而是讀 main 的 scrollTop:畫面上真的動了。
+  //
+  // 挑**最後一顆**(疑難排解):它的目標最遠、捲動量最大,而且是最常被找的一區。
+  // smooth scroll 是漸進的,所以判準用「等它穩定下來」而不是「等一個固定時間」
+  // —— 後者會在慢一點的機器上量到中途值(audit-states 上一輪就是這樣誤判的)。
+  const pToc = probe(K.id('settings-toc'), '設定')
+  const tocCount = await main.evaluate(
+    () => document.querySelectorAll('[data-effect-id="settings-toc"]').length
+  )
+  if (tocCount === 0) {
+    pToc.unreachable('設定頁沒有區塊目錄的 chip')
+  } else {
+    const tocBefore = await main.evaluate(() => Math.round(document.querySelector('main')?.scrollTop ?? -1))
+    const tocClicked = await clickEffectId(main, 'settings-toc', tocCount - 1)
+    if (tocClicked !== true) {
+      pToc.unreachable(`第 ${tocCount} 顆目錄 chip 點不到(clicked=${JSON.stringify(tocClicked)})`)
+    } else {
+      let tocLast = -1
+      let tocStable = 0
+      for (let i = 0; i < 40 && tocStable < 3; i++) {
+        await sleep(120)
+        const now = await main.evaluate(() => Math.round(document.querySelector('main')?.scrollTop ?? -1))
+        tocStable = now === tocLast ? tocStable + 1 : 0
+        tocLast = now
+      }
+      if (tocLast > tocBefore) {
+        pToc.works(`按最後一顆 chip:main.scrollTop ${tocBefore} → ${tocLast}`, EVIDENCE.GEOMETRY)
+      } else {
+        pToc.dead(
+          `按了目錄最後一顆 chip 之後 main.scrollTop 還是 ${tocLast}(原本 ${tocBefore})—— 目錄沒有捲動頁面`
+        )
+      }
+      // 還原:後面的步驟不該繼承「主區被捲到最下面」這個狀態。
+      await main.evaluate(() => {
+        const m = document.querySelector('main')
+        if (m) m.scrollTop = 0
+      })
+      await sleep(200)
     }
   }
 }
@@ -1502,7 +1526,11 @@ async function stepOverlay(app, main) {
       // (把 sleep 換成讀回確認)時才發現的,順手修掉了。
       await writeSetting(main, 'scenario.aiModeEnabled', false)
     }
-    const panicBefore = await overlayTitle('Panic 救援')
+    // 這裡原本先算了一份 `panicBefore = await overlayTitle('Panic 救援')` 但
+    // 從未拿它做比較。緊接著的 clickOverlay() 會自己再找一次按鈕,所以那份
+    // 「按下去之前浮層是什麼標題」實際上沒有被拿來斷言任何事。
+    // 刪掉它而不是拿它湊一個斷言:Panic 這條路徑的證據是「救援卡有沒有出現」
+    // (見下面輪詢),不是按鈕前後的標題差異。
     if (await clickOverlay('Panic 救援')) {
       // **證據用 [data-overlay-card="rescue"],不是按鈕的 title。**
       // 「救援顯示中 — 點擊關閉」那個 title 只存在於藥丸形態;
@@ -1582,6 +1610,49 @@ async function stepOverlay(app, main) {
     } else {
       p.unreachable(`找不到「${offPrefix}…」按鈕(原本 ${path}=${JSON.stringify(before)})`)
     }
+  }
+
+  // ── (i2) 教練提示的靜音與恢復 ──
+  //
+  // 這一組是本輪新增的「低干擾」設計:使用者看到不想要的建議時,
+  // 按提示條本體就把**這一種**靜默到本場結束。兩個必須被驗的問題:
+  //   1. 按下去之後「本場已靜默」真的出現了嗎?(沒有回饋 = 使用者以為按壞了)
+  //   2. 恢復鈕真的把靜默清空了嗎?(清不掉 = 使用者被迫重開浮層)
+  //
+  // 前提:提示條只有真的說到那個程度才會出現(語速/填充詞/冷場),
+  // 稽核環境裡沒有辦法自然觸發 —— 所以用 overlay.coachingHint 稽核橋強制。
+  const pMute = probe(idKey('overlay', 'coaching-mute'), '浮層')
+  const pUnmute = probe(idKey('overlay', 'coaching-unmute'), '浮層')
+  await overlay.evaluate(() => window.__auditForce?.('overlay.coachingHint', { kind: 'filler', message: '稽核:填充詞偏多' })).catch(() => {})
+  await sleep(700)
+  const muteBtn = await overlay.locator('[data-effect-id="coaching-mute"]').count().catch(() => 0)
+  if (muteBtn === 0) {
+    pMute.unreachable('浮層上沒有教練提示條(稽核橋強制失敗,或教練被設定關掉了)')
+    pUnmute.unreachable('沒有教練提示條可靜默,恢復鈕也不會出現')
+  } else {
+    await overlay.locator('[data-effect-id="coaching-mute"]').first().click()
+    await sleep(600)
+    const mutedRow = await overlay.locator('[data-effect-id="coaching-unmute"]').count().catch(() => 0)
+    const mutedText = mutedRow
+      ? await overlay.locator('[data-effect-id="coaching-unmute"]').first().innerText()
+      : ''
+    if (mutedRow > 0 && mutedText.includes('已靜默')) {
+      pMute.works(`按提示條後出現「${mutedText.replace(/\s+/g, ' ').trim().slice(0, 24)}…」`, EVIDENCE.DOM)
+    } else {
+      // 按了之後沒有任何可見變化 —— 使用者會直接結論「按鈕壞了」。
+      pMute.dead(`按了提示條但「本場已靜默」沒有出現(列數 ${mutedRow})`)
+    }
+    if (mutedRow === 0) {
+      pUnmute.unreachable('沒有靜默中的種類,恢復鈕本來就不該出現')
+    } else {
+      await overlay.locator('[data-effect-id="coaching-unmute"]').first().click()
+      await sleep(600)
+      const stillMuted = await overlay.locator('[data-effect-id="coaching-unmute"]').count().catch(() => 0)
+      if (stillMuted === 0) pUnmute.works('按恢復後「本場已靜默」真的消失', EVIDENCE.DOM)
+      else pUnmute.dead(`按了恢復但「本場已靜默」還在(${mutedText.replace(/\s+/g, ' ').trim().slice(0, 24)})`)
+    }
+    await overlay.evaluate(() => window.__auditForce?.('overlay.coachingHint', null)).catch(() => {})
+    await sleep(300)
   }
 
   // ── (j) 真實投遞路徑:看得見要送到,看不見不該燒掉冷卻 ──
@@ -1744,42 +1815,20 @@ async function stepOverlay(app, main) {
  *
  * 這一版把其中大部分變成量得到(假麥克風 WAV / 假攝影機 / 本機 mock 服務),
  * 剩下的每一項都寫明**為什麼還是量不到**,而不是含糊的一句「需要真裝置」。
+ *
+ * ── 這裡曾經有一個 stepMediaResidue(),現在已經刪掉了 ──
+ *
+ * 它列了 4 項「環境限制」(本地 Whisper 模型 / 臉部量測 MediaPipe /
+ * 螢幕擷取系統音訊 / 系統原生對話框),每一項都寫得很好 —— 但**它從來沒有被
+ * 呼叫過**:不在 SEQUENCE 裡,也沒有任何地方呼叫它。所以這 4 筆從來沒有進過
+ * 報告,`tally.unverifiable` 也從來沒有因為它們而增加。
+ *
+ * 它的內容現在被 scripts/lib/effect-inventory.mjs 的豁免表取代了,而且是更好
+ * 的形式:那裡是**掛在具體控制項上**的(例:「系統音訊（對方）」標記為
+ * REAL_DESKTOP,「匯出備份」標記為 NATIVE_DIALOG),覆蓋率對帳會把這些算進
+ * 「豁免 25」並逐項印出原因。舊的這份是 4 條沒有對應控制項的孤立文字,
+ * 讀報告的人無從知道它們涵蓋了哪些鈕。
  */
-function stepMediaResidue(audio) {
-  console.log('步驟 5：記錄本輪仍然量不到的控制項…')
-  const items = [
-    [
-      '本地 Whisper 模型',
-      '需要下載 75MB+ 的模型(依賴網路)。這一輪改用雲端引擎 + 本機 mock 伺服器把‘辨識路徑’整條驗完,但‘模型本身跑不跑得動’仍然沒驗。',
-      EXEMPT_CATEGORY.MODEL_DOWNLOAD
-    ],
-    [
-      '臉部量測(MediaPipe)',
-      '假攝影機餵的是合成彩條圖,裡面沒有人臉。相機與影格流是量得到的(見 calibration 步驟),但虹膜距離量不出來。',
-      EXEMPT_CATEGORY.FACE_FIXTURE
-    ],
-    [
-      '螢幕擷取(系統音訊)',
-      '需要可擷取的實體桌面與可選視窗。--auto-select-desktop-capture-source 在無頭環境沒有可選的來源。',
-      EXEMPT_CATEGORY.REAL_DESKTOP
-    ],
-    [
-      '系統原生對話框(存檔 / 開檔 / 檔案總管)',
-      '作業系統層級的對話框,Playwright 點不到。寫檔與解析路徑本身由 audit 的 backup 探針與 e2e/backup.spec.ts 以真實檔案覆蓋。',
-      EXEMPT_CATEGORY.NATIVE_DIALOG
-    ]
-  ]
-  for (const [name, reason, category] of items) {
-    // 這些不是「控制項」,而是**環境限制的記錄**。它們不進 PROBED(那不是控制項
-    // 的 key),但必須出現在報告裡 —— 一個人下載了這份報告,要能一眼看出
-    // 哪些數字背後其實沒有人驗過。
-    tally.unverifiable++
-    UNVERIFIABLE.push({ name, reason: `[${category}] ${reason}` })
-    EFFECTS.push({ name, verdict: 'unverifiable', detail: `[${category}] ${reason}` })
-    report.measured(`環境限制:${name}`)
-  }
-  report.note('假麥克風狀態', audio)
-}
 
 // ───────── 6. 全 App 逐頁探針 ─────────
 
@@ -2006,25 +2055,51 @@ async function stepDashboard(app, main) {
     pMode.dead(`三張模式卡只導到 ${targets.size} 個頁面(${[...targets].join(' / ')}) —— 其中幾顆按了沒反應`)
   }
 
-  // (c) 開始三部曲的三顆鈕(未完成時才會渲染)
-  const steps = [
-    ['建立第一份講稿', 'scripts'],
-    ['個人化校準(語速+視距)', 'calibration'],
-    ['跑一場錄音轉錄或面試練習', 'record']
-  ]
-  for (const [label, expect] of steps) {
-    const p = probe(key('dashboard', 'button', label), '總覽')
-    await gotoViaSidebar(main, '總覽')
-    await sleep(500)
-    const ok = await clickText(main, label)
-    if (ok !== true) {
-      p.unreachable(`找不到「${label}」(三部曲那一步已完成時不渲染)`)
-      continue
+  // (c) 沒有講稿時的範例稿鈕 —— 全新使用者的第一顆鈕
+  //
+  // 為什麼是獨立一條:它按下去要**跨三層**生效(IndexedDB 真的多一份有內容的
+  // 講稿 → 浮層真的開起來並帶著那份內容 → 導到講稿頁),而它的失敗模式不是
+  // 當掉,是「什麼都沒發生」:使用者按了畫面上唯一一顆看起來能用的鈕,
+  // 卻停在原地,而且他沒有別的路可以看到這個產品的門面。
+  //
+  // 斷言只寫前兩層:導頁是同一條路的副作用(而且講稿頁自己的探針會驗那裡),
+  // 而「浮層裡有範例稿的文字」才是使用者實際得到的東西 —— 用 DATA 當證據
+  // (scripts 的數量),內容則附在 detail 裡。
+  const pDemo = probe(idKey('dashboard', 'demo-script'), '總覽')
+  await clearAll(main)
+  // 先離開總覽再回來:卡片是從 React state 讀的,而 clearAll 只動 IndexedDB ——
+  // 停在同一個路由上時,它還會顯示剛才那兩份講稿(與 stepScripts (g) 同一條
+  // 理由:沒重新掛載的頁面不是你當下看到的世界)。
+  await gotoViaSidebar(main, '設定')
+  await sleep(400)
+  await gotoViaSidebar(main, '總覽')
+  await sleep(900)
+  const demoBefore = await countOf(main, 'scripts')
+  const demoClicked = await clickEffectId(main, 'demo-script')
+  if (demoClicked !== true) {
+    const why = await main.evaluate(() => ({
+      samePage: document.querySelectorAll('[data-effect-id="demo-script"]').length,
+      head: (document.querySelector('main')?.innerText || '').replace(/\s+/g, ' ').slice(0, 70)
+    }))
+    pDemo.unreachable(
+      `總覽頁沒有可點的範例稿鈕(clickEffectId 回 ${JSON.stringify(demoClicked)};同頁實例 ${why.samePage};` +
+        `畫面「${why.head}」)—— 它只在「一份講稿都沒有」時渲染`
+    )
+  } else {
+    await sleep(3000)
+    const demoAfter = await countOf(main, 'scripts')
+    const dWin = app.windows().filter((w) => w !== main && /overlay/i.test(w.url()))[0] ?? null
+    const dTxt = dWin ? await dWin.evaluate(() => document.body?.textContent || '').catch(() => '') : ''
+    if (demoAfter <= demoBefore) {
+      pDemo.dead(`按了範例稿鈕但 scripts 數量 ${demoBefore} → ${demoAfter} —— 稿子沒有被建立`)
+    } else if (!/Flow|市場痛點/.test(dTxt.replace(/\s+/g, ''))) {
+      pDemo.dead(
+        `範例稿建好了(scripts ${demoBefore} → ${demoAfter})但浮層沒有帶到它的內容` +
+          `(浮層文字前 80 字=${JSON.stringify(dTxt.replace(/\s+/g, ' ').slice(0, 80))})`
+      )
+    } else {
+      pDemo.works(`scripts ${demoBefore} → ${demoAfter},浮層內容含範例稿文字`, EVIDENCE.DATA)
     }
-    await sleep(800)
-    const hash = await main.evaluate(() => location.hash)
-    if (hash.includes(expect)) p.works(`hash → ${hash}`, EVIDENCE.DOM)
-    else p.dead(`按「${label}」之後 hash 是 ${hash},預期包含 ${expect}`)
   }
 
   // (d) 開始提詞(總覽的最近講稿卡)與列表其他講稿的「提詞」
@@ -2056,6 +2131,69 @@ async function stepDashboard(app, main) {
     const overlayText = t ? await domText(t, 'body') : ''
     if (overlayText.includes('稽核')) pRow.works('浮層內容換成那一份講稿', EVIDENCE.OTHER_WINDOW)
     else pRow.dead(`按了列表的「提詞」但浮層文字=${JSON.stringify(overlayText.slice(0, 40))}`)
+  }
+
+  // (e) 首次上手卡的三顆步驟 → 各自導到**不同**的頁
+  //
+  // 為什麼值得單獨一條:這張卡是「P0 首次使用 3 分鐘路徑」的入口,
+  // 而它的三顆鈕是同一種視覺、按下去導到三個不同地方。若其中一顆指錯頁
+  // (例:校準鈕跳到錄音頁),使用者的第一個動作就把他送到錯的頁面,
+  // 而他很可能不會回來。這種錯誤在截圖與存在性稽核裡完全看不出來。
+  //
+  // 完成後卡片會收成一行 —— 所以必須在「還沒全部完成」的時候量,
+  // 而這正是探查這個專案時大部分狀態的預設樣子。
+  const pOnboarding = probe(idKey('onboarding', 'onboarding-step'), '總覽')
+  await gotoViaSidebar(main, '總覽')
+  await sleep(700)
+  const onbCount = await main.evaluate(
+    () => document.querySelectorAll('[data-effect-id="onboarding-step"]').length
+  )
+  if (onbCount === 0) {
+    pOnboarding.unreachable('總覽頁沒有首次上手卡(三步都完成後會收成一行,那時本來就沒有可按的步驟)')
+  } else {
+    const targets = new Set()
+    for (let i = 0; i < onbCount; i++) {
+      await gotoViaSidebar(main, '總覽')
+      await sleep(450)
+      if ((await clickEffectId(main, 'onboarding-step', i)) !== true) break
+      await sleep(750)
+      targets.add(await main.evaluate(() => location.hash))
+    }
+    if (targets.size >= 2) {
+      pOnboarding.works(
+        `${onbCount} 顆步驟導到 ${targets.size} 個不同頁面:${[...targets].join(' / ')}`,
+        EVIDENCE.DOM
+      )
+    } else {
+      pOnboarding.dead(
+        `${onbCount} 顆上手步驟只導到 ${targets.size} 個頁面(${[...targets].join(' / ')}) —— 三顆鈕沒有各自通往不同的地方`
+      )
+    }
+  }
+
+  // (f) 卡片底部的校準提醒(它接下了被移除的「開始三部曲」裡唯一不是步驟的事)
+  //
+  // 為什麼要單獨驗一行提醒:它只在「還沒校準」且卡片還沒收合時渲染,
+  // 而校準決定浮層的字級與滾動速度 —— 沒有它,新使用者會用預設值跑完第一場,
+  // 而那不是他會主動去設定頁找的東西。這一行是這件事唯一的入口。
+  const pCal = probe(idKey('onboarding', 'onboarding-calibration'), '總覽')
+  await gotoViaSidebar(main, '總覽')
+  await sleep(800)
+  const calClicked = await clickEffectId(main, 'onboarding-calibration')
+  if (calClicked !== true) {
+    const why = await main.evaluate(() => ({
+      card: document.querySelector('[data-onboarding]')?.getAttribute('data-onboarding') ?? '(沒有卡片)',
+      steps: document.querySelectorAll('[data-effect-id="onboarding-step"]').length
+    }))
+    pCal.unreachable(
+      `總覽頁沒有校準提醒那一行(data-onboarding=${why.card},卡片上有 ${why.steps} 顆步驟)—— ` +
+        `它只在「還沒有 personal.profile」且三步還沒完成時渲染`
+    )
+  } else {
+    await sleep(900)
+    const hash = await main.evaluate(() => location.hash)
+    if (hash.includes('calibration')) pCal.works(`hash → ${hash}`, EVIDENCE.DOM)
+    else pCal.dead(`按了校準提醒之後 hash 是 ${hash},預期包含 calibration`)
   }
 }
 
@@ -2342,6 +2480,39 @@ async function stepScripts(app, main) {
         if (after === before - 1) pDel.works(`scripts ${before} → ${after}(取消不變、確認才刪)`, EVIDENCE.DATA)
         else pDel.dead(`確認刪除後 scripts 是 ${after},預期 ${before - 1}`)
       }
+    }
+  }
+
+  // (j) 空狀態的「用範例稿試提詞」
+  //
+  // 它與總覽頁那顆 demo 是同一個動作的兩面(那邊是「還沒有講稿」的卡片、
+  // 這裡是編輯區的空狀態),而它們是**兩顆不同的控制項**:登記表兩筆都要有,
+  // 探針也要各跑一次 —— 其中一顆被人刪掉時,覆蓋率必須能只對那一顆變紅。
+  const pDemo2 = probe(idKey('scripts', 'demo-script'), '講稿')
+  await clearAll(main)
+  // 同上:清資料層不會重畫已經掛載的頁面(步驟 (g) 已經踩過一次)。
+  await gotoViaSidebar(main, '總覽')
+  await gotoViaSidebar(main, '提詞講稿')
+  await sleep(900)
+  const d2Before = await countOf(main, 'scripts')
+  const d2Clicked = await clickEffectId(main, 'demo-script')
+  if (d2Clicked !== true) {
+    pDemo2.unreachable(`空狀態沒有可點的範例稿鈕(clickEffectId 回 ${JSON.stringify(d2Clicked)})`)
+  } else {
+    await sleep(3000)
+    const d2After = await countOf(main, 'scripts')
+    const w2 = app.windows().filter((w) => w !== main && /overlay/i.test(w.url()))[0] ?? null
+    const t2 = w2 ? await w2.evaluate(() => document.body?.textContent || '').catch(() => '') : ''
+    const flat2 = t2.replace(/\s+/g, '')
+    if (d2After <= d2Before) {
+      pDemo2.dead(`按了範例稿鈕但 scripts 數量 ${d2Before} → ${d2After} —— 稿子沒有被建立`)
+    } else if (!/Flow|市場痛點/.test(flat2)) {
+      pDemo2.dead(
+        `範例稿建好了(scripts ${d2Before} → ${d2After})但浮層沒有帶到它的內容` +
+          `(浮層文字前 80 字=${JSON.stringify(t2.replace(/\s+/g, ' ').slice(0, 80))})`
+      )
+    } else {
+      pDemo2.works(`scripts ${d2Before} → ${d2After},浮層內容含範例稿文字`, EVIDENCE.DATA)
     }
   }
 }
@@ -2678,6 +2849,42 @@ async function stepRecord(app, main, stt, llm) {
     if (after === before - 1) pDel.works(`sessions ${before} → ${after}`, EVIDENCE.DATA)
     else pDel.dead(`確認刪除後 sessions 是 ${after},預期 ${before - 1}`)
   }
+
+  // (j) 複製行動清單 → 剪貼簿真的拿到一份可貼上的東西,而且**不含逐字稿**
+  //
+  // 為什麼負向斷言跟正向一樣重要:這顆鈕的用途是「貼到會議後的訊息裡」,
+  // 而使用者願意貼出去的前提是「裡面只有我準備好的重點」。
+  // 如果它不小心把逐字稿也帶上,那不是多給,是**把使用者的話轉貼給別人看** ——
+  // 而那種錯誤在「剪貼簿有東西」的斷言下完全綠。
+  //
+  // 位置:刪除之後按(此時還有 session 可展開)。
+  const pActionList = probe(idKey('record', 'copy-action-list'), '錄音')
+  await gotoViaSidebar(main, '錄音轉錄')
+  await sleep(800)
+  const hasRow = await main.evaluate(
+    () => document.querySelectorAll('[data-effect-id="copy-action-list"]').length > 0
+  )
+  if (!hasRow) {
+    pActionList.unreachable('展開的會議列裡沒有「複製行動清單」(它與逐字稿明細同一個展開區塊)')
+  } else {
+    await app.evaluate(({ clipboard }) => clipboard.writeText('')).catch(() => {})
+    const copied = await clickEffectId(main, 'copy-action-list')
+    await sleep(800)
+    const clip = String(await app.evaluate(({ clipboard }) => clipboard.readText()).catch(() => ''))
+    // 拿 fixture 逐字稿的一個長片段當「不該出現」的樣本。
+    // 用片段而不是逐字稿全文:逐字稿全文在這裡可能很短,整句比對容易誤判。
+    const leak = stt.text.slice(0, 12)
+    const leaks = leak.length >= 6 && clip.includes(leak)
+    if (copied === true && clip.length > 10 && !leaks) {
+      pActionList.works(`剪貼簿 ${clip.length} 字,不含逐字稿片段`, EVIDENCE.DATA)
+    } else {
+      pActionList.dead(
+        `按了複製行動清單但剪貼簿是 ${clip.length} 字` +
+          `${leaks ? `(而且**含逐字稿片段** ${JSON.stringify(leak)})` : ''}(clicked=${copied})` +
+          `內容=${JSON.stringify(clip.slice(0, 60))}`
+      )
+    }
+  }
 }
 
 // 6.4 面試練習(本機 mock LLM + mock 辨識)
@@ -2993,8 +3200,12 @@ async function stepCalibration(main) {
     const applied = await clickText(main, '套用個人化設定')
     await sleep(1200)
     const profile = (await readSettings(main)).personal.profile
+    // 這裡原本是 `pManual.works(...) === undefined`。`works()` 已經把結論寫進
+    // PROBED 與 tally,再拿它的回傳值去比對 undefined 不會有任何效果 —— 那是
+    // 一次沒接上的自我檢查(可能是想 assert 什麼,寫到一半)。真正代表
+    // 「兩個不同的距離產出不同的 profile」的結論在迴圈外面(3003 行),
+    // 那才是對這顆控制項的完整證據。
     profiles.push({ label, ipd, dist, applied, profile })
-    pManual.works(`${label}: 手動距離 ${dist}cm 已備妥並走到下一步`, EVIDENCE.DATA) === undefined
   }
 
   const [a, b] = profiles
@@ -3118,7 +3329,13 @@ async function stepCalibration(main) {
 }
 
 // 6.6 設定頁的第二輪:開關與其他控制項
-async function stepSettingsExtra(app, main, llm) {
+/**
+ * 為什麼這一頁的步驟需要 stt:「複製診斷報告」探針要斷言報告**不含逐字稿**,
+ * 而唯一知道「這一輪的逐字稿長什麼樣」的是辨識 mock。沒有它,那一半的
+ * 負向斷言會是空的 —— 而「含逐字稿」正是這條最該擋的東西
+ * (使用者要把這份報告貼到公開 issue 上)。
+ */
+async function stepSettingsExtra(app, main, llm, stt) {
   console.log('步驟 11：設定頁開關與連線…')
   await gotoViaSidebar(main, '設定')
   await sleep(900)
@@ -3543,7 +3760,48 @@ async function stepSettingsExtra(app, main, llm) {
       pRecheck.dead(`按了重查但 mock 的 /api/tags 計數停在 ${tagsBefore2} —— 沒有任何重新探測`)
     }
   }
+
+  // 「複製診斷報告」(疑難排解區)。
+  //
+  // 這一條的**重點不在剪貼簿**,而在「裡面不該有什麼」。
+  // 診斷報告是使用者準備貼到 issue 裡的東西 —— 它必須帶著足夠的上下文,
+  // 又必須**不含**逐字稿、API 金鑰、講稿內容。而後者沒有任何一種 UI 機制
+  // 會提醒他:貼出去就已經晚了。
+  //
+  // 所以這個探針做兩個斷言,缺一個就算沒有效果:
+  //   正向:剪貼簿真的拿到一份有內容的報告
+  //   負向:報告裡看不到任何金鑰字樣,也不含這輪錄進去的逐字稿片段
+  const pDiag = probe(idKey('settings', 'copy-diagnostics'), '設定')
+  await app.evaluate(({ clipboard }) => clipboard.writeText('')).catch(() => {})
+  const diagOk = await clickEffectId(main, 'copy-diagnostics')
+  if (diagOk !== true) {
+    pDiag.unreachable('設定頁的「複製診斷報告」鈕沒有渲染(沒有報告時它是 disabled)')
+  } else {
+    await sleep(800)
+    const clip = String(await app.evaluate(({ clipboard }) => clipboard.readText()).catch(() => ''))
+    // 「看起來像金鑰」的樣本:真實的 API key 前綴。診斷報告裡只該出現
+    // 「有設定 / 沒設定」這種布林值,不該出現任何看起來像金鑰的字串。
+    const keyish = /(sk-[A-Za-z0-9]{6,}|api[_-]?key\s*[:=]\s*\S{6,})/i
+    const leakText = stt.text.slice(0, 12)
+    const hasKey = keyish.test(clip)
+    const hasTranscript = leakText.length >= 6 && clip.includes(leakText)
+    if (clip.length > 40 && !hasKey && !hasTranscript) {
+      pDiag.works(`剪貼簿 ${clip.length} 字,不含金鑰字樣也不含逐字稿`, EVIDENCE.DATA)
+    } else {
+      pDiag.dead(
+        `診斷報告 ${clip.length} 字` +
+          `${hasKey ? ' —— **含疑似金鑰**' : ''}` +
+          `${hasTranscript ? ` —— **含逐字稿片段** ${JSON.stringify(leakText)}` : ''}` +
+          `(clicked=${diagOk})內容=${JSON.stringify(clip.slice(0, 80))}`
+      )
+    }
+  }
 }
+
+// (「複製診斷報告」的探針在 stepSettingsExtra 裡 —— 它需要 stt 才能斷言
+//  「報告不含逐字稿」,而辨識 mock 是唯一知道這一輪逐字稿長什麼樣的東西。
+//  曾經有一個 stepDiagnostics 想接這件事,接下來刪到一半就留下了:檔案因此
+//  無法解析,而稽核連啟動都做不到 —— 量測層壞掉時,報告不會說話。)
 
 // 6.7 對話框與 toast
 async function stepDialogs(main) {
@@ -3611,8 +3869,55 @@ async function stepDialogs(main) {
   })
   await sleep(500)
   const after = (await toastText(main)).length
-  if (before >= 2 && after === before - 1) pToast.works(`toast 數量 ${before} → ${after}`, EVIDENCE.DOM)
+  // `closed` 區分「按不到」與「按了但沒用」:前者是量測端的前置條件問題
+  // (toast 可能還沒渲染完就量),把它記成 dead 會把量測端的時序問題
+  // 記在產品帳上 —— 這正是這支稽核一直強調要分開的那兩件事。
+  if (!closed) pToast.unreachable('頁面上找不到 toast 的「關閉通知」按鈕')
+  else if (before >= 2 && after === before - 1)
+    pToast.works(`toast 數量 ${before} → ${after}`, EVIDENCE.DOM)
   else pToast.dead(`按了關閉通知但 toast 數量 ${before} → ${after}`)
+
+  // (c) 可行動錯誤的按鈕 → 按下去真的換頁(而且**不會**無限期停駐在畫面上嗎?
+  //     不,帶 action 的 toast 刻意不自動消失 —— 見 toast.ts。)
+  //
+  // 為什麼這一條重要:這一輪把「前往設定」做成錯誤訊息的一部分,
+  // 而那顆按鈕**不經由 hash 導航** —— 它走 App 自己的 navigate,
+  // 帶著「講稿有未存變更就不准離開」那道守衛。用 hash 會繞過它,
+  // 而那正是把「使用者正在編輯的講稿」變成資料遺失的最短路徑。
+  const pAction = probe(idKey('toast', 'toast-action'), 'toast')
+  await gotoViaSidebar(main, '總覽')
+  await sleep(600)
+  await main.evaluate(() => {
+    window.__auditToast?.('error', '稽核:AI 服務連不上', {
+      label: '前往設定',
+      kind: 'goto',
+      page: 'settings'
+    })
+  })
+  await sleep(700)
+  const hashBeforeAction = await main.evaluate(() => location.hash)
+  const actionClicked = await clickEffectId(main, 'toast-action')
+  if (actionClicked !== true) {
+    pAction.unreachable(
+      `造不出帶 action 的 toast(${JSON.stringify(
+        await main.evaluate(() =>
+          [...document.querySelectorAll('[data-effect-id="toast-action"]')].map((b) =>
+            (b.textContent || '').trim()
+          )
+        )
+      )})`
+    )
+  } else {
+    await sleep(900)
+    const hashAfterAction = await main.evaluate(() => location.hash)
+    if (hashAfterAction.includes('settings') && hashAfterAction !== hashBeforeAction) {
+      pAction.works(`hash ${hashBeforeAction} → ${hashAfterAction}(走 App 的 navigate,守衛仍在)`, EVIDENCE.DOM)
+    } else {
+      pAction.dead(`按了錯誤 toast 的行動按鈕但 hash 是 ${hashAfterAction}(預期含 settings)`)
+    }
+    await gotoViaSidebar(main, '總覽')
+    await sleep(400)
+  }
 }
 
 // 6.8 崩潰畫面(除了重載以外都是量得到的)
@@ -3645,7 +3950,7 @@ async function stepCrash(app, main) {
 async function stepOverlayExtra(app, main) {
   console.log('步驟 14：浮層工具列的其餘控制項…')
   const overlayWin = () => app.windows().find((w) => w !== main)
-  let overlay = overlayWin()
+  const overlay = overlayWin()
   if (!overlay) {
     blocked('浮層工具列', '浮層視窗不存在')
     return
@@ -4057,6 +4362,34 @@ async function stepInventory(app, main, stt, llm) {
     }
     await sleep(1100)
   }
+  /**
+   * 對**浮層視窗**送稽核橋。
+   *
+   * 為什麼需要專屬的一組:force() 走的是 main,而浮層是另一個 renderer
+   * 程序。`overlay.coachingHint` 註冊在 OverlayApp 裡 —— 也就是註冊在浮層,
+   * 不在 main。在 main 送過去會得到「找不到名字」,而症狀是這一格交出 0 顆
+   * 控制項,然後覆蓋率報「這顆鈕從沒出現過」:對的結論,錯的診斷。
+   */
+  const overlayForce = (name, arg) =>
+    overlayWin()
+      ?.evaluate(
+        async ([n, a]) => (await window.__auditForce?.(n, a)) ?? { ok: false, error: '橋接不存在' },
+        [name, arg]
+      )
+      .catch((err) => ({ ok: false, error: String(err?.message || err) })) ?? Promise.resolve({ ok: false, error: '浮層視窗不存在' })
+  /** 對浮層送橋並等它真的生效。回傳整包結果(含 bridge 的 error/names)。 */
+  const overlayForceOk = async (name, arg, tries = 12, waitMs = 250) => {
+    let last = { ok: false, error: '(沒呼叫)' }
+    for (let i = 0; i < tries; i++) {
+      last = await overlayForce(name, arg)
+      if (last?.ok) return last
+      await sleep(waitMs)
+    }
+    return last
+  }
+  /** 在浮層裡按 data-effect-id。 */
+  const overlayClickEffectId = (id) =>
+    overlayWin() ? clickEffectId(overlayWin(), id) : Promise.resolve(false)
   /** 導航之後才成立的狀態:控制項與覆寫鉤子只在該頁掛載時存在。 */
   /**
    * **看 `.ok`，不要比對 `=== true`。**
@@ -4266,7 +4599,29 @@ async function stepInventory(app, main, stt, llm) {
       await sleep(500)
     }
     if (st.seed === 'toast') {
-      await main.evaluate(() => window.__auditToast?.('info', '稽核 toast'))
+      /**
+       * **帶 action 的那一則**,不是沒有 action 的。
+       *
+       * `toast|id:toast-action` 是登��表裡的一筆,但它在這裡曾經是
+       * probe-not-found —— 有登記、探針也跑過,卻沒���任何**被宣告的狀態**
+       * 渲染出它。原因就是這行原本發的是 `__auditToast('info', '稽核 toast')`:
+       * 沒有 action,ToastHost 就不會渲染那顆按鈕。
+       *
+       * 而沒有 action 可發,本身是個已修的缺陷:`installToastBridge` 早期
+       * **丟掉了第三個參數**,所以稽核從來無法製造可行動的 toast ——
+       * 「錯誤要能導到該去的頁」這個使用者價值,量測層從來碰不到。
+       *
+       * 只發**一則**:發兩則會讓「關閉通知」出現兩次,列舉端對重複的鍵加上
+       * `#2` 後綴,於是憑空多出一顆 `toast|button|關閉通知#2` —— 一顆從來
+       * 不會有探針也永遠不會有人登記的影子控制項。
+       */
+      await main.evaluate(() =>
+        window.__auditToast?.('error', '稽核:AI 服務連不上', {
+          label: '前往設定',
+          kind: 'goto',
+          page: 'settings'
+        })
+      )
       await sleep(500)
     }
     if (st.seed === 'crash') {
@@ -4392,6 +4747,28 @@ async function stepInventory(app, main, stt, llm) {
       if (!(await overlayClick('播放'))) blocked(`狀態:${st.id}`, '浮層裡找不到「播放」')
       await sleep(900)
     }
+    if (st.seed === 'overlayCoaching' || st.seed === 'overlayCoachingMuted') {
+      /**
+       * 用稽核橋塞入教練提示 —— 而不是等真的說到話。
+       *
+       * 真的教練訊號要麥克風 + Whisper 都在,稽核環境兩者都不成立;
+       * 而「點提示條靜默這一種」是使用者會議中唯一能處理它的方式。
+       *
+       * 必須讀回 `.ok`(見 forceOk 上面那段註解):`__auditForce` 回傳的是
+       * 物件不是 true,不比對的話這一格會交出 0 顆控制項,然後覆蓋率會說
+       * 「這顆鈕從沒出現過」—— 對的結論,錯的診斷:量測端站錯位置。
+       *
+       * 第二格多按一次靜默:「恢復全部」的渲染條件是 coachingMuted.length > 0。
+       */
+      const hintOk = await overlayForceOk('overlay.coachingHint', { kind: 'filler', message: '稽核:填充詞偏多' })
+      if (!hintOk) blocked(`狀態:${st.id}`, forceWhy(hintOk))
+      await sleep(600)
+      if (st.seed === 'overlayCoachingMuted') {
+        const muted = await overlayClickEffectId('coaching-mute')
+        if (muted !== true) blocked(`狀態:${st.id}`, `按不了 coaching-mute(${muted})`)
+        await sleep(700)
+      }
+    }
 
     const scope = st.page === 'dialog' ? '[role="dialog"]' : st.page === 'toast' ? '[role="status"]' : st.page === 'crash' ? '[data-testid="crash-screen"]' : null
     const win = st.page === 'overlay' ? app.windows().find((w) => w !== main) : main
@@ -4414,6 +4791,16 @@ async function stepInventory(app, main, stt, llm) {
     if (st.seed === 'overlayPlaying') {
       // 播放中的浮層會一直講話;下一個狀態不該繼承它的聲音。
       await overlayClick('暫停')
+      await main.evaluate(() => window.api.overlayHide?.()).catch(() => {})
+      await sleep(500)
+    }
+    if (st.seed === 'overlayCoaching' || st.seed === 'overlayCoachingMuted') {
+      // 教練提示是**跨狀態殘留**的:不清掉的話,下一格會站在這一格的提示上量測,
+      // 而那會產生「看起來像產品的錯」的假紅燈(提示條一直蓋著工具列)。
+      // 靜默清單也要歸零 —— 它住在同一個 overlay window 的 React 狀態裡,
+      // showOverlay 不會重建視窗,殘留會一路帶到浮層被關掉為止。
+      await overlayClickEffectId('coaching-unmute')
+      await overlayForce('overlay.coachingHint', null)
       await main.evaluate(() => window.api.overlayHide?.()).catch(() => {})
       await sleep(500)
     }
@@ -4713,7 +5100,7 @@ async function main_() {
       ['浮層', () => stepOverlay(app, main)],
       ['總覽', () => stepDashboard(app, main)],
       ['講稿', () => stepScripts(app, main)],
-      ['設定頁開關與連線', () => stepSettingsExtra(app, main, llm)],
+      ['設定頁開關與連線', () => stepSettingsExtra(app, main, llm, stt)],
       ['個人化校準', () => stepCalibration(main)],
       ['對話框與 toast', () => stepDialogs(main)],
       ['浮層工具列(第二輪)', () => stepOverlayExtra(app, main)],
@@ -4745,7 +5132,17 @@ async function main_() {
       works: tally.works,
       dead: tally.dead,
       unverifiable: tally.unverifiable,
-      覆蓋率: `${PROBED.size} 顆有結論 / ${REGISTRY.size} 顆有登記`
+      /**
+       * 寫清楚分母是什麼,因為同一份報告裡還有另一個「覆蓋率」數字。
+       *
+       * 這裡是 **探針給出結論的登記項數 / 登記表總數**(154)��
+       * 而上面「覆蓋率」那張表是 **被列舉到的控制項實例中有結論或豁免的數**
+       * (145)。兩個分母不同 —— 一個數「有沒有量」,另一個數「畫面上有沒有漏」——
+       * 而它們長得幾乎一樣,讀者只會以為其中一個是錯的。
+       *
+       * 所以這裡把單位寫進字串:沒有單位的比率不是資訊,是讓人猜的數字。
+       */
+      覆蓋率: `${PROBED.size}/${REGISTRY.size} 項登記有探針結論(以登記表為分母;「覆蓋率」表另以列舉到的實例為分母,兩者單位不同)`
     })
     // mock 實際收到什麼請求：**看外部服務有沒有真的被叫到**，
     // 而不是只看 App 自己有沒有報錯。這是中繼資料層的證據。

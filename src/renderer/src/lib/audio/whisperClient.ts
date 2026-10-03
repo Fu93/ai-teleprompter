@@ -33,6 +33,14 @@ export class WhisperClient {
   private chain: Promise<unknown> = Promise.resolve()
   /** dispose 時觸發在飛 load() 的 reject(executor 外無法直接 reject 已建立的 promise) */
   private rejectActiveLoad: ((e: Error) => void) | null = null
+  /**
+   * 目前這輪 load() 的世代序號。worker 端也用同一個概念(見 whisper.worker.ts)。
+   *
+   * 為什麼需要:換模型時舊的 onMsg 仍在 worker 上,晚到的 `ready` 會讓已被
+   * 換掉的那輪 resolve —— 而它的訊息描述的是**舊模型**。沒有世代檢查時,
+   * 「設成 small、實際仍用 base」會發生,而且沒有任何錯誤訊息。
+   */
+  private loadGeneration = 0
 
   onProgress: ((p: WhisperDownloadProgress) => void) | null = null
   onStatus: ((message: string) => void) | null = null
@@ -104,33 +112,68 @@ export class WhisperClient {
     const key = `${modelKey}:${preferGpu}`
     if (this.loadPromise && this.loadedKey === key) return this.loadPromise
     const worker = this.ensureWorker()
+
+    // **換模型必須先讓舊的那輪落地,再覆寫指標。**
+    //
+    // 原本的順序是先覆寫 `this.loadPromise` 與 `this.rejectActiveLoad`,於是舊輪的
+    // rejecter 從此不可達:第一個 promise 既不 resolve 也不 reject,`await
+    // client.load()` 的呼叫端(開始聆聽 / 語音跟讀 / 個人化校準)會**永遠卡在
+    // 那一行** —— 按鈕停住、沒有錯誤訊息,與 dispose 那條已修的缺陷同一個形狀,
+    // 但成因不同,所以 dispose 的測試抓不到它。
+    this.abandonActiveLoad(
+      new Error(`語音模型切換中:${this.loadedKey || '(尚未載入)'} → ${key},先前的載入已中止`)
+    )
+
+    const generation = ++this.loadGeneration
     this.loadedKey = key
     this.loadPromise = new Promise<WhisperDevice>((resolve, reject) => {
-      // dispose() 經此 rejecter 讓在飛的 load() 落地(否則 await 呼叫端永遠懸掛)
-      this.rejectActiveLoad = (e) => {
+      // dispose() 與換模型都經此 rejecter 讓在飛的 load() 落地
+      const settleFailure = (e: Error): void => {
         worker.removeEventListener('message', onMsg)
+        // 只在「仍是本世代」時清指標,否則會把**新**那輪的狀態清掉
+        if (this.loadGeneration === generation) {
+          this.rejectActiveLoad = null
+          this.loadPromise = null
+          this.loadedKey = ''
+        }
         reject(e)
       }
+      this.rejectActiveLoad = settleFailure
       const onMsg = (e: MessageEvent<OutMsg>): void => {
+        // 晚到的舊世代訊息:已被換掉,丟棄。否則它會讓已 reject 的 promise
+        // 再次 resolve(無作用),更糟的是 worker 端會以舊模型為準。
+        if (this.loadGeneration !== generation) return
         if (e.data.type === 'ready') {
           worker.removeEventListener('message', onMsg)
           this.rejectActiveLoad = null
           resolve(e.data.device)
         } else if (e.data.type === 'error' && e.data.id == null) {
-          worker.removeEventListener('message', onMsg)
-          this.rejectActiveLoad = null
-          this.loadPromise = null
-          reject(new Error(e.data.message))
+          settleFailure(new Error(e.data.message))
         }
       }
       worker.addEventListener('message', onMsg)
-      worker.postMessage({ type: 'load', modelId, device: preferGpu ? 'webgpu' : 'wasm' } satisfies {
+      worker.postMessage({ type: 'load', modelId, generation, device: preferGpu ? 'webgpu' : 'wasm' } satisfies {
         type: 'load'
         modelId: string
+        generation: number
         device?: WhisperDevice
       })
     })
     return this.loadPromise
+  }
+
+  /**
+   * 讓在飛的 load() 落地(轉成 rejected),而不是被下一次 load() 覆蓋成懸空。
+   *
+   * 與 dispose 共用同一條路徑:兩者的差別只在錯誤訊息 —— dispose 是使用者主動
+   * 離開,換模型是使用者改了設定。兩者對呼叫端的意義相同:你等的這次載入
+   * 不會發生了,請依錯誤訊息處理。
+   */
+  private abandonActiveLoad(err: Error): void {
+    const reject = this.rejectActiveLoad
+    if (!reject) return
+    this.rejectActiveLoad = null
+    reject(err)
   }
 
   transcribe(audio: Float32Array, language: string): Promise<string> {
@@ -162,9 +205,9 @@ export class WhisperClient {
     for (const p of this.pending.values()) p.reject(err)
     this.pending.clear()
     // 在飛的 load() 同樣要落地:await client.load() 的呼叫端(開始聆聽/跟讀/校準)
-    // 否則隨 dispose 永遠懸掛
-    this.rejectActiveLoad?.(err)
-    this.rejectActiveLoad = null
+    // 否則隨 dispose 永遠懸掛。世代也要推進 —— 讓 worker 晚到的訊息被丟棄。
+    this.loadGeneration += 1
+    this.abandonActiveLoad(err)
     this.loadPromise = null
     this.loadedKey = ''
     this.worker?.terminate()

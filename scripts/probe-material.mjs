@@ -136,7 +136,9 @@ for (const glass of [true, false]) {
 
 console.log('')
 console.log('=== 材質形態閘驗證 ===')
-let bad = 0
+// 這裡原本有一個 `let bad = 0`,從未被累加也從未被讀出。真正的判斷在
+// 上方(對照 main 端 [material] 決策輸出),這一段只負責把結果印出來 ——
+// 印出來就夠了,一個永遠是 0 的計數只會讓人以為這裡有個沒接上的判斷。
 for (const r of results) {
   const mark = r.expect === 'acrylic' ? '◆' : '◇'
   console.log(

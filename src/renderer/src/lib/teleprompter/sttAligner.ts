@@ -43,7 +43,8 @@ function similarity(a: string, b: string): number {
 function normalize(text: string): string {
   return text
     .toLowerCase()
-    // eslint-disable-next-line no-irregular-whitespace
+    // 這個 regex 裡有全形空白與標點,但那不需要靠 disable 過關:
+    // no-irregular-whitespace 管的是「原始碼裡的空白字元」,不是 regex 字面值。
     .replace(/[\uFF0C\u3002\uFF01\uFF1F\u3001\uFF1B\uFF1A\u201C\u201D\u2018\u2019\u3010\u3011\u300A\u300B\s.,!?;:'"()[\]{}]/g, '')
     .trim()
 }

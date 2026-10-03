@@ -17,6 +17,9 @@ import type { AppSettings } from '@shared/types'
 import type { SceneSummary } from '@shared/api'
 import { Segmented } from '../components/Segmented'
 import { BackupSection } from '../components/BackupSection'
+import { DataTrustPanel } from '../components/DataTrustPanel'
+import { formatDiagnosticsReport } from '@shared/observability'
+import { reportError } from '../lib/reportError'
 import { PreflightCard } from '../components/PreflightCard'
 
 const SCENE_LABELS_ZH: Record<string, string> = {
@@ -45,17 +48,49 @@ function sceneLabel(s: SceneSummary): string {
   return s.label.length <= 6 ? s.label : s.label.slice(0, 6)
 }
 
+/**
+ * 設定頁的區塊目錄(2026-10-03 新增)。
+ *
+ * 為什麼要它:這一頁有九個區塊疊成一個長捲動頁(實測 1099 行),而「快速鍵」
+ * 是第七個 —— 使用者為了改一顆熱鍵要一路捲過五個與他無關的區塊。
+ * 每一個區塊單獨看都合格,合起來就是一頁找不到東西。幾何/對比/覆蓋那類稽核
+ * 永遠不會報這件事(它不屬於任何單一元素的屬性)。
+ *
+ * 文字是區塊的正式標題,不是簡寫 —— 目錄與卡片寫不同詞會讓人懷疑自己看錯頁。
+ * id 用固定字串(而不是把中文標題轉 id):中文標題會微調,id 不該跟著動。
+ */
+const SETTINGS_SECTIONS: Array<{ id: string; label: string }> = [
+  { id: 'calibration', label: '個人化校準' },
+  { id: 'overlay', label: '提詞浮層' },
+  { id: 'stt', label: '語音辨識' },
+  { id: 'preflight', label: '開始之前' },
+  { id: 'ai', label: 'AI 助理' },
+  { id: 'hotkeys', label: '快速鍵' },
+  { id: 'data-trust', label: '你的資料去了哪裡' },
+  { id: 'backup', label: '資料備份' },
+  { id: 'troubleshoot', label: '疑難排解' }
+]
+
+/**
+ * 一個設定區塊。
+ *
+ * id 有兩個消費者:(1) 頁首目錄的錨點跳轉, (2) 離線稽核用來驗
+ * 「每個區塊都出現在目錄裡」—— 那就是加 id 的理由,不只是為了美觀。
+ * scroll-mt-6:沒有它,跳過去的區塊上緣會被頁面頂端貼齊到看不見標題。
+ */
 function Section({
+  id,
   title,
   desc,
   children
 }: {
+  id: string
   title: string
   desc?: string
   children: React.ReactNode
 }): JSX.Element {
   return (
-    <div className="card p-6">
+    <div id={id} data-settings-section={id} className="card scroll-mt-6 p-6">
       <div className="mb-5">
         <div className="eyebrow">{title}</div>
         {desc && <div className="mt-0.5 text-xs text-ink-400">{desc}</div>}
@@ -63,6 +98,35 @@ function Section({
       <div className="space-y-5">{children}</div>
     </div>
   )
+}
+
+/**
+ * 金鑰欄位的狀態說明。
+ *
+ * 為什麼需要:金鑰欄位在讀到安全儲存之前是 disabled 的,而「灰色不能打」與
+ * 「壞掉了」在畫面上長得一模一樣 —— 使用者能做的最合理推論是後者。原本只有
+ * 一個 `disabled={!secureKeysLoaded}` 與 `disabled:opacity-40`,沒有任何一句話
+ * 說明它為什麼不能按、要等多久(見 docs/UX_FINDINGS.md P1-4)。
+ *
+ * 兩種狀態共用一個元件而不是各寫一次:它們是同一件事的兩個結局
+ * (还在讀 / 讀不到),分開寫遲早會有一邊忘了更新。
+ */
+function KeyStatus({ loading, note }: { loading: boolean; note: string | null }): JSX.Element | null {
+  if (loading) {
+    return (
+      <div data-key-status="loading" className="mt-1.5 text-[11px] text-ink-400">
+        正在讀取已儲存的金鑰…(載入完成前先不開放編輯,避免空值把已存的金鑰蓋掉)
+      </div>
+    )
+  }
+  if (note) {
+    return (
+      <div data-key-status="unreadable" className="mt-1.5 text-[11px] leading-relaxed text-amber-450">
+        {note}
+      </div>
+    )
+  }
+  return null
 }
 
 function Switch({
@@ -165,6 +229,16 @@ export default function SettingsPage({
   const [aiApiKey, setAiApiKey] = useState('')
   const [sttApiKey, setSttApiKey] = useState('')
   const [secureKeysLoaded, setSecureKeysLoaded] = useState(false)
+  /**
+   * 安全儲存**沒有回應**時要說的那句話。
+   *
+   * 原本這個旗標只有兩個結局:讀到了(欄位解鎖)或拋錯(欄位解鎖 + toast)。
+   * 但 IPC 也可能**永遠不回來**(主程序卡在磁碟或 safeStorage),那時欄位就
+   * 一直灰著,沒有任何訊息、沒有任何出口 —— 使用者只能重開 App。
+   * 所以給它一個上限:4 秒之後就當作「讀不到舊金鑰」,把欄位交還給使用者
+   * (輸入新的一定覆蓋得了舊的,而「不能輸入」比「可能覆蓋」嚴重得多)。
+   */
+  const [secureKeysNote, setSecureKeysNote] = useState<string | null>(null)
   const secureKeysRef = useRef<Record<string, unknown>>({})
   const pendingKeysRef = useRef<Partial<Record<'apiKey' | 'sttApiKey', string>>>({})
   const keyTimersRef = useRef<Partial<Record<'apiKey' | 'sttApiKey', ReturnType<typeof setTimeout>>>>({})
@@ -192,6 +266,16 @@ export default function SettingsPage({
    * 這是 audit:effects 抓到的(它量的是「按了之後系統有沒有變」)。
    */
   const [hotkeyConflicts, setHotkeyConflicts] = useState<string[]>([])
+
+  // 讀取金鑰的保險絲:讀得到就沒有這回事,沒回應時讓欄位自己解鎖(理由見上)。
+  useEffect(() => {
+    if (secureKeysLoaded) return
+    const t = setTimeout(() => {
+      setSecureKeysNote('讀不到已儲存的金鑰(安全儲存沒有回應)—— 直接輸入新的即可,會以你輸入的為準。')
+      setSecureKeysLoaded(true)
+    }, 4000)
+    return () => clearTimeout(t)
+  }, [secureKeysLoaded])
 
   /**
    * **每次熱鍵設定改變都要重新問一次。**
@@ -223,13 +307,20 @@ export default function SettingsPage({
         })
     }
     load()
-    // 熱鍵任一項改變 → main 重新註冊 → 衝突名單可能完全不同了
-    const sig = JSON.stringify(settings?.hotkeys ?? null)
-    const id = setTimeout(load, 400) // 等 main 重新註冊完再問
+    // 熱鍵任一項改變 → main 重新註冊 → 衝突名單可能完全不同了。
+    // 這裡會再問一次而不是只靠 mount 時那一次:registerHotkeys() 在
+    // SettingsSet 之後才跑(見 ipc.ts),所以衝突是「使用者改完之後」才發生的。
+    //
+    // 為什麼延遲 400ms:main 要先 unregisterAll + 重新註冊六顆 OS 層熱鍵,
+    // 立刻去問會拿到**舊的**衝突名單 —— 使用者已經修好的那幾顆還在警告裡。
+    //
+    // 依賴寫 settings?.hotkeys(物件參考)而不是 JSON 字串:deepMerge 只在
+    // patch **觸及**該鍵時才換掉子物件參考,所以這個 effect 實際上只在熱鍵
+    // 真的變動時重跑,拖字級滑桿不會平白多打一次 IPC。
+    const id = setTimeout(load, 400)
     return () => {
       alive = false
       clearTimeout(id)
-      void sig
     }
   }, [settings?.hotkeys])
 
@@ -355,6 +446,27 @@ export default function SettingsPage({
     []
   )
 
+  /**
+   * 複製診斷報告。
+   *
+   * 報告由 **main 端**組裝並已遮蔽(見 src/main/diagnostics.ts)——
+   * 刻意不在 renderer 拼:任何一條未來新增的取值路徑都會漏掉遮蔽,
+   * 而遮蔽是這個功能唯一不能出錯的部分。
+   */
+  const copyDiagnostics = async (): Promise<void> => {
+    try {
+      const report = await window.api.diagnosticsReport()
+      const text = formatDiagnosticsReport(report)
+      await navigator.clipboard.writeText(text)
+      toast.success('診斷報告已複製。貼到問題回報時請順便說明你當下在做什麼。')
+    } catch (err) {
+      // 複製失敗仍然要說人話:clipboard 在某些環境不可用,而使用者
+      // 此刻正要回報問題 —— 讓他自己開記錄資料夾是可行的退路。
+      reportError('複製診斷報告失敗', err, { event: 'backup_failed' })
+      toast.info('可以改用「開啟記錄資料夾」,把 main.log 附在回報裡。')
+    }
+  }
+
   if (!settings) return <div className="p-8 text-sm text-ink-400">載入中…</div>
 
   const o = settings.overlay
@@ -386,7 +498,37 @@ export default function SettingsPage({
     <div className="mx-auto max-w-3xl space-y-5 px-8 py-8">
       <h1 className="text-xl font-bold">設定</h1>
 
-      <Section title="個人化校準" desc="以你的眼距與語速自動產生字級、滾動速度與預估時長">
+      {/* 區塊目錄:九個區塊的單一長捲動頁需要一條索引(見 SETTINGS_SECTIONS) */}
+      <nav
+        data-settings-toc="1"
+        aria-label="設定區塊"
+        className="card flex flex-wrap gap-1.5 p-3"
+      >
+        {SETTINGS_SECTIONS.map((s) => (
+          <button
+            key={s.id}
+            // 九顆 chip 共用同一個身分。效果稽核的列舉端對 data-effect-id 一律
+            // 收斂成 `${page}|id:${id}`,重複的實例只加 #n 序號、基礎鍵不變 ——
+            // 所以一筆登記(settings|id:settings-toc)就涵蓋九顆,不必為了讓
+            // 對帳對得上而登記九筆一模一樣的東西(那九筆會隨區塊增減而漂移)。
+            data-effect-id="settings-toc"
+            data-settings-toc-link={s.id}
+            // py-1.5(而不是 py-1):第一版是 py-1,高度 25px,低於 28px 的點擊目標
+            // 下限 —— audit:ui 當場報了五筆 small-tap-target(五個不同寬度各一筆)。
+            // 這一條正是「先修、後開門檻」的反面教材:新加的 UI 也要自己通過舊門檻。
+            className="cursor-pointer rounded-lg px-2.5 py-1.5 text-[11px] text-ink-300 transition-colors hover:bg-white/8 hover:text-ink-100"
+            onClick={() => {
+              // scrollIntoView 而不是改 hash:主視窗的網址被 App.tsx 拿去記頁面
+              // (#/settings),在這裡動 hash 會把頁面路由踢掉。
+              document.getElementById(s.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            }}
+          >
+            {s.label}
+          </button>
+        ))}
+      </nav>
+
+      <Section id="calibration" title="個人化校準" desc="以你的眼距與語速自動產生字級、滾動速度與預估時長">
         {settings.personal.profile ? (
           <div className="space-y-3">
             <div className="grid grid-cols-4 gap-3 text-center">
@@ -440,7 +582,7 @@ export default function SettingsPage({
         )}
       </Section>
 
-      <Section title="提詞浮層" desc="外觀與行為，變更即時生效">
+      <Section id="overlay" title="提詞浮層" desc="外觀與行為，變更即時生效">
         <div>
           <div className="label">顯示模式</div>
           <Segmented
@@ -497,13 +639,13 @@ export default function SettingsPage({
         />
         <Switch
           label="該你說話了提示"
-          hint="會議轉錄中偵測到對方講完問句或長段時，浮層即時提醒你接話（turn-yield，需搭配錄音轉錄頁的系統音訊）"
+          hint="會議轉錄中偵測到對方講完問句或長段時，浮層即時提醒你接話（turn-yield，需搭配錄音轉錄頁的系統音訊）。這一種是救場用的,不受教練靜默影響"
           checked={o.turnYield}
           onChange={(v) => patchO({ turnYield: v })}
         />
         <Switch
           label="即時教練"
-          hint="會議/練習轉錄中偵測語速過快、填充詞過多、搶話、冷場、獨白過長，浮層即時提醒（語速基準取自個人化校準）"
+          hint="會議/練習轉錄中偵測語速過快、填充詞過多、搶話、冷場、獨白過長，浮層即時提醒（語速基準取自個人化校準）。會議中想關掉其中一��,直接點提示條上的提示即可,只靜默到本場結束,不會影響「該你說話了」"
           checked={o.coaching}
           onChange={(v) => patchO({ coaching: v })}
         />
@@ -543,7 +685,7 @@ export default function SettingsPage({
         <Switch label="永遠置頂" checked={o.alwaysOnTop} onChange={(v) => patchO({ alwaysOnTop: v })} />
       </Section>
 
-      <Section title="語音辨識" desc="本地 Whisper 完全離線免費；雲端更快更準">
+      <Section id="stt" title="語音辨識" desc="本地 Whisper 完全離線免費；雲端更快更準">
         <div>
           <div className="label">引擎</div>
           <div className="flex gap-2">
@@ -634,6 +776,7 @@ export default function SettingsPage({
                 onBlur={(e) => flushSecureKey('sttApiKey', e.target.value)}
                 placeholder="gsk_..."
               />
+              <KeyStatus loading={!secureKeysLoaded} note={secureKeysNote} />
             </div>
             <div>
               <div className="label">模型</div>
@@ -650,6 +793,7 @@ export default function SettingsPage({
       </Section>
 
       <Section
+        id="preflight"
         title="開始之前"
         desc="這台電腦還差什麼。AI 模型與語音辨識都備妥之前,練習與摘要會失敗 —— 在那之前先講清楚。"
       >
@@ -659,7 +803,7 @@ export default function SettingsPage({
         <PreflightCard variant="full" onNavigate={onNavigate} />
       </Section>
 
-      <Section title="AI 助理" desc="面試練習出題與反饋、會議摘要生成">
+      <Section id="ai" title="AI 助理" desc="面試練習出題與反饋、會議摘要生成">
         <div>
           <div className="label">供應商</div>
           <div className="flex gap-2">
@@ -761,6 +905,7 @@ export default function SettingsPage({
                 }}
                 onBlur={(e) => flushSecureKey('apiKey', e.target.value)}
               />
+              <KeyStatus loading={!secureKeysLoaded} note={secureKeysNote} />
             </div>
             <div>
               <div className="label">模型</div>
@@ -835,7 +980,7 @@ export default function SettingsPage({
         />
       </Section>
 
-      <Section title="快速鍵" desc="全域熱鍵，任何應用程式上方都有效；變更後立即生效">
+      <Section id="hotkeys" title="快速鍵" desc="全域熱鍵，任何應用程式上方都有效；變更後立即生效">
         <div className="flex gap-6 text-sm">
           <div className="flex-1">
             <div className="label">顯示 / 隱藏浮層</div>
@@ -980,22 +1125,45 @@ export default function SettingsPage({
         </div>
       </Section>
 
+      {/* 放在備份**之前**:信任問題先於資料操作。
+          使用者要先把「這份備份裡會有什麼、會送到哪裡」看清楚,才會按下匯出;
+          順序相反時,匯出那顆鈕在畫面上比「資料去了哪裡」更搶眼。 */}
       <Section
+        id="data-trust"
+        title="你的資料去了哪裡"
+        desc="下面每一列都根據目前的設定算出來。改設定之後它會跟著變。"
+      >
+        <DataTrustPanel variant="full" />
+      </Section>
+
+      <Section
+        id="backup"
         title="資料備份"
         desc="把講稿、會議紀錄與練習紀錄整份帶走。換電腦或重灌前先匯出一次。"
       >
         <BackupSection />
       </Section>
 
-      <Section title="疑難排解" desc="遇到問題時，日誌是回報與自查的第一手資料">
-        <button
-          className="btn-outline text-xs"
-          onClick={() => void window.api.openLogDir()}
-        >
-          開啟記錄資料夾
-        </button>
-        <div className="mt-1.5 text-[11px] text-ink-400">
-          main.log 記錄啟動、未捕捉例外與前端錯誤（輪替保留 3 檔）；回報問題時附上最新的它最有幫助。
+      <Section id="troubleshoot" title="疑難排解" desc="遇到問題時，日誌是回報與自查的第一手資料">
+        <div className="flex flex-wrap items-center gap-2">
+          <button className="btn-outline text-xs" onClick={() => void window.api.openLogDir()}>
+            開啟記錄資料夾
+          </button>
+          <button
+            data-effect-id="copy-diagnostics"
+            className="btn-outline text-xs"
+            onClick={() => void copyDiagnostics()}
+            title="把版本、平台、設定摘要與最近的錯誤碼複製成一段文字,貼到回報問題的地方"
+          >
+            複製診斷報告
+          </button>
+        </div>
+        <div className="mt-1.5 text-[11px] leading-relaxed text-ink-400">
+          main.log 記錄啟動、未捕捉例外、結構化錯誤碼與前端錯誤（輪替保留 3 檔）。
+          <span className="mt-0.5 block text-ink-500">
+            診斷報告只含版本、平台、設定旗標與錯誤碼 —— <strong className="text-ink-400">不含逐字稿、講稿內容與 API 金鑰</strong>。
+            這是刻意的:報告唯一的傳遞方式是貼到公開的問題回報裡,寫進去的東西必須假設它會離開這台電腦。
+          </span>
         </div>
       </Section>
     </div>

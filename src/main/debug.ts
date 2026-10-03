@@ -1,4 +1,10 @@
 import { app } from 'electron'
+import {
+  E2E_ENV_DEFAULT,
+  parseMicScenario,
+  parseOllamaScenario,
+  type E2EEnv
+} from '@shared/e2eEnv'
 
 /**
  * debug.ts — 開發者除錯能力的單一開關。
@@ -42,3 +48,29 @@ export const DEBUG =
  *   - 一樣只在未打包時成立:安裝包裡不存在這條路徑。
  */
 export const AUDIT = !app.isPackaged && process.env['AI_TP_AUDIT'] === '1'
+
+/**
+ * E2E — e2e 隔離旗標。與 DEBUG / AUDIT 分開,因為它管的是**測試資料隔離**
+ * (userData 重導到暫存目錄,見 src/main/index.ts),不是能力開關。
+ */
+export const E2E = !app.isPackaged && process.env['AI_TP_E2E'] === '1'
+
+/**
+ * E2E_ENV — e2e 的環境故障注入情境(麥克風、Ollama)。
+ *
+ * ── 這是安全邊界,不是謹慎 ──
+ *   它會讓 `getUserMedia` 丟出假的 NotAllowedError、讓 Ollama 的
+ *   `/api/tags` 失敗。如果它在打包版裡有可能為 true,使用者在正式安裝包上
+ *   按「開始錄音」會拿到「麥克風權限被拒」—— 而他會**照著指示**去 Windows
+ *   設定裡改權限,那是��難察覺的一種信任背書。
+ *
+ *   所以條件與 AUDIT 完全相同(未打包 **且** 明確要求),而不是「未打包就當
+ *   預設注入」:預設值必須是乾淨的,否則每一個 e2e 都會在一個有假故障的
+ *   世界裡跑,而那種偏差不會讓任何一條測試失敗。
+ */
+export const E2E_ENV: E2EEnv = E2E
+  ? {
+      mic: parseMicScenario(process.env['AI_TP_E2E_MIC']),
+      ollama: parseOllamaScenario(process.env['AI_TP_E2E_OLLAMA'])
+    }
+  : E2E_ENV_DEFAULT

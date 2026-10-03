@@ -44,10 +44,25 @@
  *     —— 前者與別人有沒有別的紅燈無關,所以不受工作樹現況影響;
  *   - 它必須把被破壞的執行產生的 report.json **還原**,否則磁碟上會留一份
  *     被投毒的報告,而那份報告看起來跟真的沒有兩樣。
+ *
+ * ── 還原這件事自己也會漏(實測踩過)──
+ *   原本只有 `try/finally`。但 `finally` 只保得住**被它自己察覺的**離開:
+ *   Ctrl-C、CI 的 job 逾時、執行環境的強制終止(SIGKILL)都不會跑到它。
+ *   實際發生的樣子:self-test 跑到一半被逾時砍掉,磁碟上留下的是
+ *   `report.selftest-backup.json`(還沒被還原的備份)而 **report.json 不見了** ——
+ *   下一次 `npm run release` 的 audit:effects 步驟會讀到一份不存在的報告。
+ *
+ *   三道防線:
+ *     1. signal handler:SIGINT / SIGTERM 走同一條還原路徑
+ *     2. 子行程不留活口:self-test 被砍時要連 audit:effects 一起收掉,
+ *        否則它還會在背景把被破壞的報告寫回來,蓋掉還原
+ *     3. 開頭自我修復:偵測到上一次的殘留備份就先還原 ——
+ *        處理 SIGKILL 這種**物理上無法攔截**的情況,以及手動 Ctrl-C 掉的行程
  */
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync } from 'node:fs'
 import process from 'node:process'
+import { recoverLeftoverBackup, restoreReport as restoreReportFile } from './lib/report-guard.mjs'
 
 const REPORT = 'docs/audit/effects/report.json'
 const BACKUP = 'docs/audit/effects/report.selftest-backup.json'
@@ -55,22 +70,70 @@ const isWin = process.platform === 'win32'
 const node = isWin ? 'node.exe' : 'node'
 const MODE = 'drop-registry,skip-probes,drop-fake-audio'
 
+/** @type {import('node:child_process').ChildProcess | null} */
+let runningChild = null
+
 function runAudit() {
   return new Promise((resolve) => {
     const child = spawn(node, ['--no-warnings', 'scripts/audit-effects.mjs'], {
       stdio: 'inherit',
       env: { ...process.env, AI_TP_SELFTEST: MODE }
     })
-    child.on('close', (code) => resolve(code ?? 1))
-    child.on('error', () => resolve(1))
+    runningChild = child
+    child.on('close', (code) => {
+      runningChild = null
+      resolve(code ?? 1)
+    })
+    child.on('error', () => {
+      runningChild = null
+      resolve(1)
+    })
   })
 }
+
+/**
+ * 還原報告。可重入 —— signal handler 與 finally 都會呼叫它。
+ * 實作在 scripts/lib/report-guard.mjs(那裡有測試直接驅動它)。
+ */
+function restoreReport(hadReport) {
+  return restoreReportFile(REPORT, BACKUP, hadReport, (m) => console.log(`\n${m}`))
+}
+
+// 先修復,再開始破壞 —— 順序反過來的話,殘留的備份會被當成「原本的報告」而再備份一次。
+if (recoverLeftoverBackup(REPORT, BACKUP, (m) => console.log(m))) console.log()
 
 console.log('self-test:帶著破壞跑一次 audit:effects…')
 console.log(`(破壞模式 ${MODE};報告會先備份再還原)\n`)
 
 const hadReport = existsSync(REPORT)
 if (hadReport) renameSync(REPORT, BACKUP)
+
+/**
+ * signal handler:被中斷時走**同一條**還原路徑,然後以非 0 結束。
+ *
+ * 為什麼要順便殺掉子行程:self-test 被砍掉時 audit:effects 還活著,
+ * 它結束後會把被破壞的報告寫回 REPORT —— 那就覆蓋掉我們剛還原的東西了。
+ * 這是「還原了但還是被蓋掉」那種看起來已經處理好的情況。
+ */
+let interrupted = false
+const onSignal = (signal) => {
+  if (interrupted) return
+  interrupted = true
+  console.error(`\nself-test 收到 ${signal},正在還原報告…`)
+  try {
+    if (runningChild && typeof runningChild.kill === 'function') runningChild.kill('SIGTERM')
+  } catch {
+    /* 子行程可能已經結束 */
+  }
+  try {
+    restoreReport(hadReport)
+  } catch (err) {
+    console.error(`還原失敗:${err.message}(備份仍在 ${BACKUP},手動 rename 回去即可)`)
+  }
+  process.exit(1)
+}
+process.on('SIGINT', () => onSignal('SIGINT'))
+process.on('SIGTERM', () => onSignal('SIGTERM'))
 
 let exitCode = 0
 try {
@@ -166,11 +229,15 @@ try {
   exitCode = 1
 } finally {
   // 一定要還原:磁碟上留一份被投毒的報告,比沒有報告更糟。
-  if (hadReport && existsSync(BACKUP)) {
-    renameSync(BACKUP, REPORT)
-    console.log('\n已還原原本的 report.json')
-  } else if (!hadReport && existsSync(REPORT)) {
-    writeFileSync(REPORT, '{}\n', 'utf8')
+  // 走同一個 helper(而不是各寫一份)—— 兩份實作遲早會分歧,
+  // 而分歧的那一份不會被任何測試發現。
+  if (!interrupted) {
+    try {
+      restoreReport(hadReport)
+    } catch (err) {
+      console.error(`還原失敗:${err.message}(備份仍在 ${BACKUP},手動 rename 回去即可)`)
+      exitCode = 1
+    }
   }
 }
 

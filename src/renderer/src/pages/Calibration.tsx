@@ -31,7 +31,7 @@ import {
   visualAngleDeg
 } from '../lib/calibration'
 import { Ema, detectIris, getFaceLandmarker } from '../lib/faceLandmarker'
-import { AudioSegmenter } from '../lib/audio/segmenter'
+
 import { WhisperClient, type WhisperModelKey } from '../lib/audio/whisperClient'
 import { toast } from '../lib/toast'
 import { encodeWav } from '../lib/audio/wav'
@@ -156,7 +156,9 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       whisperRef.current?.dispose()
       whisperRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // (這裡原本有一行 eslint-disable-next-line react-hooks/exhaustive-deps。
+    //  有了 lint 之後才發現它是多餘的:這個 effect 只讀 refs,而 refs 不進依賴列。
+    //  留著它會讓人以為這裡有什麼沒交代清楚的依賴問題。)
   }, [])
 
   // ---------- Step 1: 攝影機 ----------
@@ -207,7 +209,9 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       setCameraOn(false)
       setCameraError(describeError(err))
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // (這裡原本有一行 eslint-disable-next-line react-hooks/exhaustive-deps。
+    //  有了 lint 之後才發現它是多餘的:這個 effect 只讀 refs,而 refs 不進依賴列。
+    //  留著它會讓人以為這裡有什麼沒交代清楚的依賴問題。)
   }, [])
 
   const stopCamera = (preserveMeasurement = false): void => {
@@ -296,7 +300,6 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
         }
         // 標記（顯示有鏡像：x 翻轉）
         const w = det.frameWidth
-        const h = det.frameHeight
         ctx.fillStyle = '#8f8cfa'
         for (const p of [det.left, det.right]) {
           ctx.beginPath()

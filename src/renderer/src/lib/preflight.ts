@@ -29,6 +29,10 @@ import { create } from 'zustand'
 import { WHISPER_MODELS } from './audio/whisperClient'
 import type { WhisperModelKey } from './audio/whisperClient'
 import type { AppSettings } from '@shared/types'
+// 下載網址的唯一出處在 shared/errorCodes.ts(與「無法連線到 Ollama」那則
+// actionable 提示共用)。原本這裡自己定義一份,兩份可以各自漂移 —— 而漂移之後
+// 使用者按的兩個「下載」會通往不同地方。
+import { OLLAMA_DOWNLOAD_URL } from '@shared/errorCodes'
 
 export type PreflightSeverity = 'blocking' | 'notice' | 'ready'
 
@@ -58,7 +62,9 @@ export interface PreflightResult {
 
 /** 預設建議的模型。與 describeError.ts / Practice.tsx / SettingsPage 用的是同一個。 */
 export const SUGGESTED_OLLAMA_MODEL = 'qwen2.5:7b'
-export const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download/windows'
+// re-export 保留原本的 import 點不動(components/PreflightCard.tsx 與
+// lib/preflight.ts 的測試都從這裡取)。單一出處在 shared/errorCodes.ts。
+export { OLLAMA_DOWNLOAD_URL }
 
 export interface PreflightInput {
   settings: AppSettings | null

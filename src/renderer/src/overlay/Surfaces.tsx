@@ -15,20 +15,89 @@ export const MODES: Array<{ id: OverlayDisplayMode; label: string; icon: typeof 
   { id: 'karaoke', label: '逐詞卡拉OK', icon: AudioLines }
 ]
 
+/**
+ * ToolBtn — 浮層工具列的圖示按鈕。
+ *
+ * ── 為什麼說明不再只靠 title ──
+ *   改動前這裡的唯一說明就是原生 tooltip:
+ *   要 hover 約一秒才出現、內容是一整句(貼鏡那顆 40 字),而工具列本身是
+ *   可橫捲的容器 —— 說明還沒出現,捲動位置已經把按鈕帶走了。更糟的是
+ *   `title` 會與展開面板的說明列同時出現,使用者在兩個地方讀到同一句話。
+ *   現在說明由**底欄說明列**負責(見 OverlayApp 的 toolbarHint):游標或鍵盤
+ *   焦點落在哪一顆,底欄就報哪一顆,而底欄是既有的一列、不被裁切、不佔寬度。
+ *   兩個一起留著:**說明列**給「一眼知道這顆是什麼」,title 給「停久一點看完整
+ *   說明」;兩者的關係見下面 title 那一行的註解。
+ *
+ * ── 為什麼名稱仍然只有 title(不另外寫 aria-label)──
+ *   這是純圖示按鈕(可見文字是空的),而它需要一個可及名稱 —— title 就是。
+ *   瀏覽器把 title 當成 accessible name 的來源,而專案自己的
+ *   `no-accessible-name` 規則也把它算成合格名稱(改動前就是這樣全綠的,
+ *   不是這一輪要動的東西)。
+ *
+ *   ⚠️ 不要「順手」補一個 `aria-label={title}`:那看起來更保險,實際上會
+ *   悄悄改掉**每一顆工具的覆蓋率身分**。列舉端(effect-inventory 的
+ *   ENUMERATE)對名稱的規則是 text → aria-label → title,而且只對 title 做
+ *   收斂(在第一個括號/冒號處切斷,因為那是作者寫補充說明的地方)。
+ *   aria-label 一旦與 title 並存,身分就從收斂後的「暫停」變成整句的
+ *   「暫停(空白鍵)」—— 登記表裡 20 幾筆 key 當場對不上,報告會同時出現
+ *   probe-not-found(登記的鈕「從沒出現過」)與 no-effect-probe(畫面上的
+ *   「新」鈕沒人登記)。兩個都是假紅燈,而原因只是一行看起來更無障礙的屬性。
+ *
+ * ── 兩個 data 屬性 ──
+ *   說明列由工具列容器以事件委派讀取(見 OverlayApp)。20 顆按鈕各自接一個
+ *   onHover 會讓每個呼叫端都要記得傳,而「忘了傳」的症狀是「某一顆永遠不
+ *   解釋自己」—— 那種缺陷沒有人會發現。委派 + 屬性讓「有沒有接上」變成
+ *   資料上可檢查的事(audit-deep 的浮層工具列規則就是查這兩個屬性)。
+ */
+/**
+ * Divider — 工具列的分組分隔線。
+ *
+ * 20 顆純圖示按鈕排成一條,沒有分隔時「哪幾顆屬於同一組」只能靠使用者自己猜
+ * —— 而這正是上一輪「展開面板看不懂」的一部分:它是一條沒有段落的長句子。
+ * 分組用最窄的可見形式:1px 豎線 + 各 2px 邊距(合計 5px)。四條 = 20px,
+ * 換來「四組各 2–7 顆」的結構;那筆寬度花得比再多一顆按鈕值得。
+ */
+export function Divider(): JSX.Element {
+  return <span aria-hidden className="mx-0.5 h-4 w-px shrink-0 bg-white/12" />
+}
+
 export function ToolBtn({
   onClick,
   active,
   title,
+  label,
   children
 }: {
   onClick: () => void
   active?: boolean
+  /** 完整說明(一句話)。指向 aria-label 與說明列的第二行。 */
   title: string
+  /**
+   * 說明列上的短標籤(2–4 字,例如「播放」「貼鏡」「穿透」)。
+   * 沒給就退回 title —— 但 title 是一整句,底欄放不下也不好看,
+   * 所以工具列上的每一顆都應該給。
+   */
+  label?: string
   children: React.ReactNode
 }): JSX.Element {
   return (
     <button
+      // title **必須留著**,即使說明列已經有短標籤。三個理由,每一個都是實測的:
+      //   1. 六支稽核(deep / effects / glass-edge)與 probe-* 都用 title 找浮層
+      //      上的控制項(例如 `title === '收合成藥丸(低存在感)'`)。拿掉 title
+      //      會讓它們回報「找不到控制項」—— 那是**工具壞了**,不是 UI 壞了。
+      //   2. e2e 也一樣:`[title^="暫停"]`、`[title*="收合成藥丸"]` 之類的定位器
+      //      散在 pill-progress / pill-notice / blindspot / playtest3 等 spec。
+      //   3. 貼鏡模式的四顆沒有說明列(那裡的視窗只有 170px 高),title 是它們
+      //      唯一的長說明。
+      // 說明列負責的是「一眼知道這顆是什麼」,title 負責的是「游標停久一點看完整
+      // 說明」;兩者不衝突,而取消 title 的代價是六處工具同時壞掉。
       title={title}
+      data-tooltip-label={label ?? title}
+      data-tooltip-detail={title}
+      // 「這一顆有短標籤」的明確記號。說明列的覆蓋率規則要能分辨「給了短標籤」
+      // 與「退回整句 title」—— 否則那條規則永遠是綠的(前者才是要的狀態)。
+      data-tooltip-short={label ? '1' : undefined}
       onClick={onClick}
       className={cn(
         'flex h-7 w-7 items-center justify-center rounded-md transition-colors cursor-pointer no-drag',

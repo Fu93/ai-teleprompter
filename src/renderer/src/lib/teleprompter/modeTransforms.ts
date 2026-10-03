@@ -42,10 +42,13 @@ const CJK_RUN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\u3005\u30
 /** 拉丁字母/數字的連續串 = 一個詞(英文照舊) */
 const WORD_CHAR = /[A-Za-z0-9]/
 /** 收尾標點:掛在**前一塊尾巴** —— 高亮停在標點上就是一次換氣,
- *  而不是「符號自己亮一下」。繁中主力的全形 ，！？：； 一定要在表裡。 */
-const TRAILING_PUNCT = /[。，、；：！？…‥—–,;:!?)\]}%》】」』）］｝’”]/
-/** 開頭符號:掛在**下一塊開頭**,否則「(」自己吃一個 280ms 的 tick */
-const LEADING_PUNCT = /[「『（《【［｛([{$+=#@\*&"“‘]/
+ *  而不是「符號自己亮一下」。繁中主力的全形 ，！？：； 一定要在表裡;
+ *  半形句點也在(句尾的 "check." 不該自己吃一個 tick),小數點另由
+ *  詞掃描的小數前瞻處理(見下),不會走到這裡。 */
+const TRAILING_PUNCT = /[。，、；：！？…‥—–,.;:!?)\]}%》】」』）］｝’”]/
+/** 開頭符號:掛在**下一塊開頭**,否則「(」自己吃一個 280ms 的 tick。
+ *  … 同時在收尾表裡:行中掛前一塊(「卡住了…」),行首掛下一塊(「…好吧」)。 */
+const LEADING_PUNCT = /[「『（《【［｛([{$+=#@*&"“‘…]/
 
 /**
  * 逐「詞」切分 —— **空白優先**:
@@ -81,7 +84,13 @@ export function tokenizeKaraokeChunk(chunk: string): KaraokeTokenization {
       const ch = word[i]
       if (WORD_CHAR.test(ch)) {
         let j = i
-        while (j < word.length && WORD_CHAR.test(word[j])) j++
+        // 小數前瞻:數字後面的 '.' 只要再接著數字/字母就屬於同一詞
+        // ('1.4'、'200ms' 是一個 tick 的詞;'.' 自己一塊 = 平白多一次無意義的高亮)
+        while (
+          j < word.length &&
+          (WORD_CHAR.test(word[j]) || (word[j] === '.' && WORD_CHAR.test(word[j + 1] ?? '')))
+        )
+          j++
         emit(word.slice(i, j))
         i = j
         continue

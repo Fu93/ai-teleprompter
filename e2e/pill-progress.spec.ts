@@ -15,6 +15,10 @@
  * 這條測試把「什麼時候該顯示這條線」一起鎖住:
  *   量不到捲動範圍時不畫線(畫一條永遠 0% 的線比不畫更糟),量到了就畫。
  *
+ * (2026-10 更新)時間列的格式已改:不再是 `0:00 / -1:48`,而是
+ * `已播 0:00 · 剩 1:48` —— 舊格式在播完時顯示 `-0:00`(見 docs/UX_FINDINGS.md P0-3)。
+ * 這條測試的意圖不變(時鐘要在倒數),只有比對的字串跟著改。
+ *
  * 執行需先 `npm run build`;AI_TP_E2E 由 playwright.config 注入。
  */
 import { test, expect, _electron as electron } from '@playwright/test'
@@ -95,15 +99,18 @@ test('藥丸換稿不會被誤標成播畢,展開後重新量測並繼續播', a
     await overlay.locator('[title="展開完整面板"]').click()
     await overlay.waitForTimeout(1_800)
     expect(await winSize(overlay)).toBe('720x260')
+    // 時間列的格式在 2026-10 改過:原本是 `0:00 / -1:48`(播完時顯示 `-0:00`),
+    // 現在是 `已播 0:00 · 剩 1:48`(播完是 `已播 5:00 · 已播畢`)。
+    // 這一條測的意圖不變:時鐘要**在倒數**,而不是卡在 0。
     const clock = (): Promise<string | null> =>
-      overlay.evaluate(() => document.body.innerText.match(/\d+:\d\d \/ -\d+:\d\d/)?.[0] ?? null)
+      overlay.evaluate(() => document.body.innerText.match(/已播 \d+:\d\d · 剩 \d+:\d\d/)?.[0] ?? null)
     const clock1 = await clock()
     expect(clock1).not.toBeNull()
-    // 剩餘時間不是 0 = 引擎量到真實高度後真的在捲(修正前這裡恆為 0:00 / -0:00)
-    expect(clock1).not.toMatch(/0:00$/)
+    // 剩餘不是 0 = 引擎量到真實高度後真的在捲(修正前這裡恆為 0:00 / -0:00)
+    expect(clock1).not.toMatch(/剩 0:00$/)
 
     await overlay.waitForTimeout(1_500)
-    expect(await clock()).not.toMatch(/0:00$/)
+    expect(await clock()).not.toMatch(/剩 0:00$/)
     const fill = await overlay.evaluate(
       () => document.querySelector('[data-overlay-progress]')?.getBoundingClientRect().width ?? 0
     )

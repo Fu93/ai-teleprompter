@@ -91,6 +91,8 @@ const api: Api = {
   exportFile: (args) => ipcRenderer.invoke(IPC.ExportFile, args),
   importJsonFile: (args) => ipcRenderer.invoke(IPC.ImportJsonFile, args),
   logFromRenderer: (level, message) => ipcRenderer.invoke(IPC.LogFromRenderer, { level, message }),
+  logEvent: (payload) => ipcRenderer.invoke(IPC.LogEvent, payload),
+  diagnosticsReport: () => ipcRenderer.invoke(IPC.DiagnosticsReport),
   openLogDir: () => ipcRenderer.invoke(IPC.OpenLogDir)
 }
 

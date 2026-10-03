@@ -14,10 +14,11 @@ import {
 } from 'lucide-react'
 import type { PracticeAnswer, PracticeFeedback, PracticeRun } from '@shared/types'
 import { db } from '../lib/db'
-import { describeError } from '../lib/describeError'
+import { reportError, reportEvent } from '../lib/reportError'
 import { useSettings } from '../lib/store'
 import { cn, formatDateTime, formatDuration } from '../lib/utils'
-import { aiChat, extractJson } from '../lib/ai'
+import { extractJson, isCancelled, startAiChat } from '../lib/ai'
+import { CancelableBusy } from '../components/CancelableBusy'
 import { countReadableChars } from '../lib/calibration'
 import { speak, stopSpeaking, warmUpVoices } from '../lib/tts'
 import { AudioSegmenter } from '../lib/audio/segmenter'
@@ -85,6 +86,14 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
 
   /** 每輪練習的世代；結束/重開後忽略舊的 AI 與 IndexedDB 回覆。 */
   const runGenerationRef = useRef(new GenerationGate())
+  /**
+   * 目前在飛的 AI 請求的取消函式(見 lib/ai.ts 的 startAiChat)。
+   *
+   * 為什麼是 ref 而不是 state:它每次呼叫都換一個新的函式參考,放進 state
+   * 會造成「為了記住怎麼取消而多 render 一次」——而它在 busy 期間本來就
+   * 不該影響畫面。ref 也讓取消鈕不需要���按鈕本身傳 props。
+   */
+  const cancelRef = useRef<(() => void) | null>(null)
   // 在飛的辨識請求由 lib/transcriptionQueue 追蹤(與 Record 頁同一份實作)。
   // 型別標在 useRef 上,而非 new Map<...>() 的泛型位置 ——
   // 原寫法少了 Map 的收尾 >,esbuild 解析失敗後把它當成比較運算式,
@@ -142,6 +151,9 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         const want = typeof arg === 'string' ? arg : 'stt-failed'
         if (want === 'stt-failed') {
           setQuestions(['請用三分鐘介紹你負責的產品'])
+          // run 階段的列首讀的是 position state,不是 run.position —— 少了這行,
+          // 稽核截圖會出現「第 1 / 3 題 ·（行為面試）」的懸空分隔(目檢量到)。
+          setPosition('產品經理')
           setRun({ id: 1, position: '產品經理', type: '行為面試', questions: ['請用三分鐘介紹你負責的產品'], answers: [], createdAt: Date.now() })
           setPhase('run')
           setSttFailed(true)
@@ -149,6 +161,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         }
         if (want === 'model-dl') {
           setQuestions(['請用三分鐘介紹你負責的產品'])
+          setPosition('產品經理')
           setRun({ id: 1, position: '產品經理', type: '行為面試', questions: ['請用三分鐘介紹你負責的產品'], answers: [], createdAt: Date.now() })
           setPhase('run')
           setModelDL({ progress: 37, file: 'ggml-base.bin' })
@@ -156,6 +169,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         }
         if (want === 'busy') {
           setQuestions(['請用三分鐘介紹你負責的產品'])
+          setPosition('產品經理')
           setRun({
             id: 1,
             position: '產品經理',
@@ -215,6 +229,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
          */
         if (want === 'run') {
           setQuestions(threeQs)
+          setPosition('產品經理')
           setRun(mkRun(threeQs, []))
           setQIndex(0)
           setAnswers([])
@@ -224,6 +239,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         }
         if (want === 'answering') {
           setQuestions(threeQs)
+          setPosition('產品經理')
           setRun(mkRun(threeQs, []))
           setQIndex(0)
           setAnswers([])
@@ -235,6 +251,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         }
         if (want === 'answered') {
           setQuestions(threeQs)
+          setPosition('產品經理')
           setRun(mkRun(threeQs, [answered]))
           setQIndex(0)
           setAnswers([answered])
@@ -245,6 +262,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         // 最後一題答完:主要按鈕的文字從「下一題」變成「查看總評」
         if (want === 'last-answered') {
           setQuestions([threeQs[0]])
+          setPosition('產品經理')
           setRun(mkRun([threeQs[0]], [answered]))
           setQIndex(0)
           setAnswers([answered])
@@ -387,11 +405,16 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         if (sttFailStreakRef.current >= STT_FAILURE_BANNER_THRESHOLD) {
           if (!sttNotifiedRef.current) {
             sttNotifiedRef.current = true
-            toast.error(describeError(err, ctx))
+            reportError('語音辨識失敗', err, { event: 'transcribe_failed', ...ctx })
           }
           setSttFailed(true)
         } else {
-          toast.error(describeError(err, ctx))
+          reportError('語音辨識失敗', err, {
+            event: 'transcribe_failed',
+            ...ctx,
+            // 累積型失敗只寫事件、不跳 toast(quiet):橫幅已在講同一件事。
+            quiet: sttFailStreakRef.current > 1
+          })
         }
       }
     }
@@ -474,7 +497,8 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       if (attempt !== startAttemptRef.current) return
       segmenterRef.current = null
       streamRef.current = null
-      toast.error(describeError(err))
+      // 開麥失敗是「按下開始回答之後沒反應」的根因,使用者會以為是產品壞了。
+      reportError('無法開啟麥克風', err, { event: 'transcribe_failed' })
     }
   }
 
@@ -496,6 +520,14 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     }
     setBusy('questions')
     const aiProvider = settings.ai.provider
+    const chat = startAiChat(settings, [
+      { role: 'system', content: '你是資深面試官。只輸出 JSON，不要任何說明。使用繁體中文。' },
+      {
+        role: 'user',
+        content: `為應徵「${position.trim()}」的${type}設計 ${count} 道面試題。輸出 JSON 字串陣列，例如 ["題目1","題目2"]。題目要具體、由淺入深。`
+      }
+    ])
+    cancelRef.current = chat.cancel
     try {
       if (aiProvider === 'ollama') {
         const res = await window.api.ollamaListModels(settings.ai.ollama.baseUrl)
@@ -506,13 +538,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
           throw new Error('Ollama 尚未下載任何模型——請執行 ollama pull qwen2.5:7b')
         }
       }
-      const raw = await aiChat(settings, [
-        { role: 'system', content: '你是資深面試官。只輸出 JSON，不要任何說明。使用繁體中文。' },
-        {
-          role: 'user',
-          content: `為應徵「${position.trim()}」的${type}設計 ${count} 道面試題。輸出 JSON 字串陣列，例如 ["題目1","題目2"]。題目要具體、由淺入深。`
-        }
-      ])
+      const raw = await chat.promise
       if (!runGenerationRef.current.isCurrent(generation)) return
       const qs = extractJson<string[]>(raw).filter((q) => typeof q === 'string' && q.trim())
       if (qs.length === 0) throw new Error('AI 沒有產出題目，請再試一次或換模型')
@@ -526,8 +552,20 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       overallCacheRef.current = null
       setPhase('run')
     } catch (err) {
-      if (runGenerationRef.current.isCurrent(generation)) toast.error(describeError(err, { provider: aiProvider }))
+      // 使用者自己按的取消不是錯誤:不跳紅色 toast、不記失敗事件。
+      // 他唯一能理解的畫面是「回到可以再試一次」。
+      if (isCancelled(err)) {
+        if (runGenerationRef.current.isCurrent(generation)) setQuestions([])
+        return
+      }
+      // 「開始練習按了沒反應」是最常被回報的症狀之一。帶 provider 情境是必要的:
+      // 同一句 fetch failed 對 Ollama 與雲端 API 是兩種完全不同的診斷,
+      // 而使用者要改的東西也不同(啟動應用程式 vs 改 Base URL)。
+      if (runGenerationRef.current.isCurrent(generation)) {
+        reportError('無法開始練習', err, { event: 'ai_request_failed', provider: aiProvider })
+      }
     } finally {
+      cancelRef.current = null
       if (runGenerationRef.current.isCurrent(generation)) setBusy(null)
     }
   }
@@ -589,6 +627,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     }
     if (!settings) return
     const aiProvider = settings.ai.provider
+    const feedbackStartedAt = Date.now()
     setBusy('feedback')
     stopSpeaking()
     // 個人語速基準（若有校準）：實際語速 vs 個人基準，供表達面反饋對照
@@ -600,14 +639,16 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       baselineCpm && actualCpm
         ? `\n\n使用者個人語速基準：${baselineCpm} 字/分（校準值）。本次回答共 ${actualChars} 字、${answerSecs.toFixed(0)} 秒，實際語速約 ${actualCpm} 字/分（基準的 ${Math.round((actualCpm / baselineCpm) * 100)}%）。請在 delivery 反饋中對照此基準評估語速快慢與停頓。`
         : '\n\n（使用者未校準語速，delivery 請依逐字稿長度與流暢度推估。）'
+    const chat = startAiChat(settings, [
+      { role: 'system', content: '你是資深面試教練。只輸出 JSON，不要任何說明。使用繁體中文。' },
+      {
+        role: 'user',
+        content: `面試題目：${q}\n應徵職位/情境：${position.trim()}（${type}）\n應徵者的回答逐字稿：\n${transcript}${rateLine}\n\n請評估此回答並輸出 JSON：{"score":0到100整數,"content":"內容面反饋（切題度、觀點、例證，2-3句）","structure":"結構面反饋（邏輯條理，2句）","delivery":"表達面反饋（語速與流暢度，對照個人語速基準，2句）","betterAnswer":"80-150字的示範回答"}`
+      }
+    ])
+    cancelRef.current = chat.cancel
     try {
-      const raw = await aiChat(settings, [
-        { role: 'system', content: '你是資深面試教練。只輸出 JSON，不要任何說明。使用繁體中文。' },
-        {
-          role: 'user',
-          content: `面試題目：${q}\n應徵職位/情境：${position.trim()}（${type}）\n應徵者的回答逐字稿：\n${transcript}${rateLine}\n\n請評估此回答並輸出 JSON：{"score":0到100整數,"content":"內容面反饋（切題度、觀點、例證，2-3句）","structure":"結構面反饋（邏輯條理，2句）","delivery":"表達面反饋（語速與流暢度，對照個人語速基準，2句）","betterAnswer":"80-150字的示範回答"}`
-        }
-      ])
+      const raw = await chat.promise
       if (!runGenerationRef.current.isCurrent(generation)) return
       const fb = extractJson<PracticeFeedback>(raw)
       const answer: PracticeAnswer = {
@@ -618,9 +659,32 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         partial: partial || undefined
       }
       setAnswers((a) => [...a, answer])
+      // 練習的兩個 AI 呼叫(逐題反饋、整體總評)是使用者最常說「卡住了」的地方。
+      // 沒有耗時就只能分辨「慢」與「壞掉」——兩者的處置完全不同。
+      reportEvent('ai_request_succeeded', {
+        metrics: { feedbackMs: Date.now() - feedbackStartedAt },
+        fields: { provider: aiProvider }
+      })
     } catch (err) {
       if (!runGenerationRef.current.isCurrent(generation)) return
-      toast.error(describeError(err, { provider: aiProvider }))
+      // 使用者自己按的取消:不是錯誤,但**回答要保留** ——
+      // 他已經開口講完了,不能因為他不想等教練評論就把逐字稿丟掉。
+      if (isCancelled(err)) {
+        setAnswers((a) => [
+          ...a,
+          {
+            question: q,
+            answerTranscript: transcript,
+            durationSec: Math.max(0, (answerEndedAt - answerStart) / 1000),
+            partial: true
+          }
+        ])
+        return
+      }
+      reportError('反饋未能產生，你的回答已保留', err, {
+        event: 'ai_request_failed',
+        provider: aiProvider
+      })
       // 反饋失敗仍保留回答文字
       setAnswers((a) => [
         ...a,
@@ -632,6 +696,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
         }
       ])
     } finally {
+      cancelRef.current = null
       if (runGenerationRef.current.isCurrent(generation)) setBusy(null)
     }
   }
@@ -652,27 +717,47 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     stopSpeaking()
     let overall = overallCacheRef.current ?? ''
     let overallFailed = false
+    let overallCancelled = false
     if (settings && overallCacheRef.current == null) {
       setBusy('overall')
       try {
         const recap = answersRef.current
           .map((a, i) => `題${i + 1}：${a.question}\n回答：${a.answerTranscript.slice(0, 600)}`)
           .join('\n\n')
-        overall = await aiChat(settings, [
+        const overallStartedAt = Date.now()
+        const chat = startAiChat(settings, [
           { role: 'system', content: '你是資深面試教練，使用繁體中文。' },
           {
             role: 'user',
             content: `以下是應徵「${position.trim()}」的完整面試練習紀錄。請給一段 150-250 字的整體總評：最大優點、最大弱點、三個具體練習建議。\n\n${recap}`
           }
         ])
+        cancelRef.current = chat.cancel
+        overall = await chat.promise
         if (!runGenerationRef.current.isCurrent(generation)) return
         overallCacheRef.current = overall
+        reportEvent('ai_request_succeeded', {
+          metrics: { overallMs: Date.now() - overallStartedAt },
+          fields: { provider: settings.ai.provider }
+        })
       } catch (err) {
         if (!runGenerationRef.current.isCurrent(generation)) return
         overall = ''
-        overallFailed = true
-        toast.error(`整體總評未能產生，練習紀錄仍會保存。${describeError(err, { provider: settings.ai.provider === 'ollama' ? 'ollama' : 'openai-compatible' })}`)
+        // 使用者取消不是失敗:不記事件、不跳錯誤 toast,直接往下存練習紀錄。
+        // 他已經練完了,唯一想要的是「存下來就好」。
+        if (isCancelled(err)) {
+          overallCancelled = true
+        } else {
+          overallFailed = true
+          // 總評失敗**不會丟資料**(練習紀錄照存),所以提示不能寫成災難:
+          // prefix 講清楚「紀錄仍會保存」,可行動提示則照常給(去設定/下載 Ollama)。
+          reportError('整體總評未能產生，練習紀錄仍會保存', err, {
+            event: 'ai_request_failed',
+            provider: settings.ai.provider === 'ollama' ? 'ollama' : 'openai-compatible'
+          })
+        }
       } finally {
+        cancelRef.current = null
         if (runGenerationRef.current.isCurrent(generation)) setBusy(null)
       }
     }
@@ -692,7 +777,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       if (!runGenerationRef.current.isCurrent(generation)) return
       // 寫入失敗(IndexedDB 滿/隱私模式)要有聲:留在 run 階段讓使用者重試,
       // 而不是靜默丟掉整輪練習(與 Record 存講稿、Calibration 套用同一標準)。
-      toast.error(`練習紀錄儲存失敗,尚未存檔。${describeError(err)}`)
+      reportError('練習紀錄儲存失敗,尚未存檔', err, { event: 'backup_failed' })
       return
     }
     if (!runGenerationRef.current.isCurrent(generation)) {
@@ -703,6 +788,7 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     setRun({ ...runData, id })
     overallCacheRef.current = null
     if (overallFailed) toast.info('你仍可查看逐題反饋與保存的練習紀錄。')
+    if (overallCancelled) toast.info('已略過整體總評，逐題反饋與練習紀錄都已保存。')
     setPhase('done')
     await refreshHistory()
   }
@@ -838,17 +924,21 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
               ))}
             </div>
           </div>
-          <button className="btn-primary w-full" onClick={startPractice} disabled={busy !== null}>
-            {busy === 'questions' ? (
+          <CancelableBusy
+            busy={busy === 'questions'}
+            onCancel={() => cancelRef.current?.()}
+            onIdleClick={startPractice}
+            busyLabel={
               <>
                 <Loader2 size={14} className="animate-spin" /> AI 出題中…
               </>
-            ) : (
+            }
+            idleLabel={
               <>
                 <GraduationCap size={15} /> 開始練習
               </>
-            )}
-          </button>
+            }
+          />
           <div className="text-center text-[11px] text-ink-400">
             流程：AI 出題並朗讀 → 你用麥克風回答 → AI 即時反饋評分 → 最後總評
           </div>
@@ -1013,20 +1103,23 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
                   </div>
                 </div>
               )}
-              <button
-                className="btn-primary w-full"
-                onClick={nextQuestion}
-                disabled={busy !== null}
-              >
-                {busy === 'overall' ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
+              <CancelableBusy
+                busy={busy === 'overall'}
+                onCancel={() => cancelRef.current?.()}
+                onIdleClick={nextQuestion}
+                busyLabel={
+                  <>
+                    <Loader2 size={14} className="animate-spin" /> 產生總評中…
+                  </>
+                }
+                idleLabel={
                   <>
                     {qIndex + 1 >= questions.length ? '查看總評' : '下一題'}
                     <ChevronRight size={14} />
                   </>
-                )}
-              </button>
+                }
+                disabled={busy !== null}
+              />
             </div>
           ) : (
             <div className="space-y-4">
@@ -1050,25 +1143,31 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
                 </div>
               )}
               {recording ? (
-                <button
-                  className="btn-primary w-full"
-                  onClick={finishAnswer}
-                  disabled={busy !== null || draining}
-                >
-                  {busy === 'feedback' ? (
-                    <>
-                      <Loader2 size={14} className="animate-spin" /> AI 評分中…
-                    </>
-                  ) : draining ? (
-                    <>
-                      <Loader2 size={14} className="animate-spin" /> 整理最後一句…
-                    </>
-                  ) : (
+                <CancelableBusy
+                  busy={busy === 'feedback'}
+                  // 正在收帳最後一段 STT 時不能取消:那不是 AI 請求,
+                  // 而且使用者按下去會以為能停,其實只會停掉一個正在等的東西。
+                  cancellable={!draining}
+                  onCancel={() => cancelRef.current?.()}
+                  busyLabel={
+                    draining ? (
+                      <>
+                        <Loader2 size={14} className="animate-spin" /> 整理最後一句…
+                      </>
+                    ) : (
+                      <>
+                        <Loader2 size={14} className="animate-spin" /> AI 評分中…
+                      </>
+                    )
+                  }
+                  idleLabel={
                     <>
                       <Square size={14} /> 完成回答，取得反饋
                     </>
-                  )}
-                </button>
+                  }
+                  onIdleClick={finishAnswer}
+                  disabled={busy !== null || draining}
+                />
               ) : (
                 <button
                   className="btn-primary w-full"

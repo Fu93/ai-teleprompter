@@ -17,7 +17,7 @@ import { useState } from 'react'
 import { AlertTriangle, Download, Loader2, Upload } from 'lucide-react'
 import { toast } from '../lib/toast'
 import { confirmDialog } from '../lib/confirm'
-import { describeError } from '../lib/describeError'
+import { reportError, reportEvent } from '../lib/reportError'
 import {
   BACKUP_VERSION,
   backupFileName,
@@ -56,10 +56,13 @@ export function BackupSection(): JSX.Element {
         toast.success(
           `已匯出 ${backup.counts.scripts} 份講稿、${backup.counts.sessions} 場會議、${backup.counts.practiceRuns} 次練習`
         )
+        // 成功也要記事件:診斷報告若只有失敗紀錄,「他說他按了匯出但沒反應」
+        // 與「他從來沒按過」在報告裡長得一樣 —— 而回報者提供的正是前者。
+        reportEvent('backup_exported', { metrics: { ...backup.counts } })
       }
       // res.ok 為 false 時是使用者按取消 —— 那不是錯誤,不該跳紅色錯誤 toast。
     } catch (err) {
-      toast.error(describeError(err))
+      reportError('備份匯出失敗', err, { event: 'backup_failed', prefix: '備份匯出失敗' })
     } finally {
       setBusy(null)
     }
@@ -70,7 +73,11 @@ export function BackupSection(): JSX.Element {
     try {
       const picked = await window.api.importJsonFile()
       if (!picked.ok) {
-        if (picked.error && picked.error !== 'canceled') toast.error(picked.error)
+        // canceled = 使用者自己關掉檔案選擇框,那不是失敗:
+        // 寫進診斷報告會讓「使用者取消還原」看起來像產品壞掉。
+        if (picked.error && picked.error !== 'canceled') {
+          reportError('無法讀取備份檔', picked.error, { event: 'backup_failed' })
+        }
         return
       }
 
@@ -103,13 +110,17 @@ export function BackupSection(): JSX.Element {
       const res = await importBackup(backup)
       await readCounts()
       toast.success(`已還原 ${res.counts.scripts} 份講稿、${res.counts.sessions} 場會議、${res.counts.practiceRuns} 次練習`)
+      reportEvent('backup_imported', { metrics: { ...res.counts } })
 
       if (total === 0) {
         // 靜悄悄地還原 0 筆資料,看起來跟成功一樣。使用者會以為資料回來了。
         toast.info('提醒：這份備份裡沒有任何資料,可能是匯出當下就是空的。')
       }
     } catch (err) {
-      toast.error(describeError(err))
+      // 還原失敗是最嚴重的一條:使用者已經是「拿著備份準備重灌」的狀態,
+      // 這裡失敗等於他手上只有一份沒被還原的檔。所以除了可行動提示,
+      // 還要寫出備份裡本來有幾筆 —— 回報時這是判斷「資料還在不在」的關鍵。
+      reportError('備份還原失敗', err, { event: 'backup_failed' })
     } finally {
       setBusy(null)
     }

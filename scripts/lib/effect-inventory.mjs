@@ -173,6 +173,27 @@ export const STATES = [
   // 貼鏡形態才有「隱藏」;重點模式才有「上一個/下一個重點」。
   { id: 'overlay/lens', page: 'overlay', nav: 'overlay', seed: 'overlayLens' },
   { id: 'overlay/bullet', page: 'overlay', nav: 'overlay', seed: 'overlayBullet' },
+  /**
+   * 即時教練提示條**出現**的狀態。
+   *
+   * 為什麼需要它:提示條是 `panicPhase === 'idle' && (turnYieldHint || coachingHint)`
+   * 才掛載的,而教練訊號要真的說到話才會出現(語速過快 / 填充詞 / 冷場)。
+   * 五個既有的浮層狀態沒有一個帶著訊號,於是「點提示條靜默這一種」這顆鈕
+   * 是**有登記、有探針、卻沒有一個宣告狀態渲染它** —— probe-not-found。
+   *
+   * 這不是登記過期,是狀態清單少了一格。真實教練訊號依賴麥克風與 Whisper,
+   * 稽核環境兩者都不成立,所以用稽核橋 `overlay.coachingHint` 製造出來。
+   */
+  { id: 'overlay/coaching-hint', page: 'overlay', nav: 'overlay', seed: 'overlayCoaching' },
+  /**
+   * **已經靜默過一種**之後的狀態。
+   *
+   * 必須是獨立的一格,不能併進上一格:「恢復全部」這顆鈕的渲染條件是
+   * `coachingMuted.length > 0`,也就是**必須先按過靜默才會出現**。
+   * 用同一個狀態去列舉兩者,第二顆永遠量不到 —— 而它恰好是使用者
+   * 「我明明按過了怎麼又響」時唯一能按回去的那顆。
+   */
+  { id: 'overlay/coaching-muted', page: 'overlay', nav: 'overlay', seed: 'overlayCoachingMuted' },
   { id: 'dialog/confirm', page: 'dialog', nav: 'scripts', seed: 'dialog' },
   { id: 'toast/stack', page: 'toast', nav: 'dashboard', seed: 'toast' },
   { id: 'crash/screen', page: 'crash', nav: 'dashboard', seed: 'crash' }
@@ -192,11 +213,30 @@ export const CONTROLS = [
   // ───────────── 總覽 ─────────────
   { key: idKey('dashboard', 'mode-card'), step: 'dashboard', note: '三張模式卡各自導航到不同頁' },
   { key: key('dashboard', 'button', '開始提詞'), step: 'dashboard', note: '用最近一份講稿真的開起浮層' },
-  { key: key('dashboard', 'button', '建立第一份講稿'), step: 'dashboard', note: '導航到講稿頁' },
-  { key: key('dashboard', 'button', '個人化校準(語速+視距)'), step: 'dashboard', note: '導航到校準頁' },
-  { key: key('dashboard', 'button', '跑一場錄音轉錄或面試練習'), step: 'dashboard', note: '導航到錄音頁' },
+  // ── 為什麼這裡少了三筆(2026-10-03)──
+  // 「建立第一份講稿 / 個人化校準(語速+視距) / 跑一場錄音轉錄或面試練習」
+  // 是舊的「開始三部曲」卡片上的三顆鈕。那張卡已經從總覽頁移除:總覽頁原本
+  // 同時有兩張三欄的進度卡(它與 FirstRunSteps 的「3 分鐘上手」),新使用者
+  // 一開場看到六個任務、兩套說法。
+  //   → 三顆步驟鈕由 onboarding-step 那一筆涵蓋(它以 data-effect-id 為身分,
+  //     用途更準:驗的是「三顆各自導到不同頁」,比逐顆比對 label 更嚴)。
+  //   → 校準降級成卡片底部的一行提醒 → 下一筆 onboarding-calibration。
+  // 留著這三筆的症狀是 probe-not-found:登記著三顆**畫面上已經不存在**的鈕,
+  // 而那種紅燈會被誤讀成「有人把鈕刪掉了」而不是「登記表過期了」。
+  { key: idKey('dashboard', 'demo-script'), step: 'dashboard', note: '沒有講稿時,範例稿鈕真的建出講稿、開起浮層,並導到講稿頁' },
   { key: key('dashboard', 'button', '提詞'), step: 'dashboard', note: '列表其他講稿的提詞鈕' },
   { key: idKey('dashboard', 'preflight-compact'), step: 'dashboard', note: '準備度橫幅按下去真的到設定頁' },
+  // 首次上手卡的三步(建稿/校準/試一次)。三顆鈕指向**三個不同的頁面**,
+  // 而它們的文案會隨進度改變(標題、icon、done/blocked 狀態),所以用
+  // data-effect-id 固定身分。探針驗的是「三顆鈕真的導到三個不同頁」。
+  //
+  // key 的前綴是 **onboarding** 而不是 dashboard:卡片宣告了
+  // data-effect-scope="onboarding",而列舉端對有 scope 的元件一律以 scope 為準
+  // (同一個元件同時出現在總覽與設定頁時,才不會被算成兩顆控制項)。
+  { key: idKey('onboarding', 'onboarding-step'), step: 'dashboard', note: '三顆上手步驟各自導到不同頁' },
+  // 校準提醒(卡片底部的一行,只在「還沒校準」且卡片還沒收合時渲染)。
+  // 它承接了被移除的「開始三部曲」裡唯一不是步驟的那件事。
+  { key: idKey('onboarding', 'onboarding-calibration'), step: 'dashboard', note: '校準提醒那一行真的導到校準頁' },
   // 完整的準備度卡片只在設定頁(full 形態);總覽頁是另一顆 compact。
   // 上一版這裡四個都寫 dashboard —— 探針與登記表各自說得通,只是它們在講
   // 不同的東西,而那種錯法不會自己浮出來。
@@ -212,6 +252,10 @@ export const CONTROLS = [
   { key: key('scripts', 'button', '匯入 .txt / .md'), step: 'scripts', exempt: { category: EXEMPT_CATEGORY.NATIVE_DIALOG, reason: '檔案選擇器是作業系統對話框,headless 點不到;匯入的解析由 e2e/scripts-import.spec.ts 以真實檔案覆蓋' } },
   { key: key('scripts', 'input:text', '搜尋講稿'), step: 'scripts', note: '列表真的被過濾' },
   { key: key('scripts', 'button', '建立第一份講稿'), step: 'scripts', note: '空狀態的建立鈕,scripts +1' },
+  // 空狀態的第二條路(先看到成品再說)。它與總覽頁那顆 demo-script 做同一件事,
+  // 但**是兩顆不同的控制項**(不同頁、不同文案):只登記其中一邊,
+  // 另一邊就是覆蓋率的洞。
+  { key: idKey('scripts', 'demo-script'), step: 'scripts', note: '空狀態的範例稿鈕真的建出講稿並開起浮層' },
   { key: key('scripts', 'input:text', '講稿標題'), step: 'scripts', note: '改名真的寫進 IndexedDB' },
   { key: key('scripts', 'button', '刪除這份講稿'), step: 'scripts', note: '確認後 scripts 真的 -1' },
   { key: key('scripts', 'button', '儲存'), step: 'scripts', note: '儲存後 dirty 消失、IndexedDB 內容是新的' },
@@ -249,6 +293,10 @@ export const CONTROLS = [
    */
   { key: key('record', 'button', '啟動中…'), step: 'record', exempt: { category: EXEMPT_CATEGORY.SAME_CONTROL, reason: '與「開始聆聽」同一顆鈕的啟動中外觀(disabled);行為由那一條驗' } },
   { key: idKey('record', 'session-row'), step: 'record', note: '展開真的顯示逐字稿明細' },
+  // 「複製行動清單」:它的文案是使用者自己取的會議標題(每一列都不同),
+  // 用文字當身分會讓每一列變成一顆控制項。用穩定 id。
+  // 探針驗的是「剪貼簿真的拿到那份清單」—— 並且順便斷言清單裡**沒有逐字稿**。
+  { key: idKey('record', 'copy-action-list'), step: 'record', note: '剪貼簿真的拿到可貼上的行動清單(且不含逐字稿)' },
   { key: key('record', 'button', 'AI 摘要'), step: 'record', note: '摘要真的寫進 sessions.summary 並渲染重點' },
   { key: key('record', 'button', '重新摘要'), step: 'record', note: '已有摘要時的重跑' },
   { key: key('record', 'button', '存成講稿'), step: 'record', note: 'scripts 真的 +1 且只含我方發言' },
@@ -284,10 +332,18 @@ export const CONTROLS = [
   { key: key('calibration', 'button', '回上一步'), step: 'calibration', note: '真的退回上一個 step' },
 
   // ───────────── 設定 ─────────────
+  // 頁首的區塊目錄(九顆 chip)。九顆共用一個 data-effect-id:它們的效果是
+  // 同一種(捲到對應區塊),逐顆登記會產生九筆只差區塊名的登記項,而區塊
+  // 一增減就要改九行 —— 那種登記表最後只會被抄成一份沒有意義的清單。
+  { key: idKey('settings', 'settings-toc'), step: 'settings', note: '目錄的區塊鈕按下去真的捲到那一區(主區的捲動位置改變)' },
   { key: idKey('settings', 'provider'), step: 'settings', note: 'AI 供應商切換真的寫進 settings.ai.provider' },
   { key: idKey('settings', 'stt-engine'), step: 'settings', note: '辨識引擎切換真的寫進 settings.stt.engine' },
   { key: idKey('settings', 'scene'), step: 'settings', note: '場景按鈕真的寫進 scenario.activeScene' },
   { key: idKey('settings', 'panic-mode'), step: 'settings', note: 'Panic framing 真的寫進 scenario.panicMode' },
+  // 「複製診斷報告」。同一顆鈕在有報告時是「複製診斷報告」、沒有時是 disabled,
+  // 但那與 preflight-* 的 disabled 面同一類,不需要單獨一筆。
+  // 探針驗的是「剪貼簿真的拿到報告」並且「報告裡沒有敏感欄位」。
+  { key: idKey('settings', 'copy-diagnostics'), step: 'settings', note: '剪貼簿真的拿到診斷報告,且報告不含金鑰與逐字稿' },
   { key: key('settings', 'button', '測試連線'), step: 'settings', note: '連線失敗時真的跳錯誤 toast,連得上時不跳' },
   // 鍵名要跟畫面上的字一樣:「分享前模擬測試」。
   // 上一版寫成「模擬分享畫面」—— 而列舉端永遠不會產生那個字串,
@@ -356,6 +412,10 @@ export const CONTROLS = [
   { key: idKey('dialog', 'confirm-ok'), step: 'dialogs', note: '確認鈕真的執行破壞性操作' },
   { key: idKey('dialog', 'confirm-cancel'), step: 'dialogs', note: '取消鈕必須完全不改變資料(負向斷言)' },
   { key: key('toast', 'button', '關閉通知'), step: 'toast', note: 'toast 真的被移除' },
+  // 可行動錯誤的按鈕(「前往設定」/「下載 Ollama」…)。它的**名稱會變**
+  // —— 同一顆鈕依錯誤碼顯示不同的 label —— 所以必須用 data-effect-id。
+  // 探針驗的是「按下去真的換頁」而不是「按下去沒有反應」。
+  { key: idKey('toast', 'toast-action'), step: 'toast', note: '錯誤 toast 的行動按鈕真的導到那一頁' },
   { key: key('crash', 'button', '重新載入'), step: 'crash', exempt: { category: EXEMPT_CATEGORY.DESTRUCTIVE_WINDOW, reason: '重載會終止稽核視窗本身;由 e2e/error-boundary.spec.ts 覆蓋' } },
   { key: key('crash', 'button', '複製錯誤詳細資料'), step: 'crash', note: '剪貼簿真的拿到診斷內容' },
   { key: key('crash', 'button', '開啟記錄資料夾'), step: 'crash', exempt: { category: EXEMPT_CATEGORY.DESTRUCTIVE_WINDOW, reason: '會叫出作業系統的檔案總管' } },
@@ -394,6 +454,18 @@ export const CONTROLS = [
   { key: key('overlay', 'button', '滑鼠穿透'), step: 'overlay', note: 'overlay.clickThrough 真的翻轉' },
   { key: key('overlay', 'button', '浮層置中'), step: 'overlay', note: '視窗 bounds 真的回到螢幕中央' },
   { key: key('overlay', 'button', '開啟「該你說話了」提示'), step: 'overlay', note: '按下真的把 overlay.turnYield 打開' },
+  /**
+   * 即時教練的靜音控制。
+   *
+   * 兩顆都要登記,因為它們是**互補**的:靜音鈕只在提示條出現時存在,
+   * 取消靜音鈕只在「本場已靜默 N 種」時存在。少登記任何一顆,
+   * 「使用者能不能把提示關掉、又能不能找回來」就有一半永遠沒有人驗。
+   *
+   * 用 data-effect-id 而不是 title:提示條的文字是教練建議本身
+   * (每一則建議不同),「本場已靜默:…」則會列出靜默了哪幾種。
+   */
+  { key: idKey('overlay', 'coaching-mute'), step: 'overlay', note: '按下真的讓這一種提示不再出現(本場內)' },
+  { key: idKey('overlay', 'coaching-unmute'), step: 'overlay', note: '恢復全部真的讓「已靜默」列消失' },
   { key: key('overlay', 'button', '關閉「該你說話了」提示'), step: 'overlay', exempt: { category: EXEMPT_CATEGORY.SAME_CONTROL, reason: '同一顆開關的「已開啟」外觀;行為由「開啟…」那條驗' } },
   { key: key('overlay', 'button', '開啟即時教練'), step: 'overlay', note: '按下真的把 overlay.coaching 打開' },
   { key: key('overlay', 'button', '即時教練開啟中'), step: 'overlay', exempt: { category: EXEMPT_CATEGORY.SAME_CONTROL, reason: '同一顆開關的「已開啟」外觀;行為由「開啟即時教練」那條驗' } },
