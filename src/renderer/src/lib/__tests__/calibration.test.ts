@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CAMERA_FIRST_FRAME_TIMEOUT_MS,
   clampIpdMm,
   countReadableChars,
   effectiveEngineRate,
   estimateDistanceCm,
   fontSizeFromDistance,
+  isCameraDeliveringFrames,
   isPlausibleRate,
   speedFromRate,
   visualAngleDeg
@@ -120,5 +122,54 @@ describe('clampIpdMm 瞳距夾限', () => {
   it('小數四捨五入', () => {
     expect(clampIpdMm(62.4)).toBe(62)
     expect(clampIpdMm(62.6)).toBe(63)
+  })
+})
+
+/**
+ * 這組測的是「逾時會不會誤殺一個只是慢的相機」。
+ *
+ * 為什麼值得獨立成一個 describe:這個計時器的失敗型態有兩種, 而且兩種都是
+ * 使用者看得見的悲劇 ——
+ *   1. 太寬鬆 → 相機真的壞掉時,使用者盯著全黑的畫面等「等待距離穩定…」,
+ *      永遠等不到(這是修它要解決的問題)。
+ *   2. 太緊 → 只是開機慢一點的相機被誤判成壞掉, 使用者看到一句他完全
+ *      無法理解的錯, 而實際上拔插一下 USB 就好了。
+ * 第 2 種比沒有逾時更糟, 因為它讓一個健康的裝置看起來壞了。
+ */
+describe('isCameraDeliveringFrames 判定相機真的有在送影', () => {
+  it('readyState 0(HAVE_NOTHING):還沒收到任何資料,不算有影', () => {
+    expect(isCameraDeliveringFrames({ readyState: 0, videoWidth: 640 })).toBe(false)
+  })
+
+  it('readyState 1(只有 metadata):還沒有當前影格,不算有影', () => {
+    // 這是最容易誤判的一格:metadata 已經在了(所以寬度也知道),但影格還沒來。
+    // 只看 videoWidth 的實作會在這裡說「有影」,然後收掉逾時,然後使用者
+    // 就永遠卡住。
+    expect(isCameraDeliveringFrames({ readyState: 1, videoWidth: 640 })).toBe(false)
+  })
+
+  it('readyState 2 且有寬度:真的有影', () => {
+    expect(isCameraDeliveringFrames({ readyState: 2, videoWidth: 640 })).toBe(true)
+  })
+
+  it('readyState 4 但寬度是 0:track 連上了可是還沒有可用的畫面,不算有影', () => {
+    // 反方向也要守住:只判 readyState 的實作會在這裡誤判成「相機正常」。
+    expect(isCameraDeliveringFrames({ readyState: 4, videoWidth: 0 })).toBe(false)
+  })
+
+  it('headless 的假攝影機:readyState 0 + 寬度 0 → 不算有影(逾時該觸發)', () => {
+    // 這一條就是效果稽核在 headless 量到的狀態。按下去之後逾時必須真的
+    // 觸發並把相機收掉, 而不是讓使用者停在一個永遠不會變的畫面上。
+    expect(isCameraDeliveringFrames({ readyState: 0, videoWidth: 0 })).toBe(false)
+  })
+})
+
+describe('CAMERA_FIRST_FRAME_TIMEOUT_MS', () => {
+  it('逾時必須寬到容得下慢速相機,但窄到使用者會以為壞掉', () => {
+    // 實測:冷啟動最慢的筆電 webcam 約 2 秒出第一格。這裡用一個
+    // 「明顯比最壞情況寬鬆、但明顯短於人類開始懷疑的時間」的區間來釘住,
+    // 而不是斷言一個魔術數字。
+    expect(CAMERA_FIRST_FRAME_TIMEOUT_MS).toBeGreaterThan(2_000)
+    expect(CAMERA_FIRST_FRAME_TIMEOUT_MS).toBeLessThanOrEqual(15_000)
   })
 })

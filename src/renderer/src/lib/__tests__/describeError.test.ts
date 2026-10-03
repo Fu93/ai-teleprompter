@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { describeError, isActionable } from '../describeError'
+import { classifyError, describeError, isActionable } from '../describeError'
 
 // 這組測試的價值在於「不要給錯誤的診斷」。
 // 反例:Record 停止時原本把「辨識失敗」說成「沒有偵測到語音」,
@@ -78,5 +78,77 @@ describe('describeError', () => {
 
   it('空值不會拋錯,給出可讀訊息', () => {
     expect(describeError(new Error(''))).toBe('發生未預期的錯誤')
+  })
+})
+
+/**
+ * 跨 realm 的錯誤 —— 這組是實測出來的缺陷的回歸測試。
+ *
+ * 現場:校準頁的相機開不起來時,使用者看到的是
+ *
+ *     攝影機不可用（{"isTrusted":true}）。
+ *
+ * 一句零資訊的錯,而它出現在**最常見的第一個牆**上。原因不是亂碼,是
+ * `instanceof`:Electron 的 preload 與頁面是兩個 JS realm,兩邊的 `Error`
+ * 是不同的建構子,所以從那邊過來的錯誤在這邊 `instanceof Error` 是 false,
+ * 原先的寫法就掉進 JSON.stringify —— 而 name/message 都是 prototype 上的
+ * getter,stringify 只看得到 own property,於是什麼都沒留下。
+ *
+ * 這些測試用「原型上放 getter」的物件模擬跨 realm:own property 裡
+ * 沒有 name/message,只有走原型鏈才拿得到 —— 這正是 JSON.stringify 看不見的原因。
+ */
+describe('describeError 對跨 realm 錯誤的處理', () => {
+  /** 造一個 name/message 只在原型上、own property 為空的物件(= 跨 realm 的樣子) */
+  function crossRealmError(name: string, message: string): object {
+    const proto = { name, message }
+    return Object.create(proto)
+  }
+
+  it('prototype 上的 name + message 讀得到,而且能認出是權限問題', () => {
+    const e = crossRealmError('NotAllowedError', 'Permission denied')
+    // 認得出來才會給中文指引 —— 這是這一條存在的理由
+    expect(classifyError(e)).toBe('E_MIC_PERMISSION_DENIED')
+    expect(describeError(e)).toContain('權限')
+  })
+
+  it('認不出來時至少給得出英文原文,而不是 {"isTrusted":true}', () => {
+    const e = crossRealmError('SomethingNobodyKnows', 'a message a human wrote')
+    const m = describeError(e)
+    expect(m).not.toContain('isTrusted')
+    expect(m).not.toContain('{"')
+    expect(m).toContain('SomethingNobodyKnows')
+    expect(m).toContain('a message a human wrote')
+  })
+
+  it('只有 type 沒有 message 的 Event:認得出權限錯誤就給中文指引', () => {
+    // 這一條比「讀得出 type」更有價值:純粹的 type 字串也足以走完整條分類。
+    // 瀏覽器把權限拒絕也會用 Event 的形式送出,只有 type 沒有 message。
+    const e = Object.create({ type: 'notallowederror' })
+    expect(classifyError(e)).toBe('E_MIC_PERMISSION_DENIED')
+    expect(describeError(e)).toContain('權限')
+  })
+
+  it('只有 type 而認不出來:至少不要變成空字串或 JSON', () => {
+    const e = Object.create({ type: 'weird-media-event' })
+    const m = describeError(e)
+    expect(m).toContain('weird-media-event')
+    expect(m).not.toContain('{"')
+  })
+
+  it('真的認不出來時回退到原本的行為(JSON 原文),不發明診斷', () => {
+    // 這個模組的原則:寧可顯示真實的(即使是難懂的)原文,也不要自信的假診斷
+    expect(describeError({ isTrusted: true })).toBe('{"isTrusted":true}')
+  })
+
+  it('null / undefined / 數字不會拋錯', () => {
+    expect(() => describeError(null)).not.toThrow()
+    expect(() => describeError(undefined)).not.toThrow()
+    expect(() => describeError(42)).not.toThrow()
+    expect(typeof describeError(null)).toBe('string')
+  })
+
+  it('name 與 message 相同時不重複印兩次', () => {
+    const e = Object.create({ name: 'Oops', message: 'Oops' })
+    expect(describeError(e)).toBe('Oops')
   })
 })

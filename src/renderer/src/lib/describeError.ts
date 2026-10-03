@@ -33,10 +33,58 @@ import { errorCodeInfo, type ErrorAction, type ErrorCode, type ErrorContext } fr
 
 export type { ErrorContext, ErrorProvider, ErrorAction } from '@shared/errorCodes'
 
+/**
+ * 從「不是本 realm 的 Error」的物件裡挖出可讀文字。
+ *
+ * ## 為什麼需要這一層(這是實測出來的,不是想像的)
+ *
+ * Electron 的 renderer 有多個 JS realm:preload 跑在 isolated world,頁面跑在
+ * main world。兩邊的 `Error` 是**不同的建構子**,所以從那邊丟過來的錯誤
+ * 在這邊 `err instanceof Error` 是 false。原本的寫法於是掉進
+ * `JSON.stringify(err)` —— 而 Error/DOMException 的 `name`、`message`、`stack`
+ * 都是 prototype 上的 getter,不是 own property,`JSON.stringify` 只會得到
+ * `{}`。使用者看到的就是:
+ *
+ *     攝影機不可用（{"isTrusted":true}）。
+ *
+ * 一句沒有任何資訊的錯。它出現在**最常見的第一個牆**(麥克風/攝影機權限)上,
+ * 而這個模組存在的全部理由就是讓那句話變得可行動。
+ *
+ * ## 為什麼不能改成「不要用 instanceof」
+ *
+ * 因為跨 realm 的 Error 仍然有可讀的 `name`/`message` —— 只需要**用屬性去讀**,
+ * 而不是問原型鏈。所以這裡讀 name/message/type 這幾個**字串屬性**。
+ *
+ * 仍然保留「認不出來就回退到原始字串」的原則:寧可顯示英文原文
+ * (至少是真實的),也不要給一個自信但錯誤的診斷(見檔頭)。
+ */
+function structuredText(err: unknown): string | null {
+  if (typeof err !== 'object' || err === null) return null
+  const o = err as Record<string, unknown>
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v : null)
+
+  const parts: string[] = []
+  const name = str(o['name'])
+  const message = str(o['message'])
+  // DOMException: name=NotAllowedError,message=Permission denied → 兩個都要,
+  // 因為比對規則認的是 name,而使用者看得懂的是 message。
+  if (name != null) parts.push(name)
+  if (message != null && message !== name) parts.push(message)
+  // Event / ErrorEvent: 沒有 message,但 type 是它唯一像樣的識別。
+  const type = str(o['type'])
+  if (type != null && !parts.includes(type)) parts.push(type)
+
+  if (parts.length > 0) return parts.join(' ')
+  // 連一個可讀欄位都沒有 → 讓它繼續往 JSON.stringify 走(原行為)。
+  return null
+}
+
 /** 取得錯誤的可比對文字:Error 用 name+message,字串直接用本身。 */
 function textOf(err: unknown): string {
   if (err instanceof Error) return `${err.name} ${err.message}`
   if (typeof err === 'string') return err
+  const structured = structuredText(err)
+  if (structured !== null) return structured
   try {
     return JSON.stringify(err)
   } catch {

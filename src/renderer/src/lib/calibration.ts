@@ -116,3 +116,32 @@ export function effectiveEngineRate(
   const baseline = personalCpm != null && personalCpm > 0 ? personalCpm : defaultWpm
   return (sliderRate * baseline) / defaultWpm
 }
+
+/**
+ * 開了相機之後,等第一格影像的逾時。
+ *
+ * 為什麼需要這個數字:不是每一種相機失敗都會讓 `getUserMedia` 丟錯。
+ * 「驅動被別的程式占住、USB hub 掉電、驅動卡住」會**成功**拿到 stream,
+ * 然後永遠送不出第一格影像。沒有逾時,使用者的畫面就是:全黑預覽、燈亮著、
+ * 按鈕寫「等待距離穩定…」—— 而且永遠是那一句。那比直接報錯還糟。
+ *
+ * 8 秒的依據:實機冷啟動最慢的 webcam 約 2 秒出第一格,而「使用者開始不耐煩」
+ * 大約在 8 秒。寧可晚一點報錯,也不要誤判一個只是慢的相機。
+ */
+export const CAMERA_FIRST_FRAME_TIMEOUT_MS = 8000
+
+/**
+ * 「這個 video 真的有在送影」的判定。
+ *
+ * 為什麼兩個條件都要:readyState >= 2(HAVE_CURRENT_DATA)代表有**當前**影格,
+ * videoWidth > 0 代表那一格有寬度。有些環境會給 readyState >= 2 但寬度 0
+ * (track 已連上但格式還沒確定);反過來也可能寬度已知但還沒收到影格。
+ * 只看其中一個會在其中一種情況裡誤判。
+ *
+ * 這是抽出來的原因:呼叫端在計時器到點與每一個 rAF tick 都會用到它,
+ * 而「逾時會不會誤殺一個只是慢的相機」是那個計時器最該被驗的行為 ——
+ * 而那只能在純函式上測。
+ */
+export function isCameraDeliveringFrames(video: { readyState: number; videoWidth: number }): boolean {
+  return video.readyState >= 2 && video.videoWidth > 0
+}

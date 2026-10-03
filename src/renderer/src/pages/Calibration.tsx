@@ -18,6 +18,7 @@ import { useSettings } from '../lib/store'
 import { describeError } from '../lib/describeError'
 import { cn } from '../lib/utils'
 import {
+  CAMERA_FIRST_FRAME_TIMEOUT_MS,
   DEFAULT_HFOV_DEG,
   MAX_IPD_MM,
   MIN_IPD_MM,
@@ -26,6 +27,7 @@ import {
   countReadableChars,
   estimateDistanceCm,
   fontSizeFromDistance,
+  isCameraDeliveringFrames,
   isPlausibleRate,
   speedFromRate,
   visualAngleDeg
@@ -40,6 +42,27 @@ import { useEscape } from '../lib/useEscape'
 
 const CALIBRATION_PASSAGE =
   '大家好，很高興今天有機會在這裡分享。接下來我想談三個重點，第一是我們目前的進度，第二是過程中遇到的挑戰，第三是接下來的計畫。這段文字是用來測量你的自然說話速度，請用平常講話的節奏把它完整唸完，不用刻意加快或放慢。'
+
+/**
+ * 取消一個「計時器持有在 ref 裡」的逾時。
+ *
+ * 為什麼是**模組層級**而不是元件內的一個函式或 useCallback:
+ * `react-hooks/exhaustive-deps` 會把元件內宣告的函式視為「只有當它的整條
+ * 呼叫鏈都是穩定的時候才算穩定」。原本 stopCamera 與 loop 都只呼叫彼此與
+ * setState/ref,所以它們被判定穩定、不進依賴列;一旦它們開始呼叫一個**元件內**
+ * 宣告的新函式,那條鏈就不再可證明穩定,於是 exhaustive-deps 會要求把
+ * stopCamera / loop 放進 `[]` 的依賴列 —— 而那會讓相機在每次 render 都關掉。
+ *
+ * 把這個函式放在模組層級就不會進入那條鏈的「穩定性」計算,也不需要任何
+ * 依賴(它只操作傳進來的 ref)。這不是為了躲 lint:那個 warning 一旦接受,
+ * 真正的後果是相機被反覆關掉。
+ */
+function clearTimerRef(ref: { current: ReturnType<typeof setTimeout> | null }): void {
+  if (ref.current !== null) {
+    clearTimeout(ref.current)
+    ref.current = null
+  }
+}
 
 type Step = 0 | 1 | 2
 
@@ -151,6 +174,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
     return () => {
       readingAttemptRef.current += 1
       stopCamera()
+      clearTimerRef(firstFrameTimerRef)
       stopAudioPipeline()
       // Whisper worker 帶著數百 MB 模型,離頁一併釋放(Cache API 快取仍在,重進免重新下載)
       whisperRef.current?.dispose()
@@ -162,7 +186,27 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
   }, [])
 
   // ---------- Step 1: 攝影機 ----------
+  /**
+   * 「開了相機卻永遠等不到第一格」的逾時計時器。
+   *
+   * 為什麼需要:**不是每一種失敗都會讓 `getUserMedia` 丟錯。
+   * 「驅動被別的程式占住、USB hub 掉電、驅動卡住」這三種會**成功**拿到
+   * stream,然後永遠送不出第一格影像。沒有逾時的話使用者的體驗是:
+   *
+   *   按「開啟攝影機偵測」→ 預覽全黑 + 燈亮著 + 按鈕寫「等待距離穩定…」→
+   *   永遠是那一句。
+   *
+   * 那比直接報錯還糟:報錯至少會告訴他「換手動輸入」,而這個畫面只告訴他
+   * 「再等一下」—— 而他等不到。
+   *
+   * 逾時長度(CAMERA_FIRST_FRAME_TIMEOUT_MS)與「什麼算真的有影」
+   * (isCameraDeliveringFrames)都在 lib/calibration.ts,因為那兩件事是這個
+   * 計時器最該被驗的行為,而它們得能在沒有相機的機器上被測。
+   */
+  const firstFrameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const startCamera = useCallback(async (): Promise<void> => {
+    clearTimerRef(firstFrameTimerRef)
     setCameraError(null)
     historyRef.current = []
     emaRef.current = new Ema(0.12)
@@ -192,11 +236,27 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
         return
       }
       setCameraOn(true)
+
+      // 拿到 stream 不代表真的有影像會來。從這裡開始計時:逾時且還沒有
+      // 任何一格,就當作「相機開得起來但不送影」—— 這是 getUserMedia 丟錯
+      // 抓不到的那一類失敗。
+      firstFrameTimerRef.current = setTimeout(() => {
+        firstFrameTimerRef.current = null
+        // 世代檢查:逾時期間使用者可能已經重按一次或離頁,那時這次的計時器
+        // 不該再去拆掉別人剛建立的相機。
+        if (!isCurrent()) return
+        const v = videoRef.current
+        if (v && isCameraDeliveringFrames(v)) return // 影來了,只是慢
+        stopCamera()
+        setCameraError('攝影機開啟了,但完全沒有畫面。可能被其他程式占用。')
+      }, CAMERA_FIRST_FRAME_TIMEOUT_MS)
+
       await getFaceLandmarker() // 預熱模型
       // 預熱是最久的一段 await:使用者很可能就在這裡按 Esc 或直接切到下一步
       if (!isCurrent()) return
       loop(attempt)
     } catch (err) {
+      clearTimerRef(firstFrameTimerRef)
       if (!isCurrent()) {
         streamRef.current?.getTracks().forEach((t) => t.stop())
         streamRef.current = null
@@ -216,6 +276,7 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
 
   const stopCamera = (preserveMeasurement = false): void => {
     camAttemptRef.current += 1 // 讓所有在飛的 await 與 rAF 迴圈自我作廢
+    clearTimerRef(firstFrameTimerRef) // 否則逾時會在相機已經關掉後才炸,然後報一個已經過時的錯
     cancelAnimationFrame(rafRef.current)
     if (videoRef.current) videoRef.current.srcObject = null
     streamRef.current?.getTracks().forEach((t) => t.stop())
@@ -282,6 +343,12 @@ export default function Calibration({ onDone }: { onDone: () => void }): JSX.Ele
       const video = videoRef.current
       const canvas = canvasRef.current
       if (!video || !canvas) return
+      // 第一格真的到了 → 逾時沒有存在的理由了,收回它。
+      // 放在這裡而不是「play() 之後」:play() 回傳只代表開始請求播放,
+      // readyState >= 2 才代表真的有影(frame 2 = 有當前影格)。
+      if (firstFrameTimerRef.current !== null && isCameraDeliveringFrames(video)) {
+        clearTimerRef(firstFrameTimerRef)
+      }
       const landmarkerReady = getFaceLandmarker()
       void landmarkerReady.then((lm) => {
         const det = detectIris(lm, video)
