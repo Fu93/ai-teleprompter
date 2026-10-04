@@ -66,6 +66,7 @@ export function ToolBtn({
   active,
   title,
   label,
+  effectId,
   children
 }: {
   onClick: () => void
@@ -78,6 +79,11 @@ export function ToolBtn({
    * 所以工具列上的每一顆都應該給。
    */
   label?: string
+  /**
+   * 效果稽核的穩定身分(data-effect-id)。只有**名稱會變動**的控制項需要
+   * (見 effect-inventory 的身分規則);一般按鈕用 title 就夠。
+   */
+  effectId?: string
   children: React.ReactNode
 }): JSX.Element {
   return (
@@ -93,6 +99,7 @@ export function ToolBtn({
       // 說明列負責的是「一眼知道這顆是什麼」,title 負責的是「游標停久一點看完整
       // 說明」;兩者不衝突,而取消 title 的代價是六處工具同時壞掉。
       title={title}
+      data-effect-id={effectId}
       data-tooltip-label={label ?? title}
       data-tooltip-detail={title}
       // 「這一顆有短標籤」的明確記號。說明列的覆蓋率規則要能分辨「給了短標籤」

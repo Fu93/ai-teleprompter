@@ -27,11 +27,20 @@ export function formatDuration(sec: number): string {
  *     而 0 秒之後就不是還有 —— 那個狀態有自己的名字(藥丸的狀態點也用同一組詞)。
  *   - remainingMs 為 null(bullet 模式是手動推進,沒有剩餘時間可估)時只顯示已播。
  */
-export function formatTransport(elapsedSec: number, remainingMs: number | null): string {
+export function formatTransport(
+  elapsedSec: number,
+  remainingMs: number | null,
+  /** 有沒有講稿。沒有時不該出現任何時間/狀態(見 docs/UX_FINDINGS.md 第四輪 P0-2) */
+  hasContent = true
+): string {
+  // 沒有稿就沒有「播過」這件事。舊行為不管有沒有稿都印時間列,於是空稿狀態下
+  // 畫面同時寫著「尚未載入講稿」與「已播畢」—— 兩句互相矛盾,而且後者描述的是
+  // 一件根本沒發生過的事(實測字串:`提詞浮層 已播 0:00 · 已播畢 … 尚未載入講稿`)。
+  if (!hasContent) return ''
   const elapsed = formatDuration(Number.isFinite(elapsedSec) ? elapsedSec : 0)
-  // null = 這個模式沒有剩餘時間可估(bullet);NaN/Infinity = 有值但不是一個
-  // 可用的時長。兩者都只能顯示已播 —— 讓 `NaN:NaN` 漏到螢幕上比不顯示更糟,
-  // 而那正是「先做除法再想」的預設結果。
+  // null = 這個模式沒有剩餘時間可估(bullet,或 scroll 模式下內容一頁就放得下);
+  // NaN/Infinity = 有值但不是一個可用的時長。兩者都只能顯示已播 —— 讓 `NaN:NaN`
+  // 漏到螢幕上比不顯示更糟,而那正是「先做除法再想」的預設結果。
   if (remainingMs === null || !Number.isFinite(remainingMs)) return `已播 ${elapsed}`
   // 防禦性 clamp:引擎現在會自己 clamp,但這個函式是「時間軸不得出現負值」的
   // 唯一出口,它不該依賴呼叫端。

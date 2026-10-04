@@ -350,11 +350,21 @@ body {
 /* 元素高度是「命中帶」不是「軌道高度」。原本直接把 height 設成 4px,
    軌道跟命中區綁在一起,結果滑塊畫成 18px 卻只有中間 4px 點得到 ——
    使用者看得到滑塊露出的上下半部,按下去卻沒反應,會以為是壞掉。
-   軌道改畫在 ::-webkit-slider-runnable-track 上,元素本身留 22px。 */
+   軌道改畫在 ::-webkit-slider-runnable-track 上,元素本身留命中帶。
+
+   22px → 28px(第四輪 P2-2):22px 修的是「只有中間 4px 點得到」那個極端,
+   但仍低於本專案自己在 ToastHost、總覽「查看全部」、錄音勾選都用過的 28px
+   下限 —— 同一條標準對按鈕有效、對滑桿失效,規則不一致本身就是訊號。
+   量測:改之前設定頁六個滑桿都是 654×22。
+
+   為什麼在這裡改而不是在 SettingsPage 加 class:這條 height 是**全域**的
+   `input[type='range']`,元素特異度(0,1,1)高於 Tailwind 的 `.h-7`(0,1,0),
+   所以在 JSX 上加 h-7 不會生效 —— 實測加完仍是 22px。命中帶是這條規則的
+   原始設計意圖,改它才是改對地方。軌道高度(4px)不變,所以視覺完全不變。 */
 input[type='range'] {
   -webkit-appearance: none;
   appearance: none;
-  height: 22px;
+  height: 28px;
   background: transparent;
   outline: none;
   cursor: pointer;

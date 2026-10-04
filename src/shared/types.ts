@@ -328,6 +328,15 @@ export const IPC = {
   /** 設定頁「重新啟動以套用更新」:relaunch 後以 exit 結束目前實例 */
   AppRelaunch: 'app:relaunch',
   /**
+   * 叫回主視窗(浮層工具列 / 浮層空狀態)。
+   *
+   * 為什麼需要一條自己的 IPC:主視窗關閉之後沒有 tray、沒有工作列圖示,
+   * 而浮層的空狀態還在指示「到主視窗按開始提詞」—— 那扇窗唯一的重建路徑
+   * 本來是「再啟動一次 App」(second-instance)。沒有這條路,那句指示就是死路,
+   * 而「關閉主視窗」正是簡報中常見的操作。
+   */
+  AppShowMain: 'app:show-main',
+  /**
    * 錄音/錄影進行中的環境指示:主視窗標題 + 工作列閃爍(P2 附錄 #1 的縮小版)。
    * renderer 上報 active/label,main 負責 setTitle 與 flashFrame(平台降級自然:
    * macOS 的 flashFrame 是 dock 退避一次)。tray 圖示是獨立一輪,見 UX_FINDINGS。

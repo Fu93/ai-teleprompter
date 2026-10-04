@@ -64,6 +64,24 @@ describe('formatTransport(浮層時間列)', () => {
     expect(formatTransport(65, null)).toBe('已播 1:05')
   })
 
+  it('沒有講稿時不顯示任何時間或狀態(空稿畫面曾同時寫「已播畢」)', () => {
+    // 第四輪 P0-2 的實測字串:
+    // 「提詞浮層 已播 0:00 · 已播畢 ↺ 60 A- A+ 尚未載入講稿 …」
+    // 沒有稿就沒有「播過」這件事,而畫面同時寫兩句互相矛盾的話。
+    expect(formatTransport(0, null, false)).toBe('')
+    expect(formatTransport(0, 0, false)).toBe('')
+    expect(formatTransport(42, 108_000, false)).toBe('')
+    // 有稿時維持原行為(預設參數 true,舊呼叫端不受影響)
+    expect(formatTransport(0, null)).toBe('已播 0:00')
+    expect(formatTransport(0, null, true)).toBe('已播 0:00')
+  })
+
+  it('沒有講稿時不得出現「已播畢」(那是對沒發生過的事結案)', () => {
+    for (const remaining of [null, 0, 400, 108_000]) {
+      expect(formatTransport(300, remaining, false)).not.toContain('已播畢')
+    }
+  })
+
   it('任何輸入都不得產生帶負號的時間', () => {
     // 這條是不變量,不是案例:負的剩餘若真的從引擎漏出來(例如之後改了
     // getRemainingMs 的 clamp),格式層要守住最後一道。

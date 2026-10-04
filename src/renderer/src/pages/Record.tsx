@@ -36,6 +36,7 @@ import { confirmDialog } from '../lib/confirm'
 import { useCloseGuard } from '../lib/closeGuard'
 import { saveSessionAsScript, isSessionSavedAsScript } from '../lib/sessionToScript'
 import { setCaptureIndicator } from '../lib/captureIndicator'
+import { historyCountLabel, historyMoreLabel, nextHistoryShown } from '../lib/historyWindow'
 
 // 連續失敗門檻與 Practice 共用同一份(見 lib/transcriptionQueue.ts):
 // 兩頁對「我在白講」的告警時機必須一致,否則使用者只會覺得提示不可靠。
@@ -230,13 +231,36 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
   const personalCpmBaseline = settings?.personal.profile?.charsPerMin ?? null
   const modelKey = (settings?.stt.localModel ?? 'base') as WhisperModelKey
 
-  const refreshSessions = useCallback(async (): Promise<void> => {
-    setSessions(await db.sessions.orderBy('startedAt').reverse().limit(15).toArray())
+  /**
+   * 歷史清單的載入視窗(規則在 lib/historyWindow.ts)。
+   *
+   * 這裡原本寫死 limit(15):第 16 場之後的會議在 UI 裡**根本到不了** ——
+   * 沒有「載入更多」、沒有任何說明,而總覽頁的「會議場數」用 count() 說著實話,
+   * 兩個數字在同一個 App 裡對不上。historyTotal 是那句實話,historyShown 是
+   * 「畫面上顯示幾筆」,差距由「再載入」按鈕補 —— 使用者不必再猜
+   * 「我的紀錄是不是被刪了」。
+   */
+  const [historyShown, setHistoryShown] = useState(15)
+  const [historyTotal, setHistoryTotal] = useState(0)
+  const historyShownRef = useRef(15)
+  historyShownRef.current = historyShown
+
+  const refreshSessions = useCallback(async (shown?: number): Promise<void> => {
+    const take = shown ?? historyShownRef.current
+    setSessions(await db.sessions.orderBy('startedAt').reverse().limit(take).toArray())
+    setHistoryTotal(await db.sessions.count())
     // 「已存成講稿」需要知道哪些講稿**還在**(見 scriptIds 的註解)。
     // 與 sessions 一起載入:同一個 useEffect 觸發,不會出現「按鈕已顯示舊判定」的瞬間。
     const keys = await db.scripts.toCollection().primaryKeys()
     setScriptIds(new Set(keys as number[]))
   }, [])
+
+  /** 「再載入 N 筆」:視窗放大後立刻重查(直接把 next 帶進去,不等 re-render 時序) */
+  const loadMoreSessions = (): void => {
+    const next = nextHistoryShown(historyShownRef.current, historyTotal)
+    setHistoryShown(next)
+    void refreshSessions(next)
+  }
 
   useEffect(() => {
     void refreshSessions()
@@ -551,7 +575,7 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
 
   const startInner = async (attempt: number): Promise<void> => {
     if (!wantMic && !wantSys) {
-      toast.error('請至少選擇一個音訊來源')
+      toast.error('請至少選擇一個音訊來源。')
       return
     }
     // 雲端引擎未設定就 fail-fast:原本要等開麥之後第一段轉錄失敗才知道,
@@ -852,7 +876,9 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
     // 剛建立的講稿要立刻算進「現存的講稿」,否則這顆按鈕會因為
     // 「參照的 id 不在 scriptIds 裡」而看起來仍然沒存過。
     setScriptIds((prev) => new Set(prev ?? []).add(scriptId))
-    toast.success(`已存成講稿:${s.title}（講稿）,在「提詞講稿」頁`)
+    // 文案統一全形標點並把標題框起來:半形的 `:` `,` 與全形括號混在同一句裡,
+    // 是全站文案不一致最顯眼的一處(見 UX_FINDINGS 第三輪 P1-2)。
+    toast.success(`已存成講稿:「${s.title}（講稿）」,在「提詞講稿」頁。`)
   }
 
   const exportSession = async (s: MeetingSession): Promise<void> => {
@@ -1038,11 +1064,14 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
       <div className="card mb-4 flex flex-wrap items-center gap-4 p-4">
         {!recording && (
           <>
-            <label className="flex cursor-pointer items-center gap-2 text-sm">
+            {/* py-1.5:這兩個勾選的**真實命中區是包住 input 的 label**(input 本身只有 13×13),
+                而 label 實測只有 20px 高 —— 低於本專案自己在 ToastHost、總覽
+                「查看全部」都用的 28px 下限(第四輪 P2-1)。視覺不變,只加內距。*/}
+            <label className="flex cursor-pointer items-center gap-2 py-1.5 text-sm">
               <input type="checkbox" checked={wantMic} onChange={(e) => setWantMic(e.target.checked)} className="accent-accent-500" />
               <Mic size={15} /> 我的麥克風
             </label>
-            <label className="flex cursor-pointer items-center gap-2 text-sm" title="擷取系統播放中的聲音（會議對方、影片等），開始後自動擷取，不會出現分享視窗">
+            <label className="flex cursor-pointer items-center gap-2 py-1.5 text-sm" title="擷取系統播放中的聲音（會議對方、影片等），開始後自動擷取，不會出現分享視窗">
               <input type="checkbox" checked={wantSys} onChange={(e) => setWantSys(e.target.checked)} className="accent-accent-500" />
               <MonitorSpeaker size={15} /> 系統音訊（對方）
             </label>
@@ -1247,10 +1276,30 @@ export default function Record({ onGuardChange }: { onGuardChange?: (msg: string
 
       {/* 歷史 */}
       <div>
-        <div className="mb-2 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm font-medium text-ink-200">
-            <Save size={14} /> 最近的會議紀錄
-          </div>
+        <div className="mb-2 flex items-center justify-between gap-3">
+          {(() => {
+            const win = { shown: sessions.length, total: historyTotal }
+            const count = historyCountLabel(win)
+            const more = historyMoreLabel(win)
+            return (
+              <>
+                <div className="flex items-center gap-2 text-sm font-medium text-ink-200">
+                  <Save size={14} /> 最近的會議紀錄
+                  {count && <span className="text-[11px] font-normal text-ink-400">{count}</span>}
+                </div>
+                {more && (
+                  // 按鈕文字帶筆數(會變)→ 身分用 data-effect-id(見 effect-inventory)
+                  <button
+                    data-effect-id="history-more"
+                    className="btn-ghost shrink-0 text-xs"
+                    onClick={loadMoreSessions}
+                  >
+                    {more}
+                  </button>
+                )}
+              </>
+            )
+          })()}
         </div>
         {sessions.length === 0 ? (
           <div className="text-xs text-ink-400">還沒有紀錄</div>

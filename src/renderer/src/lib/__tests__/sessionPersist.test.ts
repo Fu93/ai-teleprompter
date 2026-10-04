@@ -46,11 +46,22 @@ describe('createSessionPersister', () => {
     expect(saved?.report).toBeTruthy()
   })
 
-  it('沒有標題時用時間生成一個', async () => {
+  it('沒有標題時用固定名稱,而非帶時間戳的標題', async () => {
+    // 這一條原本斷言 `toMatch(/^會議 /)`,而舊實作是
+    // `會議 ${formatDateTime(startedAt)}`。那正是第四輪 P1-2 的缺陷:清單列的
+    // 標題下方又印一次 `{formatDateTime(s.startedAt)} · N 段`,所以每一場沒命名
+    // 的會議都變成
+    // `會議 2026/10/04 12:48 2026/10/04 12:48 · 1 段 · 未摘要`
+    // —— 同一個時間戳印兩次,看起來像渲染壞掉。而「不命名」是多數人的預設路徑。
+    //
+    // 時間由清單列下方那一行負責,所以這裡只負責「沒有名字」這件事。
     const p = createSessionPersister()
     await p.persist({ ...base, segments: segs(1), title: '   ' })
     const rows = await db.sessions.toArray()
-    expect(rows[0].title).toMatch(/^會議 /)
+    expect(rows[0].title).toBe('未命名會議')
+    // 關鍵不變量:標題裡不得再出現日期時間,否則又會與下方那行重複
+    expect(rows[0].title).not.toMatch(/\d{4}\/\d{2}\/\d{2}/)
+    expect(rows[0].title).not.toMatch(/\d{2}:\d{2}/)
   })
 
   it('自訂標題優先於自動生成', async () => {

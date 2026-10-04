@@ -97,6 +97,14 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
   const [preflightResult, setPreflightResult] = useState<PreflightResult | null>(null)
   /** 範例稿正在建立中:擋連點(建立講稿 + 開浮層是兩次 IPC,連點會建出兩份) */
   const [demoBusy, setDemoBusy] = useState(false)
+  /**
+   * 有沒有任何資料(講稿 / 會議 / 練習任一)。
+   *
+   * 這是「歡迎回來」與「歡迎開始使用」的分界。為什麼不只看講稿:錄音與練習
+   * 兩個模式的使用者可能從沒寫過講稿,但他們顯然不是新手 —— 對他們說「歡迎
+   * 開始使用」並建議從「3 分鐘上手」開始,同樣是錯的。
+   */
+  const isReturning = recent.length > 0 || totals.sessions > 0 || totals.runs > 0
   const { settings, overlayVisible } = useSettings()
   /** 註冊失敗的全域熱鍵(見 lib/hotkeys.ts 檔頭) */
   const conflicts = useHotkeyConflicts()
@@ -192,8 +200,22 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
   return (
     <div className="mx-auto max-w-5xl px-8 py-8">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold">歡迎回來</h1>
-        <p className="mt-1 text-sm text-ink-300">三大模式，隨時待命。</p>
+        {/* 「歡迎回來」要看有沒有資料,不能是無條件的字串(第四輪 P1-1)。
+            實測:全新 profile、零講稿零會議零練習時,首屏第一個元素就是
+            `y=32 H1 24px 歡迎回來` —— 一個剛裝好的使用者被告知這個 App 記得他,
+            而且那是首屏最大的一行字。他合理的反應是「我是不是用過了 / 上次
+            沒關好?」,而正確的判斷(他是新手)反而被第一句話擋住。
+
+            判斷用 recent(講稿)+ totals.sessions/totals.runs(會議與練習)——
+            與首屏下面那些卡片用的是同一批資料,不會出現「上面說歡迎回來、
+            下面清單是空的」。
+
+            副標跟著換:對新手講「三大模式,隨時待命」是空的(他還不知道有哪三個),
+            對回頭使用者講「歡迎開始今天」才是無意義的熱鬧。 */}
+        <h1 className="text-2xl font-bold">{isReturning ? '歡迎回來' : '歡迎開始使用'}</h1>
+        <p className="mt-1 text-sm text-ink-300">
+          {isReturning ? '三大模式，隨時待命。' : '三大模式，隨時待命 —— 從「3 分鐘上手」開始。'}
+        </p>
       </div>
 
       {/* 第一次使用前就把「這台電腦還差什麼」講出來。
@@ -365,7 +387,22 @@ export default function Dashboard({ onNavigate }: Props): JSX.Element {
 
       {recent.length > 1 && (
         <div className="mt-8">
-          <div className="mb-3 text-sm font-medium text-ink-200">最近的講稿</div>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="text-sm font-medium text-ink-200">最近的講稿</div>
+            {/* 這一區最多只列 3 則(recent 取 4 筆、最新那則在上面的卡片),
+                其餘的稿原本沒有任何出口 —— 使用者會以為自己的稿只剩這幾張。
+                「查看全部」去的是講稿頁(清單在那裡,而且那裡才是全部)。 */}
+            <button
+              data-effect-id="scripts-see-all"
+              // min-h-[28px]:audit:deep 的 small-tap-target 門檻是 28px,
+              // 第一版 text-xs 只有 16px 高,當場被自己的舊門檻抓到(實測 2 筆)
+              // —— 與設定頁目錄 chip 的 py-1.5 同一個教訓。
+              className="flex min-h-[28px] cursor-pointer items-center rounded-lg px-2 text-xs text-ink-400 transition-colors hover:bg-white/5 hover:text-ink-200"
+              onClick={() => onNavigate('scripts')}
+            >
+              查看全部 →
+            </button>
+          </div>
           <div className="space-y-2">
             {recent.slice(1).map((s) => (
               <div

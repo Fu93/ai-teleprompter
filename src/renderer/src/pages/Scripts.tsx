@@ -918,7 +918,7 @@ export default function Scripts({
             className="flex flex-wrap items-center gap-3 border-b border-amber-450/30 bg-amber-450/10 px-6 py-3 text-xs text-amber-200"
           >
             <span className="flex-1">
-              找到 {orphans.length} 段未完成的錄影（上次錄影中斷,已經寫到磁碟的部份）。
+              找到 {orphans.length} 段未完成的錄影（上次錄影中斷,已經寫到磁碟的部分）。
             </span>
             <button
               data-effect-id="rec-orphans-keep"

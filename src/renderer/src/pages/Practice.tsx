@@ -38,6 +38,7 @@ import { toast } from '../lib/toast'
 import { analyzePracticeRun } from '../lib/session-intelligence'
 import { buildPracticeAnswer } from '../lib/practiceAnswer'
 import { setCaptureIndicator } from '../lib/captureIndicator'
+import { historyCountLabel, historyMoreLabel, nextHistoryShown } from '../lib/historyWindow'
 
 const PRACTICE_TYPES = ['行為面試', '技術面試', '自我介紹', '案例簡報', '銷售情境'] as const
 
@@ -277,9 +278,28 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
     []
   )
 
-  const refreshHistory = useCallback(async (): Promise<void> => {
-    setHistory(await db.practiceRuns.orderBy('createdAt').reverse().limit(10).toArray())
+  /**
+   * 歷史清單的載入視窗(規則在 lib/historyWindow.ts)。
+   * 與 Record 頁同一個問題:原本寫死 limit(10),第 11 次以後的練習紀錄
+   * 在 UI 裡根本到不了 —— 而標題寫的是「練習紀錄」,不是「最近 10 筆」。
+   */
+  const [historyShown, setHistoryShown] = useState(10)
+  const [historyTotal, setHistoryTotal] = useState(0)
+  const historyShownRef = useRef(10)
+  historyShownRef.current = historyShown
+
+  const refreshHistory = useCallback(async (shown?: number): Promise<void> => {
+    const take = shown ?? historyShownRef.current
+    setHistory(await db.practiceRuns.orderBy('createdAt').reverse().limit(take).toArray())
+    setHistoryTotal(await db.practiceRuns.count())
   }, [])
+
+  /** 「再載入 N 筆」:與 Record 頁同一套規則(見 lib/historyWindow.ts) */
+  const loadMoreHistory = (): void => {
+    const next = nextHistoryShown(historyShownRef.current, historyTotal)
+    setHistoryShown(next)
+    void refreshHistory(next)
+  }
 
   useEffect(() => {
     void refreshHistory()
@@ -966,7 +986,30 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
 
         {history.length > 0 && (
           <div className="mt-6">
-            <div className="mb-2 text-sm font-medium text-ink-200">練習紀錄</div>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              {(() => {
+                const win = { shown: history.length, total: historyTotal }
+                const count = historyCountLabel(win)
+                const more = historyMoreLabel(win)
+                return (
+                  <>
+                    <div className="flex items-center gap-2 text-sm font-medium text-ink-200">
+                      練習紀錄
+                      {count && <span className="text-[11px] font-normal text-ink-400">{count}</span>}
+                    </div>
+                    {more && (
+                      <button
+                        data-effect-id="history-more"
+                        className="btn-ghost shrink-0 text-xs"
+                        onClick={loadMoreHistory}
+                      >
+                        {more}
+                      </button>
+                    )}
+                  </>
+                )
+              })()}
+            </div>
             <div className="space-y-2">
               {history.map((r) => (
                 <div key={r.id} className="card flex items-center justify-between px-4 py-2.5">

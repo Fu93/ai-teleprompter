@@ -145,9 +145,17 @@ test.describe('第一次使用的準備度', () => {
       // (那句「設定與提詞本身不受影響」只出現在 full 卡片,compact 是一行摘要;
       //  「不擋路」是透過下面這些東西還在畫面上來斷言的,不是透過文案)
       // 那是 <p> 不是 heading,所以用文字斷言
-      await expect(main.locator('body')).toContainText('三大模式，隨時待命。')
+      //
+      // 下面兩行斷的是**新手分支的文案**,不是「有文案就好」:這支 spec 開的是
+      // 全新隔離 profile(零講稿、零會議、零練習),所以總覽的第一句應該是
+      // 「歡迎開始使用」而不是「歡迎回來」(第四輪 P1-1:無條件的「歡迎回來」會
+      // 讓剛裝好的使用者以為這個 App 記得他)。
+      //
+      // 別把它改回「歡迎回來」:那等於要求那個缺陷回來。回頭使用者的分支由
+      // audit:journey(播種資料後回到總覽)與 copyConsistency 測試的接線斷言守住。
+      await expect(main.locator('body')).toContainText('三大模式，隨時待命 —— 從「3 分鐘上手」開始。')
       await expect(main.locator('aside')).toBeVisible()
-      await expect(main.getByRole('heading', { name: '歡迎回來' })).toBeVisible()
+      await expect(main.getByRole('heading', { name: '歡迎開始使用' })).toBeVisible()
     } finally {
       await app.close()
     }

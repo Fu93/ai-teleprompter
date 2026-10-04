@@ -57,6 +57,17 @@ export const BLOCKING_SPECS = [
   'debug-panel.spec.ts',
   'overlay-hide-follow.spec.ts',
   'overlay-script-sync.spec.ts',
+  // 主視窗關掉之後沒有 tray、沒有工作列圖示,使用者可能再也回不去 —— 而浮層的
+  // 空狀態還在指示他「到主視窗按開始提詞」。這條守的是那顆「主視窗」鈕真的把
+  // 主視窗帶回來(隱藏時叫回、關掉時重建)。audit:effects 只量得到「隱藏」那半:
+  // 關掉主視窗會把稽核自己接下來十幾個步驟的視窗弄掉,所以重建那半是空的。
+  'show-main-window.spec.ts',
+  // 浮層狀態必須誠實:短稿按「開始提詞」一秒內自己播完並宣布「已播畢」
+  // (maxScroll 在內容一頁放得下時全是尾部緩衝),空稿也報「已播畢」。
+  // audit 抓不到這兩個 —— 稽核看的是「控制項有沒有反應」,而這裡是
+  // 「反應之後報給使用者的那句話是假的」。engine 的單元測試也只到引擎層,
+  // 「畫面上必須說清楚為什麼不動」只有這條看得到。
+  'short-script-overlay.spec.ts',
   'pill-notice.spec.ts',
   'pill-progress.spec.ts',
   'pill-scale.spec.ts',

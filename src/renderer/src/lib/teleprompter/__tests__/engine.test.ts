@@ -169,6 +169,61 @@ describe('scroll 模式', () => {
     expect(engine.getState().elapsedMs).toBeGreaterThan(0)
   })
 
+  it('內容一頁放得下時不完成也不推進(短稿「秒播畢」的實測症狀)', () => {
+    // 預設浮層 720×260 扣掉工具列約 4 行,約 96 字以內的稿開箱即中。
+    // 舊行為:maxScroll = max(0, 180 - 200 + 40) = 40px 全是尾部緩衝,
+    // 按「開始提詞」(自動播放)後一幀之內 playing → completed,畫面寫「已播畢」。
+    // 與上一條是**同一個症狀的兩個成因**:那條是「沒量到」,這條是「量到了但本來就短」。
+    const engine = new TeleprompterEngine(
+      makeModel(),
+      { rate: 1, scrollSpeed: 60, totalH: 180, wrapH: 200, lineHeightPx: 45, maxTickDtMs: 60_000 },
+      'scroll'
+    )
+    engine.play()
+    engine.tick(0)
+    // 給 60 秒:舊行為在這裡早就 completed 了
+    expect(engine.tick(60_000)).toBe('continuous')
+    expect(engine.getState().status).toBe('playing')
+    expect(engine.getState().scrollPos).toBe(0)
+    // 時鐘照常累計(與「沒量到」一致):不是整段靜止
+    expect(engine.getState().elapsedMs).toBeGreaterThan(0)
+    // 沒有剩餘時間可估 → 浮層時間列不會印出必然歸零的倒數而變成「已播畢」
+    expect(engine.getRemainingMs()).toBeNull()
+    // 進度不跳動
+    expect(engine.progress).toBe(0)
+    expect(engine.scrollable).toBe(false)
+  })
+
+  it('只多溢出不到一行時也算放得下(門檻是一行,不是 > 0)', () => {
+    // 溢出 5px:捲動這 5px 等於沒動,同樣不該在一秒內宣告結束
+    const engine = new TeleprompterEngine(
+      makeModel(),
+      { rate: 1, scrollSpeed: 60, totalH: 205, wrapH: 200, lineHeightPx: 45, maxTickDtMs: 60_000 },
+      'scroll'
+    )
+    engine.play()
+    engine.tick(0)
+    expect(engine.tick(60_000)).toBe('continuous')
+    expect(engine.getState().status).toBe('playing')
+    expect(engine.scrollable).toBe(false)
+  })
+
+  it('至少溢出滿一行才捲動並正常完成(短稿的修法不影響長稿)', () => {
+    // 剛好一行(45px)→ 視為需要捲動,與舊有長稿行為一致
+    const engine = new TeleprompterEngine(
+      makeModel(),
+      { rate: 1, scrollSpeed: 60, totalH: 245, wrapH: 200, lineHeightPx: 45, maxTickDtMs: 60_000 },
+      'scroll'
+    )
+    expect(engine.scrollable).toBe(true)
+    engine.play()
+    engine.tick(0)
+    // maxScroll = 245 - 200 + 40 = 85;60px/s → 85/60 s 後完成
+    expect(engine.tick(2000)).toBe('discrete')
+    expect(engine.getState().status).toBe('completed')
+    expect(engine.getState().scrollPos).toBe(85)
+  })
+
   it('量測到容器後,播放中的捲動立刻接上', () => {
     const engine = new TeleprompterEngine(
       makeModel(),
@@ -264,6 +319,7 @@ describe('查詢介面', () => {
       'scroll'
     )
     expect(scroll.getRemainingMs()).toBe((840 / 60) * 1000)
+    expect(scroll.scrollable).toBe(true)
 
     const bullet = new TeleprompterEngine(makeModel(), { rate: 1, scrollSpeed: 60 }, 'bullet')
     expect(bullet.getRemainingMs()).toBeNull()

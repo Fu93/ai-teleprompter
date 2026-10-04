@@ -214,6 +214,9 @@ function Slider({
         onChange={(e) => onChange(Number(e.target.value))}
         // 上方的 label 是視覺文字,不會自動成為表單控制的無障礙名稱
         aria-label={label}
+        // 命中帶高度由 global.css 的 `input[type='range']` 決定(已 22 → 28px,
+        // 第四輪 P2-2)。不要在這裡加 h-7 之類的高度 class:元素特異度
+        // (0,1,1) 高於 Tailwind 的 (0,1,0),加了也不會生效 —— 實測過。
         className="w-full cursor-pointer accent-accent-500"
       />
     </div>
@@ -536,6 +539,9 @@ export default function SettingsPage({
                 <div className="mt-0.5 text-lg font-semibold">
                   {settings.personal.profile.derivedFontSize}
                   <span className="text-xs text-ink-400">px</span> · {settings.personal.profile.derivedSpeed}
+                  {/* 單位補齊:旁邊的 px 有單位而這個數字沒有,「32px · 90」
+                      讀不出 90 是什麼(見 UX_FINDINGS 第三輪 P1-2)。 */}
+                  <span className="text-xs text-ink-400">px/s</span>
                 </div>
               </div>
             </div>

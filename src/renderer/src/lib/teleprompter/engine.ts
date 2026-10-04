@@ -47,6 +47,15 @@ export interface EngineOptions {
   totalH?: number
   /** scroll 模式:視窗內可視高(px) */
   wrapH?: number
+  /**
+   * scroll 模式:一行文字的高度(px)。
+   *
+   * 為什麼需要它:判斷「內容是否真的超出可視區」的門檻不該是 0。
+   * SCROLL_TAIL_PADDING_PX(讓最後一行滾出可視區的緩衝)會讓 maxScroll 在
+   * 內容完全放得下時仍然 > 0,而那 40px **全部是緩衝,沒有一行內容在下面**。
+   * 見 hasScrollableOverflow()。
+   */
+  lineHeightPx?: number
   /** 單次 tick 的 dt 上限(防切窗/休眠後跳幀);測試可調大 */
   maxTickDtMs?: number
 }
@@ -59,6 +68,12 @@ const DEFAULT_MAX_TICK_DT_MS = 250
 const KARAOKE_WORD_INTERVAL_MS = 280
 /** scroll 模式底部的額外緩衝(px),讓最後一行滾出可視區 */
 const SCROLL_TAIL_PADDING_PX = 40
+/**
+ * 沒有量到行高時用的一行高度(px)。取 24 ≈ 16px 字 × 1.5 行高,是這個下限
+ * 量級的保守值:寧可把「剛好放得下」當成放得下,也不要為了湊一個魔法數
+ * 而讓短稿又被判成需要捲動。
+ */
+const DEFAULT_LINE_HEIGHT_PX = 24
 
 export class TeleprompterEngine {
   displayMode: OverlayDisplayMode
@@ -249,6 +264,17 @@ export class TeleprompterEngine {
     // 頭捲;收合期間時鐘照常累計(elapsedMs 在 tick() 就加了),不是整段靜止。
     if (this.opts.totalH === undefined || this.opts.wrapH === undefined) return 'continuous'
 
+    // 內容一頁就放得下:不推進、也不完成。
+    //
+    // 「完成」描述的是「使用者已經把這份稿從頭到尾看完」,而一頁放得下的稿根本
+    // 沒有「從頭到尾」這件事 —— 這裡宣告完成等於對一件沒發生過的事結案。
+    // 舊行為(SCROLL_TAIL_PADDING_PX 撐出 40px 的假範圍 → 一幀內 completed)讓
+    // 使用者按下去只看見狀態跳成「已播畢」,提詞機看起來像壞掉。
+    //
+    // 與上一道「尚未量測」防線是同一個處置:時鐘照常累計(elapsedMs 在 tick() 就
+    // 加了),只是不從「播完了」的角度前進 —— 使用者自己按暫停或換稿。
+    if (!this.hasScrollableOverflow()) return 'continuous'
+
     const maxScroll = this.maxScroll()
     const next = this.scrollPos + (this.opts.scrollSpeed * dt) / 1000
     if (next >= maxScroll) {
@@ -345,6 +371,32 @@ export class TeleprompterEngine {
     return Math.max(0, totalH - wrapH + SCROLL_TAIL_PADDING_PX)
   }
 
+  /**
+   * 內容是否真的超出可視區、值得自動捲動。
+   *
+   * 為什麼需要這個判斷(使用者視角實測,docs/UX_FINDINGS.md 第四輪 P0-1):
+   * maxScroll() 是 `max(0, totalH - wrapH + 40)`。**內容一頁放得下時,這個 40
+   * 就是全部的捲動範圍** —— 沒有任何一行內容在可視區下面,捲動它不會讓任何東西
+   * 被看到。而 tickScroll 只要 `next >= maxScroll` 就宣告 completed,於是按「開始
+   * 提詞」(自動播放)之後**一幀之內 playing → completed**,畫面寫「已播畢」。
+   *
+   * 預設浮層 720×260 扣掉工具列約只剩 4 行,所以約 96 字以內的稿開箱即中 ——
+   * 而 3~4 行的開場白正是「我剛開口」最常見的稿長。
+   *
+   * 這與「尚未量測捲動容器」(藥丸形態)是**同一個症狀的兩個成因**,那半邊由
+   * tickScroll 開頭的防線擋住;engine.test.ts 原本 8 個案例全部是長稿
+   * (totalH: 1000 / wrapH: 200),所以這個成因從來沒被測過。
+   *
+   * 門檻是「至少有一行在可視區下面」,不是「> 0」:只多溢出 5px 的稿捲起來
+   * 等於沒動,同樣不該在一秒內宣告結束。
+   */
+  private hasScrollableOverflow(): boolean {
+    const totalH = this.opts.totalH ?? 0
+    const wrapH = this.opts.wrapH ?? 0
+    const lineH = this.opts.lineHeightPx ?? DEFAULT_LINE_HEIGHT_PX
+    return totalH - wrapH >= lineH
+  }
+
   // ── 查詢 ──
 
   /**
@@ -354,6 +406,17 @@ export class TeleprompterEngine {
    */
   get measured(): boolean {
     return this.opts.totalH !== undefined && this.opts.wrapH !== undefined
+  }
+
+  /**
+   * 這份稿是否需要(也適合)自動捲動。
+   *
+   * 呼叫端用它決定要不要說清楚「這一頁就放得下」—— 沒有講的話,使用者按
+   * 「開始提詞」只會看到狀態停在「播放中」卻什麼都沒動,那和壞掉難以區分。
+   * 實測症狀與驗收見 docs/UX_FINDINGS.md 第四輪 P0-1。
+   */
+  get scrollable(): boolean {
+    return this.measured && this.hasScrollableOverflow()
   }
 
   getState(): EngineState {
@@ -400,6 +463,10 @@ export class TeleprompterEngine {
         return Math.max(0, words * interval - this.stepElapsedMs)
       }
       case 'scroll': {
+        // 放得下就沒有「剩多少」:回傳 null 讓時間列只印「已播 X」,而不是
+        // 從 maxScroll 那 40px 緩衝算出一個必然歸零的倒數 → 又變成「已播畢」。
+        // (null 的既有語意是「這個模式沒有剩餘時間可估」,bullet 也是 null。)
+        if (!this.hasScrollableOverflow()) return null
         const remain = this.maxScroll() - this.scrollPos
         if (this.opts.scrollSpeed <= 0) return null
         return Math.max(0, (remain / this.opts.scrollSpeed) * 1000)
@@ -411,6 +478,9 @@ export class TeleprompterEngine {
 
   get progress(): number {
     if (this.displayMode === 'scroll') {
+      // 放得下時進度沒有意義(永遠 0%,因為不推進),明確回 0 而不是拿
+      // scrollPos / 40 算出一條會跳動的假進度。
+      if (!this.hasScrollableOverflow()) return 0
       const max = this.maxScroll()
       return max > 0 ? Math.min(1, this.scrollPos / max) : 0
     }

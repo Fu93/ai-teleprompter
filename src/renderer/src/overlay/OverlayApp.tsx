@@ -20,7 +20,8 @@ import {
   ScanFace,
   Siren,
   X,
-  Crosshair
+  Crosshair,
+  AppWindow
 } from 'lucide-react'
 import type { AppSettings, CoachingKind, OverlayDisplayMode } from '@shared/types'
 import type { CoachingHint } from './useCoaching'
@@ -207,7 +208,7 @@ export default function OverlayApp(): JSX.Element {
     settings?.personal.profile?.charsPerMin,
     PhraseVisuals.DEFAULT_WPM
   )
-  const { state, model, remainingMs, progress, measured, controls } = useTeleprompterEngine({
+  const { state, model, remainingMs, progress, measured, scrollable, controls } = useTeleprompterEngine({
     content,
     displayMode: engineMode,
     rate: effectiveRate,
@@ -616,6 +617,26 @@ export default function OverlayApp(): JSX.Element {
   // 讓一條永遠 0% 的線貼在底緣,比完全不畫更糟:它看起來像「講稿還在第一行」,
   // 而畫面上沒有任何東西可以讓使用者發現那是假的。展開後就會量到、線就回來了。
   const progressKnown = engineMode !== 'scroll' || measured
+
+  // 這一頁放得下 → 沒有可捲動的內容。
+  //
+  // 為什麼需要這個判斷在使用者這一层(而不是只靠引擎不宣告「已播畢」):
+  // 引擎那一半修掉的是「一秒內自己播完」這個錯誤結論,但若只做那一步,畫面會變成
+  // 狀態停在「播放中」而內容完全不動 —— 使用者按了「開始提詞」卻沒反應,那和壞掉
+  // 難以區分,反而換了一種看不懂。所以在時間列旁邊把原因讲清楚。
+  //
+  // 實測症狀與驗收見 docs/UX_FINDINGS.md 第四輪 P0-1。預設浮層扣掉工具列約 4 行,
+  // 約 96 字以內的稿都會命中。
+  const fitsOnePage = engineMode === 'scroll' && measured && !scrollable
+
+  // 與下面空狀態分支用**同一個**判斷(content ?)。兩處分開寫就會漂移:空狀態說
+  // 「尚未載入講稿」而時間列照樣報時間,那正是 P0-2 的矛盾畫面。
+  const hasContent = Boolean(content)
+
+  // 「一頁放得下」的文案放在時間列的位置而不是狀態點的 title:狀態點的 title 只有
+  // 滑鼠停在那 6px 的點上才看得到,而這裡正是使用者按完「開始提詞」正在看的地方。
+  // 空白時間列在沒有稿時是對的(沒有可報的時間),所以只在真的有稿時加上這句。
+  const transportText = fitsOnePage && hasContent ? '這一頁就放得下' : formatTransport(elapsedSec, remainingMs, hasContent)
 
   // 除錯層(預設關閉;Ctrl+Shift+D 開 HUD)。以 portal 掛到 body,
   // 不參與這裡的 flex 版面 —— 貼鏡模式只有 170px,多任何一層都會把正文擠掉。
@@ -1180,13 +1201,22 @@ export default function OverlayApp(): JSX.Element {
           {/* 時間列。文案由 formatTransport 產生(純函式,有測試):
               原本是 `{已播} / -{剩餘}`,播完時顯示 `0:00 / -0:00`。
               負號在這裡讀起來是「負的剩餘」而不是「倒數」,而且剩 0 秒是一個
-              沒有意義的敘述 —— 見 docs/UX_FINDINGS.md P0-3。 */}
-          <span
-            className="mr-1.5 select-none whitespace-nowrap font-mono text-[10px] text-white/52"
-            title="已播時間 · 估計剩餘時間"
-          >
-            {formatTransport(elapsedSec, remainingMs)}
-          </span>
+              沒有意義的敘述 —— 見 docs/UX_FINDINGS.md P0-3。
+
+              三種狀態(第四輪 P0-1 / P0-2):
+                - 沒有稿 → 空字串。沒有稿就沒有「播過」(P0-2:舊寫法會讓畫面同時
+                  顯示「尚未載入講稿」與「已播畢」,互相矛盾)。
+                - 一頁放得下 → 明講原因。引擎不再宣告「已播畢」,但只做那一步會讓
+                  狀態停在「播放中」而內容不動,使用者會以為壞掉。
+                - 其餘 → 已播 / 剩餘。*/}
+          {transportText && (
+            <span
+              className="mr-1.5 select-none whitespace-nowrap font-mono text-[10px] text-white/52"
+              title={fitsOnePage ? '這份稿一頁就放得下,沒有需要捲動的內容;可調整浮層尺寸讓它自動捲動' : '已播時間 · 估計剩餘時間'}
+            >
+              {transportText}
+            </span>
+          )}
 
           {/* ── 群組一:救援與即時提示 ──
               Panic 放在最左邊是刻意的:它是「被問倒」當下要按的鈕,
@@ -1289,7 +1319,7 @@ export default function OverlayApp(): JSX.Element {
                 label="語速 −"
                 title={
                   personalBaseline !== PhraseVisuals.DEFAULT_WPM
-                    ? `語速 -（${speedDownKey}；1×＝你的個人語速 ${personalBaseline} 字/分）`
+                    ? `語速 -(${speedDownKey};1×=你的個人語速 ${personalBaseline} 字/分)`
                     : `語速 -(${speedDownKey})`
                 }
                 onClick={() =>
@@ -1305,7 +1335,7 @@ export default function OverlayApp(): JSX.Element {
                 label="語速 +"
                 title={
                   personalBaseline !== PhraseVisuals.DEFAULT_WPM
-                    ? `語速 +（${speedUpKey}；1×＝你的個人語速 ${personalBaseline} 字/分）`
+                    ? `語速 +(${speedUpKey};1×=你的個人語速 ${personalBaseline} 字/分)`
                     : `語速 +(${speedUpKey})`
                 }
                 onClick={() =>
@@ -1361,6 +1391,19 @@ export default function OverlayApp(): JSX.Element {
             onClick={() => void window.api.recenterOverlay()}
           >
             <Crosshair size={13} />
+          </ToolBtn>
+          {/* 叫回主視窗:主視窗關閉後,這條浮層可能就是 App 的全部,而沒有這顆
+              鈕時空狀態那句「到主視窗按開始提詞」是一條死路(沒有 tray、沒有
+              工作列圖示,唯一的重建路徑是再啟動一次 App)。見 UX_FINDINGS 第三輪
+              P0-2。title 一併把「浮層隱藏後 10 秒 App 會結束」講出來 ——
+              那件事本來只寫在 main 端的程式碼裡。 */}
+          <ToolBtn
+            label="主視窗"
+            title="開啟主視窗(主視窗關閉後,浮層一旦隱藏 App 會在 10 秒後結束;重新啟動 App 也可回到主視窗)"
+            effectId="overlay-show-main"
+            onClick={() => void window.api.showMain()}
+          >
+            <AppWindow size={13} />
           </ToolBtn>
           <ToolBtn label="收成藥丸" title="收合成藥丸(低存在感)" onClick={() => enterCompact(o)}>
             <Minimize2 size={13} />
@@ -1451,10 +1494,23 @@ export default function OverlayApp(): JSX.Element {
           ) : null}
         </div>
       ) : (
-        <div className="flex h-full items-center justify-center px-6 text-center text-xs leading-relaxed text-white/52">
-          尚未載入講稿
-          <br />
-          到主視窗「提詞講稿」頁按「開始提詞」
+        <div className="flex h-full flex-col items-center justify-center gap-2.5 px-6 text-center text-xs leading-relaxed text-white/52">
+          <div>
+            尚未載入講稿
+            <br />
+            到主視窗「提詞講稿」頁按「開始提詞」
+          </div>
+          {/* 與工具列「主視窗」同一個 data-effect-id(同一個控制項的第二個入口):
+              空狀態正是「主視窗可能已經不在」最常撞見的畫面 —— 指示一條到不了
+              的路,比沒有指示更糟(見 UX_FINDINGS 第三輪 P0-2)。 */}
+          <button
+            data-effect-id="overlay-show-main"
+            className="cursor-pointer rounded-full bg-white/12 px-3.5 py-1.5 text-white/85 transition-colors hover:bg-white/20"
+            title="開啟主視窗(主視窗關閉後,浮層一旦隱藏 App 會在 10 秒後結束;重新啟動 App 也可回到主視窗)"
+            onClick={() => void window.api.showMain()}
+          >
+            開啟主視窗
+          </button>
         </div>
       )}
 

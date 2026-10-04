@@ -24,7 +24,23 @@
 import type { CoachingKind, MeetingSession, SessionReport, TranscriptSegment } from '@shared/types'
 import { db } from './db'
 import { buildSessionReport } from './session-intelligence'
-import { formatDateTime } from './utils'
+
+/**
+ * 沒命名時的會議標題。
+ *
+ * 為什麼**不含時間戳**(第四輪 P1-2):原本是 `會議 ${formatDateTime(startedAt)}`,
+ * 而清單列的標題下方又印一次 `{formatDateTime(s.startedAt)} · N 段 · …`。
+ * 兩處各自都合理,合起來每一場沒命名的會議都變成
+ * `會議 2026/10/04 12:48 2026/10/04 12:48 · 1 段 · 未摘要` —— 同一個時間戳
+ * 印兩次,看起來像渲染壞掉。而「不命名」是多數人的預設路徑,所以整排清單
+ * 長這樣。
+ *
+ * 時間由下方那行負責,這裡只負責「這場沒有名字」這件事。
+ *
+ * 與講稿的 UNTITLED_SCRIPT_TITLE 分開定義:兩者的顯示情境不同(講稿在編輯器
+ * 標題欄,會議在歷史清單),共用一個常數會讓兩個不相干的字串綁在一起。
+ */
+export const UNTITLED_SESSION_TITLE = '未命名會議'
 
 export interface PersistSessionInput {
   segments: TranscriptSegment[]
@@ -81,7 +97,7 @@ export function createSessionPersister(): SessionPersister {
       // id 省略讓 Dexie 發號(與 backup 匯入的 strip() 同一個理由:帶著舊 id
       // 寫回去會讓「下次新增」拿到一個已存在的鍵)。
       const session: MeetingSession = {
-        title: input.title?.trim() || `會議 ${formatDateTime(input.startedAt)}`,
+        title: input.title?.trim() || UNTITLED_SESSION_TITLE,
         startedAt: input.startedAt,
         endedAt: input.endedAt,
         segments: input.segments,

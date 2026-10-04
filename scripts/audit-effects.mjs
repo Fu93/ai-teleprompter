@@ -67,6 +67,22 @@ process.env.AI_TP_AUDIT = '1'
 const OUT = 'docs/audit/effects'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * 輪詢直到 ok() 為真(24 × 150ms)。**放在模組層**:gotoViaSidebar 與
+ * dirtyAndExpectConfirmDialog 兩處都用它 —— 後者原本直接呼叫前者函式
+ * **內部**的同名 const,那是作用域外的參照:只有「自動存檔搶先存掉、要重試」
+ * 那條路徑會走到它,於是當場 ReferenceError 把整步炸掉,後面的探針全部
+ * 「沒跑到」。症狀長得像「對話框的探針壞了」,成因卻是量測端的作用域 bug
+ * (實測:負載高、競賽輸掉的那一次必現)。
+ */
+const waitUntil = async (ok, tries = 24) => {
+  for (let i = 0; i < tries; i++) {
+    if (await ok()) return true
+    await sleep(150)
+  }
+  return false
+}
+
 const report = createReport('audit:effects')
 
 /** 四態 tally。unverifiable 的數量是輸出的一部分,不是待辦。 */
@@ -342,13 +358,6 @@ async function gotoViaSidebar(main, label, opts = {}) {
   const want = NAV_PAGE[label]
   if (!want) throw new Error(`gotoViaSidebar 收到未知的側欄項目「${label}」`)
   const pageNow = () => main.evaluate(() => location.hash.replace(/^#\/?/, '')).catch(() => '')
-  const waitUntil = async (ok, tries = 24) => {
-    for (let i = 0; i < tries; i++) {
-      if (await ok()) return true
-      await sleep(150)
-    }
-    return false
-  }
 
   if ((await pageNow()) === want) {
     await main.evaluate((self) => {
@@ -616,7 +625,11 @@ async function ensureSttOnMock(main, stt) {
 async function stepNavigation(main) {
   console.log('步驟 1：六個側欄項目…')
   const PAGES = [
-    { label: '總覽', hash: 'dashboard', h1: '歡迎回來' },
+    // h1 是「頁面真的重繪了」的證據(不是空白殼)。這一步跑在**全新的空 profile**上
+    // (AI_TP_E2E=1 每次都是新的暫存目錄),所以總覽走的是零資料分支 ——
+    // 第四輪 P1-1 修好之後就是「歡迎開始使用」而不是無條件的「歡迎回來」。
+    // 別把它改回「歡迎回來」:那等於要求這個缺陷回來。
+    { label: '總覽', hash: 'dashboard', h1: '歡迎開始使用' },
     { label: '提詞講稿', hash: 'scripts', h1: null },
     { label: '錄音轉錄', hash: 'record', h1: '錄音轉錄' },
     { label: '面試練習', hash: 'practice', h1: '面試練習' },
@@ -1204,6 +1217,18 @@ async function stepUpdateBanner(main) {
  *   收起來了沒」—— 量到的「按了關閉但浮層還在」是一個**量測錯誤被記成
  *   產品缺陷**。收斂規則(normalizeTitle)與列舉端完全同一份,兩邊不會漂移。
  */
+/**
+ * 浮層種子共用的捲動內容。**只有一份** —— 內容字串一變就會觸發浮層的
+ * 自動播放(onOverlayLoadScript 設 autoPlayRef,content 變化的 effect 消費它),
+ * 而種子之間共用同一份內容正是為了「重新播種不改變播放狀態」。
+ * 各處各寫一份的話,漂移的症狀是「某個浮層狀態莫名變成播放中」
+ * (實測:state-unreached)。
+ */
+const SEED_SCROLL_CONTENT = Array.from(
+  { length: 40 },
+  (_, i) => `第 ${i + 1} 句:這是一段夠長的內容,捲動位置才量得出來。`
+).join('\n')
+
 const clickByTitle = (win, title, opts = {}) =>
   win.evaluate(
     ({ t, scope }) => {
@@ -1716,11 +1741,34 @@ async function stepOverlay(app, main) {
   // 稽核環境裡沒有辦法自然觸發 —— 所以用 overlay.coachingHint 稽核橋強制。
   const pMute = probe(idKey('overlay', 'coaching-mute'), '浮層')
   const pUnmute = probe(idKey('overlay', 'coaching-unmute'), '浮層')
-  await overlay.evaluate(() => window.__auditForce?.('overlay.coachingHint', { kind: 'filler', message: '稽核:填充詞偏多' })).catch(() => {})
-  await sleep(700)
-  const muteBtn = await overlay.locator('[data-effect-id="coaching-mute"]').count().catch(() => 0)
+  // 讀回 `.ok` 並重試(與 stepInventory 的 overlayForceOk 同一個標準)。
+  // 這一段原本是 fire-and-forget + 固定睡 700ms:負載高時強制會靜默失敗
+  // 或 React 還沒重繪,而「700ms 後沒看到提示條」被記成 unreachable ——
+  // 那會假指控「教練被設定關掉了」(實測:連跑多次稽核的那一次必現)。
+  // 斷言**不放寬**:提示條該出現的還是必須出現,只是給強制一個公平的重試,
+  // 失敗時把 bridge 的回包帶進訊息(它明載了原因與已註冊的控制項清單)。
+  let hintForced = { ok: false, error: '(沒呼叫)' }
+  for (let i = 0; i < 12 && !hintForced?.ok; i++) {
+    hintForced = await overlay
+      .evaluate(
+        async () =>
+          (await window.__auditForce?.('overlay.coachingHint', { kind: 'filler', message: '稽核:填充詞偏多' })) ?? {
+            ok: false,
+            error: '橋接不存在'
+          }
+      )
+      .catch((err) => ({ ok: false, error: String(err?.message || err) }))
+    if (!hintForced?.ok) await sleep(250)
+  }
+  let muteBtn = 0
+  for (let i = 0; i < 12 && muteBtn === 0; i++) {
+    muteBtn = await overlay.locator('[data-effect-id="coaching-mute"]').count().catch(() => 0)
+    if (muteBtn === 0) await sleep(250)
+  }
   if (muteBtn === 0) {
-    pMute.unreachable('浮層上沒有教練提示條(稽核橋強制失敗,或教練被設定關掉了)')
+    pMute.unreachable(
+      `浮層上沒有教練提示條(稽核橋強制失敗,或教練被設定關掉了);bridge 回包:${JSON.stringify(hintForced).slice(0, 160)}`
+    )
     pUnmute.unreachable('沒有教練提示條可靜默,恢復鈕也不會出現')
   } else {
     await overlay.locator('[data-effect-id="coaching-mute"]').first().click()
@@ -1976,6 +2024,26 @@ const seedSessions = (main) =>
       tx.oncomplete = () => res()
       tx.onerror = () => rej(tx.error)
     })`
+  )
+
+/**
+ * 「超過一頁」的會議 / 練習種子(第三輪的 record/history-more、
+ * practice/history-more 兩個狀態用)。
+ *
+ * 16 > 15、11 > 10:資料必須**多過首頁視窗**,「再載入」按鈕才會渲染 ——
+ * 種子比一頁小的話,那顆鈕在任何狀態裡都不存在,對帳只會看到
+ * 「登記了但從沒出現」(probe-not-found,與 overlay/coaching-hint 同一課)。
+ */
+const seedManySessions = (main) =>
+  dbEval(
+    main,
+    `(db) => new Promise((res, rej) => { const tx = db.transaction('sessions','readwrite'); const os = tx.objectStore('sessions'); const now = Date.now(); for (let i = 0; i < 16; i++) os.put({ title: '第三輪會議-' + i, startedAt: now - i * 60000, endedAt: now - i * 60000 + 30000, segments: [{ start: 0, speaker: 'me', text: '第 ' + i + ' 場。' }] }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error) })`
+  )
+
+const seedManyRuns = (main) =>
+  dbEval(
+    main,
+    `(db) => new Promise((res, rej) => { const tx = db.transaction('practiceRuns','readwrite'); const os = tx.objectStore('practiceRuns'); const now = Date.now(); for (let i = 0; i < 11; i++) os.put({ position: '第三輪職位-' + i, type: '行為面試', questions: ['請自我介紹'], answers: [{ question: '請自我介紹', answerTranscript: '示範回答。', durationSec: 10, feedback: { score: 70, content: '內容', structure: '結構', delivery: '表達', betterAnswer: '示範' } }], createdAt: now - i * 60000 }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error) })`
   )
 
 const seedRuns = (main) =>
@@ -4189,10 +4257,7 @@ async function stepOverlayExtra(app, main) {
    * 而「找不到捲動容器」在藥丸形態下是**正常的** —— 不斷言這件前置事情的話,
    * 量到的「失敗」其實是量測端站在錯的形態上(而那種失敗會被讀成產品缺陷)。
    */
-  const scrollContent = Array.from(
-    { length: 40 },
-    (_, i) => `第 ${i + 1} 句:這是一段夠長的內容,捲動位置才量得出來。`
-  ).join('\n')
+  const scrollContent = SEED_SCROLL_CONTENT
   /**
    * 重點模式需要的內容跟捲動模式不一樣。
    *
@@ -4528,6 +4593,154 @@ async function stepOverlayExtra(app, main) {
  *   2. 對帳:列舉到但沒登記 → no-effect-probe;登記了但沒結論也沒豁免 → probe-not-run
  *   3. 把數字寫進 meta.notes(覆蓋率本身就是輸出的一部分)
  */
+
+/**
+ * 第三輪(docs/UX_FINDINGS.md 第三輪)新增控制項的效果探針。
+ *
+ * 三顆的共同點:失敗模式是「到不了」而不是「當掉」 ——
+ *   - 「查看全部」沒接線 → 更早的講稿在 UI 裡沒有出口
+ *   - 「再載入」沒接線   → 第 16 場會議 / 第 11 次練習永遠開不了
+ *   - 「主視窗」沒接線   → 主視窗關掉之後再也回不去(只能重啟 App)
+ * 所以斷言全部寫「點了之後,那個原本到不了的東西真的到得了」。
+ *
+ * 這三個種子(16 場 / 11 次)刻意**大於**各頁的首頁視窗(15 / 10):
+ * 按鈕只在「還有沒顯示的」時渲染,種子小於一頁的話按鈕根本不存在,
+ * 探針會假綠在「沒有東西可以點」上。
+ */
+async function stepRound3(app, main) {
+  console.log('步驟 16:第三輪新控制項…')
+
+  // (a) 總覽「查看全部 →」真的去講稿頁
+  await clearAll(main)
+  await seedScripts(main, ['第三輪講稿甲', '第三輪講稿乙'])
+  await gotoViaSidebar(main, '總覽')
+  await sleep(900)
+  const pSeeAll = probe(idKey('dashboard', 'scripts-see-all'), '總覽')
+  const seeAllClicked = await clickEffectId(main, 'scripts-see-all')
+  if (seeAllClicked !== true) {
+    pSeeAll.unreachable(
+      `總覽頁「最近的講稿」區沒有可點的「查看全部」(clickEffectId 回 ${JSON.stringify(seeAllClicked)})`
+    )
+  } else {
+    await sleep(700)
+    const hash = await main.evaluate(() => location.hash).catch(() => '')
+    if (/scripts/.test(hash)) pSeeAll.works(`按下後路由是 ${hash}`, EVIDENCE.DOM)
+    else pSeeAll.dead(`按了「查看全部」但路由還在 ${hash} —— 更早的講稿仍然沒有出口`)
+  }
+
+  // (b) 錄音轉錄「再載入」真的把超過一頁的舊會議帶進清單
+  await clearAll(main)
+  await seedManySessions(main)
+  await gotoViaSidebar(main, '錄音轉錄')
+  await sleep(900)
+  const pMoreRec = probe(idKey('record', 'history-more'), '錄音')
+  const recRowsBefore = await main.evaluate(
+    () => document.querySelectorAll('[data-effect-id="session-row"]').length
+  )
+  const moreRecClicked = await clickEffectId(main, 'history-more')
+  if (moreRecClicked !== true) {
+    pMoreRec.unreachable(`16 場會議(首頁視窗 15)但沒有可點的「再載入」(畫面上 ${recRowsBefore} 列)`)
+  } else {
+    await sleep(700)
+    const recRowsAfter = await main.evaluate(
+      () => document.querySelectorAll('[data-effect-id="session-row"]').length
+    )
+    if (recRowsAfter > recRowsBefore) {
+      pMoreRec.works(`清單 ${recRowsBefore} 列 → ${recRowsAfter} 列,第 16 場到得了`, EVIDENCE.DOM)
+    } else {
+      pMoreRec.dead(`按了「再載入」但清單沒有變長(${recRowsBefore} → ${recRowsAfter})`)
+    }
+  }
+
+  // (c) 面試練習「再載入」同一條規則(11 次 > 首頁視窗 10)
+  await clearAll(main)
+  await seedManyRuns(main)
+  await gotoViaSidebar(main, '面試練習')
+  await sleep(900)
+  const pMorePrac = probe(idKey('practice', 'history-more'), '練習')
+  const pracRowsBefore = await main.evaluate(
+    () => document.querySelectorAll('[data-effect-id="practice-row"]').length
+  )
+  const morePracClicked = await clickEffectId(main, 'history-more')
+  if (morePracClicked !== true) {
+    pMorePrac.unreachable(`11 次練習(首頁視窗 10)但沒有可點的「再載入」(畫面上 ${pracRowsBefore} 列)`)
+  } else {
+    await sleep(700)
+    const pracRowsAfter = await main.evaluate(
+      () => document.querySelectorAll('[data-effect-id="practice-row"]').length
+    )
+    if (pracRowsAfter > pracRowsBefore) {
+      pMorePrac.works(`清單 ${pracRowsBefore} 列 → ${pracRowsAfter} 列,第 11 次到得了`, EVIDENCE.DOM)
+    } else {
+      pMorePrac.dead(`按了「再載入」但清單沒有變長(${pracRowsBefore} → ${pracRowsAfter})`)
+    }
+  }
+
+  // (d) 浮層「主視窗」把被藏起來的主視窗帶回前景
+  //
+  // 為什麼是「藏起來」而不是「關掉」:關掉主視窗會連帶影響稽核自己
+  // (後面的步驟都從主視窗跑)。hide() 之後「主視窗不在前面」正是這顆鈕
+  // 存在的理由,而 show()/focus() 是它承諾的全部效果。
+  await clearAll(main)
+  await seedScripts(main, ['第三輪主視窗講稿'])
+  await gotoViaSidebar(main, '總覽')
+  await sleep(800)
+  const launchOk = await clickText(main, '開始提詞')
+  await sleep(2500)
+  const overlayWin = app.windows().find((w) => w !== main && /overlay/i.test(w.url())) ?? null
+  const pShowMain = probe(idKey('overlay', 'overlay-show-main'), '浮層')
+  if (launchOk !== true || !overlayWin) {
+    pShowMain.unreachable(
+      `浮層沒有開起來(開始提詞=${JSON.stringify(launchOk)}),無法量「主視窗」鈕`
+    )
+  } else {
+    await app.evaluate(({ BrowserWindow }) => {
+      for (const w of BrowserWindow.getAllWindows()) if (w.getTitle() === 'AI 提詞機') w.hide()
+    })
+    await sleep(400)
+    const showClicked = await clickEffectId(overlayWin, 'overlay-show-main')
+    if (showClicked !== true) {
+      pShowMain.unreachable('浮層上找不到「主視窗」鈕(展開工具列與空狀態都該有)')
+    } else {
+      await sleep(900)
+      const visible = await app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().some((w) => w.getTitle() === 'AI 提詞機' && w.isVisible())
+      )
+      if (visible) {
+        pShowMain.works('主視窗被藏起來之後,按鈕把它帶回前景(不必重啟 App)', EVIDENCE.OTHER_WINDOW)
+      } else {
+        pShowMain.dead('按了「主視窗」但主視窗仍然是隱藏的 —— 使用者仍然回不去')
+      }
+    }
+  }
+  // 收尾:浮層回到「種子的內容 + 靜止」,然後藏起來。
+  //
+  // 為什麼必須收:「開始提詞」開出來的浮層會**自動播放**(onOverlayLoadScript
+  // 設 autoPlayRef,content 變化的 effect 消費它),而浮層種子之間共用同一份
+  // 內容正是為了「重新播種不改變播放狀態」。留著一個內容不同、還在播放的
+  // 浮層,對帳的第一個浮層種子換內容 → 觸發自動播放 → 後面的 overlay/playing
+  // 狀態找不到「播放」鈕(它寫的是「暫停」),整個狀態被記成 state-unreached
+  // (實測:不收尾 → state-unreached×1)。
+  await main.evaluate(async (content) => {
+    await window.api.setSettings({ overlay: { compact: false, lensMode: false, displayMode: 'scroll' } })
+    await window.api.overlayShow({ title: '稽核浮層', content })
+  }, SEED_SCROLL_CONTENT)
+  await sleep(1200)
+  // 換內容會讓它自動播起來;按「暫停」回到靜止(不在播放時這顆鈕不存在,
+  // clickByTitle 回 false,無害)。
+  await clickByTitle(overlayWin, '暫停')
+  await sleep(400)
+  await main.evaluate(async () => {
+    await window.api.overlayHide()
+  })
+
+  // 無論結果如何都把主視窗放回來:hide 是這一步自己造成的,
+  // 留給下一步一個看不見的主視窗會把後面的步驟整批變成假紅。
+  await app.evaluate(({ BrowserWindow }) => {
+    for (const w of BrowserWindow.getAllWindows()) if (w.getTitle() === 'AI 提詞機') w.show()
+  })
+}
+
 async function stepInventory(app, main, stt, llm) {
   console.log('步驟 15：控制項覆蓋率對帳…')
   await clearAll(main)
@@ -4557,13 +4770,50 @@ async function stepInventory(app, main, stt, llm) {
   }
 
   /**
+   * 等「某一塊真的能被列舉」,而不是等「容器長出來」。
+   *
+   * 為什麼兩者不等價(這個坑實測紅過一次,4 筆 probe-not-found):
+   *   ENUMERATE 的可見性判定會沿祖先鏈看 `parseFloat(opacity) === 0` 就當成
+   *   「不存在」;而對話框的 `.anim-rise`(rise-in 0.35s)與 toast 的
+   *   `.toast-item`(toast-in 0.4s)**兩個動畫的 from 都是 `opacity: 0`,而且
+   *   fill-mode 是 `both`** —— `both` 意味著**動畫還沒開始跑之前**就已經套用
+   *   from 的值。所以「DOM 裡有 [role=dialog]」與「它裡面的鈕現在算不算存在」
+   *   是兩個問題,而量測端原本只等前一個。
+   *
+   * 症狀:對話框的 confirm-ok/confirm-cancel 與 toast 的「關閉通知」/toast-action
+   * 四顆一起變成 probe-not-found,報告寫「有登記,但沒有任何一個被宣告的狀態裡
+   * 出現過它」。那句話**是對的**(那一刻它們真的算不可見),但診斷是假的:
+   * 沒有任何一個產品的對話框或 toast 是壞的,紅燈的成因是 500ms 的固定等待
+   * 在機器有負載時不夠動畫跑完(實測:同一份 build 連跑兩次,一次 4 筆、一次 0 筆)。
+   *
+   * 與 `waitEffectId`(等某個 data-effect-id 出現)同一個家族,但這裡等的是
+   * **列舉結果**,因為「節點存在」與「節點算存在」之間就隔著這條動畫。
+   *
+   * 這裡**不放寬**任何判定:可見性規則一行沒改,列舉器一行沒改。改的是「量測端
+   * 站穩再量」—— 與教練提示探針改成讀回 .ok + 重試是同一個處置。
+   * 等到時限仍然量不到,照樣 blocked(),讓失敗以「量測端站錯位置」現身,
+   * 而不是以「這顆控制項從沒存在過」現身。
+   */
+  const waitScopeControls = async (win, pageId, scope, minCount, timeoutMs = 5_000) => {
+    const step = 150
+    let last = 0
+    for (let waited = 0; waited <= timeoutMs; waited += step) {
+      const list = await win.evaluate(ENUMERATE, { pageId, scope }).catch(() => null)
+      last = list ? list.length : 0
+      if (last >= minCount) return last
+      await sleep(step)
+    }
+    return last
+  }
+
+  /**
    * 浮層狀態的前置作業 —— 與 stepOverlayExtra 用同一套理由與同一段內容。
    *
    * 這裡的三個形態各自會讓**不同的控制項存在**:貼鏡才有「隱藏」、
    * 重點模式才有「上一個/下一個重點」、藥丸形態兩者都沒有。
    * 把形態設錯,量到的「找不到」是量測端站錯位置,不是產品缺鈕。
    */
-  const scrollContent = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 句:這是一段夠長的內容,捲動位置才量得出來。`).join('\n')
+  const scrollContent = SEED_SCROLL_CONTENT
   const bulletContent = Array.from(
     { length: 5 },
     (_, i) => `# 重點${i + 1}\n這一段是重點${i + 1}的說明,內容夠長才看得出本來在講哪一段。`
@@ -4657,6 +4907,8 @@ async function stepInventory(app, main, stt, llm) {
     else if (['script', 'editing', 'dirty', 'preview', 'dialog'].includes(st.seed))
       await seedScripts(main, ['稽核講稿一', '稽核講稿二'])
     else if (st.seed === 'sessions' || st.seed === 'sessionOpen' || st.seed === 'sessionSummarized') await seedSessions(main)
+    else if (st.seed === 'sessionsMany') await seedManySessions(main)
+    else if (st.seed === 'runsMany') await seedManyRuns(main)
     else if (
       ['runs', 'practiceRun', 'practiceAnswering', 'practiceAnswered', 'practiceLastAnswered', 'practiceDone'].includes(st.seed)
     )
@@ -4822,6 +5074,18 @@ async function stepInventory(app, main, stt, llm) {
           clicked !== true ? '找不到「刪除這份講稿」(編輯器沒掛載?)' : '按了刪除但確認對話框沒有出現'
         )
       }
+      // 等「對話框裡的鈕真的算存在」,而不是等對話框的 DOM(理由見 waitScopeControls):
+      // .anim-rise 的 from 是 opacity 0 且 fill-mode 是 both,所以容器先出現、
+      // 裡面的按鈕過一會兒才進得了列舉。固定 500ms 在有負載時會量到 0 顆,
+      // 而那會讓 confirm-ok/confirm-cancel 被報成「有登記但從沒出現過」。
+      const dlgControls = await waitScopeControls(main, 'dialog', '[role="dialog"]', 2)
+      if (dlgControls < 2) {
+        blocked(
+          `狀態:${st.id}`,
+          `對話框的容器在,但裡面只有 ${dlgControls} 顆可列舉的控制項(預期至少 2:確認/取消)` +
+            `—— 動畫還沒跑完,或按鈕真的沒渲染`
+        )
+      }
       await sleep(500)
     }
     if (st.seed === 'updateBanner') {
@@ -4856,13 +5120,28 @@ async function stepInventory(app, main, stt, llm) {
        * `#2` 後綴,於是憑空多出一顆 `toast|button|關閉通知#2` —— 一顆從來
        * 不會有探針也永遠不會有人登記的影子控制項。
        */
-      await main.evaluate(() =>
-        window.__auditToast?.('error', '稽核:AI 服務連不上', {
+      // `?.()` 是一個**靜默 no-op**:稽核橋沒掛上時這行什麼都不做,而症狀是
+      // 「這兩顆按鈕在任何狀態裡都沒出現過」—— 對的結論,錯的診斷。所以讀回橋
+      // 存不存在,並在之後等「那兩顆真的算存在」(理由見 waitScopeControls:
+      // .toast-item 的 toast-in 0.4s,from 是 opacity 0,fill-mode 是 both)。
+      const sent = await main.evaluate(() => {
+        if (typeof window.__auditToast !== 'function') return false
+        window.__auditToast('error', '稽核:AI 服務連不上', {
           label: '前往設定',
           kind: 'goto',
           page: 'settings'
         })
-      )
+        return true
+      })
+      if (!sent) blocked(`狀態:${st.id}`, '__auditToast 稽核橋沒有掛在 window 上(發了也等於沒發)')
+      const toastControls = await waitScopeControls(main, 'toast', '[role="status"]', 2)
+      if (toastControls < 2) {
+        blocked(
+          `狀態:${st.id}`,
+          `toast 的容器在(或根本沒發出去),但裡面只有 ${toastControls} 顆可列舉的控制項` +
+            `(預期至少 2:關閉通知/行動鈕)`
+        )
+      }
       await sleep(500)
     }
     if (st.seed === 'crash') {
@@ -4992,7 +5271,24 @@ async function stepInventory(app, main, stt, llm) {
     }
     if (st.seed === 'overlayPlaying') {
       // 「暫停」與「播放」是同一顆鈕的兩個狀態;播放中才列舉得到「暫停」。
-      if (!(await overlayClick('播放'))) blocked(`狀態:${st.id}`, '浮層裡找不到「播放」')
+      //
+      // 已經在播放時就是**目標狀態本身** —— 種子必須容忍「已經在目標狀態」,
+      // 否則一個殘留的播放狀態會讓這一行找不到「播放」,把已到達的狀態記成
+      // state-unreached(實測:第三輪的 stepRound3 留下播放中的浮層後紅過一次)。
+      // 判斷用「暫停」在不在畫面上,**不點它**(點了就變成暫停)。
+      const w = overlayWin()
+      const alreadyPlaying = w
+        ? await w
+            .evaluate(() =>
+              [...document.querySelectorAll('button')].some(
+                (b) => ((b.getAttribute('title') || '').split(/[（(:：]/)[0] || '').trim() === '暫停'
+              )
+            )
+            .catch(() => false)
+        : false
+      if (!alreadyPlaying && !(await overlayClick('播放'))) {
+        blocked(`狀態:${st.id}`, '浮層裡找不到「播放」')
+      }
       await sleep(900)
     }
     if (st.seed === 'overlayCoaching' || st.seed === 'overlayCoachingMuted') {
@@ -5041,6 +5337,13 @@ async function stepInventory(app, main, stt, llm) {
     if (st.seed === 'dialog') {
       await clickEffectId(main, 'confirm-cancel')
       await sleep(500)
+    }
+    if (st.seed === 'toast') {
+      // 錯誤 toast 停留 12 秒,而這個迴圈後面還有十幾個狀態。不收掉的話,
+      // 後面每一格的截圖都多一列紅色錯誤提示 —— 那看起來像產品的錯,
+      // 而它是量測端上一格留下的(與 updateBanner/教練提示同一處置)。
+      await clickText(main, '關閉通知').catch(() => false)
+      await sleep(400)
     }
     if (st.seed === 'overlayPlaying') {
       // 播放中的浮層會一直講話;下一個狀態不該繼承它的聲音。
@@ -5363,6 +5666,9 @@ async function main_() {
       ['浮層工具列(第二輪)', () => stepOverlayExtra(app, main)],
       ['錄音(假麥克風)', () => stepRecord(app, main, stt, llm)],
       ['面試練習(mock LLM)', () => stepPractice(main, llm)],
+      // 第三輪新控制項:放在崩潰畫面**之前**(崩潰會把整個 App 換掉),
+      // 也在對帳之前 —— 對帳要求每一筆登記都已經有探針給過結論。
+      ['第三輪新控制項', () => stepRound3(app, main)],
       // 崩潰畫面要放在對帳**之前**。
       //
       // 理由不是美學:崩潰畫面上有一顆「複製錯誤詳細資料」,而它是靠這一步才被

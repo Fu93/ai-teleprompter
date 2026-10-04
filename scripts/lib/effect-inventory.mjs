@@ -134,6 +134,13 @@ export const STATES = [
   // 錄音進行中:主要鈕從「開始錄音」變成「停止並儲存」(用假麥克風走真實路徑)。
   { id: 'record/recording', page: 'record', nav: 'record', seed: 'recording' },
   { id: 'record/report', page: 'record', nav: 'record', seed: 'report' },
+  /**
+   * 「再載入」按鈕(2026-10-04 第三輪)。那顆鈕只在「資料超過一頁」時渲染
+   * (會議 > 15),其他狀態的種子都只有 2 筆 —— 不宣告這一格的話,它在任何
+   * 狀態裡都不出現,對帳報 probe-not-found(與 overlay/coaching-hint 同一課:
+   * 狀態清單少了一格,不是頁面漏了)。
+   */
+  { id: 'record/history-more', page: 'record', nav: 'record', seed: 'sessionsMany' },
   { id: 'practice/setup', page: 'practice', nav: 'practice', seed: 'runs' },
   { id: 'practice/run', page: 'practice', nav: 'practice', seed: 'practiceRun' },
   { id: 'practice/answering', page: 'practice', nav: 'practice', seed: 'practiceAnswering' },
@@ -141,6 +148,8 @@ export const STATES = [
   // 最後一題答完:同一顆鈕的文字從「下一題」變成「查看總評」。
   { id: 'practice/last-answered', page: 'practice', nav: 'practice', seed: 'practiceLastAnswered' },
   { id: 'practice/done', page: 'practice', nav: 'practice', seed: 'practiceDone' },
+  // 同 record/history-more:種子 11 次 > 首頁視窗 10,「再載入」才會渲染。
+  { id: 'practice/history-more', page: 'practice', nav: 'practice', seed: 'runsMany' },
   { id: 'calibration/step0', page: 'calibration', nav: 'calibration', seed: 'none' },
   { id: 'calibration/step1', page: 'calibration', nav: 'calibration', seed: 'calStep1' },
   /**
@@ -243,6 +252,8 @@ export const CONTROLS = [
   // 留著這三筆的症狀是 probe-not-found:登記著三顆**畫面上已經不存在**的鈕,
   // 而那種紅燈會被誤讀成「有人把鈕刪掉了」而不是「登記表過期了」。
   { key: idKey('dashboard', 'demo-script'), step: 'dashboard', note: '沒有講稿時,範例稿鈕真的建出講稿、開起浮層,並導到講稿頁' },
+  // 第三輪:總覽的「最近的講稿」最多只列 3 則,原本沒有任何出口到全部的稿。
+  { key: idKey('dashboard', 'scripts-see-all'), step: 'dashboard', note: '「查看全部」真的導到講稿頁(更早的講稿原本在 UI 裡沒有出口)' },
   { key: key('dashboard', 'button', '提詞'), step: 'dashboard', note: '列表其他講稿的提詞鈕' },
   { key: idKey('dashboard', 'preflight-compact'), step: 'dashboard', note: '準備度橫幅按下去真的到設定頁' },
   // 首次上手卡的三步(建稿/校準/試一次)。三顆鈕指向**三個不同的頁面**,
@@ -320,6 +331,9 @@ export const CONTROLS = [
   { key: key('record', 'button', '重新摘要'), step: 'record', note: '已有摘要時的重跑' },
   { key: key('record', 'button', '存成講稿'), step: 'record', note: 'scripts 真的 +1 且只含我方發言' },
   { key: key('record', 'button', '匯出'), step: 'record', exempt: { category: EXEMPT_CATEGORY.NATIVE_DIALOG, reason: '存檔對話框是作業系統的;寫檔本身由 e2e/backup.spec.ts 以真實檔案覆蓋' } },
+  // 第三輪:歷史清單原本寫死 15 筆 —— 第 16 場以後的會議在 UI 裡根本到不了
+  // (而總覽頁的「會議場數」用 count() 說著另一個數字)。
+  { key: idKey('record', 'history-more'), step: 'record', note: '「再載入」真的把超過一頁的舊會議帶進清單(種子 16 場:15 列 → 更多列)' },
   { key: key('record', 'button', '刪除這場會議紀錄'), step: 'record', note: '確認後 sessions 真的 -1' },
 
   // ───────────── 面試練習 ─────────────
@@ -331,6 +345,8 @@ export const CONTROLS = [
   { key: key('practice', 'button', '刪除這次練習紀錄'), step: 'practice', note: '確認後 practiceRuns 真的 -1' },
   { key: key('practice', 'button', '結束練習'), step: 'practice', note: '回到 setup phase,紀錄保留' },
   { key: key('practice', 'button', '朗讀題目'), step: 'practice', exempt: { category: EXEMPT_CATEGORY.BROWSER_ENGINE, reason: 'Web Speech API 的發音由作業系統語音引擎提供,headless 沒有可觀察的輸出' } },
+  // 第三輪:與 record 的 history-more 同一條規則(原本寫死 10 筆)。
+  { key: idKey('practice', 'history-more'), step: 'practice', note: '「再載入」真的把超過一頁的舊練習帶進清單(種子 11 次:10 列 → 更多列)' },
   { key: key('practice', 'button', '開始回答'), step: 'practice', note: '真的開始收音、逐字稿出現在畫面上' },
   { key: key('practice', 'button', '完成回答，取得反饋'), step: 'practice', note: '走完 STT + AI 評分,分數真的渲染' },
   { key: key('practice', 'button', '下一題'), step: 'practice', note: '題號真的前進' },
@@ -483,6 +499,9 @@ export const CONTROLS = [
   { key: key('overlay', 'button', '隱藏'), step: 'overlay', note: '浮層真的收起來' },
   { key: key('overlay', 'button', '關閉'), step: 'overlay', note: '同上(同一條 overlayHide)' },
   { key: key('overlay', 'button', '貼鏡模式'), step: 'overlay', note: 'surface 真的變 lens' },
+  // 第三輪:主視窗關閉後,這顆鈕是回主視窗的唯一入口(沒有 tray、沒有工作列
+  // 圖示,原本唯一的重建路徑是「再啟動一次 App」)。
+  { key: idKey('overlay', 'overlay-show-main'), step: 'overlay', note: '主視窗被藏起來之後,按鈕把它帶回前景(工具列與空狀態兩處共用同一個 id)' },
   /**
    * 貼鏡形態專屬的四顆。
    *

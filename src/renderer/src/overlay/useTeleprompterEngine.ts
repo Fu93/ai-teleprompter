@@ -55,6 +55,14 @@ export interface UseTeleprompterEngineResult {
   progress: number
   /** scroll 模式的捲動容器是否已量測(藥丸/貼鏡形態為 false) */
   measured: boolean
+  /**
+   * 這份稿是否需要自動捲動。false = 一頁就放得下。
+   *
+   * 為什麼要往上帶:引擎對「放得下」不宣告完成(否則使用者按下去會看到一秒內
+   * 「已播畢」,docs/UX_FINDINGS.md 第四輪 P0-1),但那會留下另一個問題 ——
+   * 狀態停在「播放中」而畫面完全不動。**不說清楚的話,那和壞掉難以區分。**
+   */
+  scrollable: boolean
   controls: TeleprompterControls
 }
 
@@ -171,7 +179,18 @@ export function useTeleprompterEngine(params: UseTeleprompterEngineParams): UseT
       if (!engine || !node || !node.isConnected) return
       const host = node.closest('[data-overlay-surface]')?.getAttribute('data-overlay-surface')
       if (host !== surface) return
-      engine.setOptions({ totalH: node.scrollHeight, wrapH: node.clientHeight })
+      // lineHeightPx 取自捲動容器內那塊正文的 computed line-height,而不是設定值换算。
+      // 為什麼要真量:字級與行高都是使用者可調的(預設 30px × 1.5 = 45px),
+      // 把字級調小後門檻就該跟著變小 —— 用寫死的常數會在調小時把短稿誤判成長稿。
+      // computed 的 line-height 在 px 下會解析成實際數值;若是 'normal' 等關鍵字
+      // parseFloat 會得到 NaN,那時不傳,引擎用保守預設值。
+      const textEl = node.firstElementChild as HTMLElement | null
+      const lineH = textEl ? parseFloat(getComputedStyle(textEl).lineHeight) : NaN
+      engine.setOptions({
+        totalH: node.scrollHeight,
+        wrapH: node.clientHeight,
+        ...(Number.isFinite(lineH) && lineH > 0 ? { lineHeightPx: lineH } : {})
+      })
       // 量測完成要讓畫面知道:進度線能不能顯示取決於「捲動範圍是否已知」,
       // 而這是一個 effect 內的 mutation,不 bump 的話 UI 永遠停在未量測那一帧。
       bump()
@@ -257,6 +276,7 @@ export function useTeleprompterEngine(params: UseTeleprompterEngineParams): UseT
     remainingMs: engine.getRemainingMs(),
     progress: engine.progress,
     measured: engine.measured,
+    scrollable: engine.scrollable,
     controls
   }
 }

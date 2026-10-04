@@ -26,7 +26,8 @@ import {
   setOverlayVisible,
   recenterOverlay,
   cancelCloseRequest,
-  forceCloseMainWindow
+  forceCloseMainWindow,
+  createMainWindow
 } from './windows'
 import { logFromRenderer, logDir } from './logging'
 import {
@@ -841,6 +842,35 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.AppRelaunch, () => {
     app.relaunch()
     app.quit()
+  })
+
+  // ---- 浮層「主視窗」:把主視窗叫回來(見 docs/UX_FINDINGS.md 第三輪 P0-2)----
+  //
+  // 主視窗關閉之後沒有 tray、沒有工作列圖示,App 可能只剩浮層活著;而浮層的
+  // 空狀態指示「到主視窗『提詞講稿』頁按『開始提詞』」—— 那扇窗唯一的重建
+  // 路徑本來是「再啟動一次 App」(second-instance 走的就是 createMainWindow)。
+  // 這裡把那條路做成一顆按鈕:視窗還活著就 show/focus,不在就重建。
+  //
+  // 建回來的視窗自然會讓 quitWhenOverlayHidden 的寬限計時器看到
+  // state.mainWindow 而放行 —— 不需要在這裡手動取消它。
+  ipcMain.handle(IPC.AppShowMain, () => {
+    const win = state.mainWindow
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+      return
+    }
+    // 重建。
+    //
+    // **不要**在這裡 show():createMainWindow 是 show:false,而且它自己的
+    // 'ready-to-show' 才會 show(見 windows.ts)。現在立刻 show 會讓使用者先看到
+    // 一個還沒有任何內容的暗色空框,再換成主畫面 —— 那正是「叫回主視窗」這顆鈕
+    // 不該給的體驗(第二次-instance 走的是同一條重建路,它也只 focus)。
+    const fresh = createMainWindow()
+    fresh.once('ready-to-show', () => {
+      if (!fresh.isDestroyed()) fresh.focus()
+    })
   })
 
   // ---- 系統音訊 loopback 授權（Windows）----

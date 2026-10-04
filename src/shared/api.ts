@@ -217,6 +217,12 @@ export interface Api {
   windowCaptureIndicator(state: { active: boolean; label?: string }): Promise<void>
   /** 設定頁「重新啟動以套用更新」:relaunch 後走正常 quit(electron-updater 在 quit 時安裝) */
   relaunchApp(): Promise<void>
+  /**
+   * 把主視窗叫回來(顯示 + 聚焦;主視窗不在時重建)。
+   * 見 IPC.AppShowMain —— 主視窗關閉後 App 可能只剩浮層,沒有這條路
+   * 使用者就再也回不到主視窗(只能重新啟動 App)。
+   */
+  showMain(): Promise<void>
   /** 更新已下載完成(等使用者重啟安裝);見 APP_UPDATE_DOWNLOADED */
   onUpdateDownloaded(cb: (info: UpdateDownloadedInfo) => void): Unsubscribe
   /** 分享前模擬測試:回傳主螢幕擷取縮圖(浮層應為隱形) */

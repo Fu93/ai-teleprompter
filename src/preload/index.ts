@@ -82,6 +82,7 @@ const api: Api = {
   powerSaveStop: () => ipcRenderer.invoke(IPC.PowerSaveStop),
   windowCaptureIndicator: (s) => ipcRenderer.invoke(IPC.WindowCaptureIndicator, s),
   relaunchApp: () => ipcRenderer.invoke(IPC.AppRelaunch),
+  showMain: () => ipcRenderer.invoke(IPC.AppShowMain),
   onUpdateDownloaded: (cb: (info: UpdateDownloadedInfo) => void) => on(APP_UPDATE_DOWNLOADED, cb),
   shareSimulation: () => ipcRenderer.invoke(IPC.ShareSimulation),
   snapOverlayCorner: (corner: 'tl' | 'tc' | 'tr') => ipcRenderer.invoke(IPC.OverlaySnapCorner, corner),
