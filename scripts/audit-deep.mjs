@@ -37,7 +37,7 @@
 import { _electron as electron } from 'playwright-core'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
-import { domAudit } from '../src/renderer/src/lib/domAudit.ts'
+import { domAudit, settleAnimations } from '../src/renderer/src/lib/domAudit.ts'
 // 形態尺寸契約與程式共用同一份常數。腳本自己再寫一次 280/460/420 的那一刻,
 // 稽核就會開始驗一個程式已經不遵守的合約(而且報告看起來完全正常)。
 import {
@@ -246,6 +246,9 @@ const report = createReport('audit-deep')
 /** 在一個視窗上跑完整檢查集 + 截圖,回傳 { count, hash } */
 async function auditShot(win, label, file) {
   const n = report.length
+  // 先讓有限次的動畫跑完再量。動畫中途的取樣會讓 animation-unsettled 誤報 ——
+  // 規則語意不變,只是把取樣時機移到動畫結束之後(見 domAudit.ts 的 settleAnimations)。
+  await win.evaluate(settleAnimations).catch(() => {})
   const dom = await win.evaluate(domAudit).catch((e) => [{ kind: 'audit-failed', text: e.message }])
   for (const d of dom) report.add(d.kind, label, d.text)
   const path = join(OUT, `${file}.png`)
@@ -265,6 +268,7 @@ async function force(win, label, name, arg) {
 }
 
 async function main() {
+  guardSerializable(settleAnimations, 'settleAnimations')
   const srcLen = guardSerializable(domAudit, 'domAudit')
   console.log(`domAudit 序列化檢查通過(${srcLen} 字元)`)
 

@@ -24,6 +24,8 @@ import type { ElectronApplication, Page } from '@playwright/test'
 import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { auditForce } from './helpers/auditBridge'
+import type { BackupCounts } from './helpers/auditBridge'
 
 async function launch(): Promise<{ app: ElectronApplication; main: Page }> {
   const env = { ...process.env, AI_TP_E2E: '1', AI_TP_AUDIT: '1' }
@@ -74,16 +76,28 @@ const listScriptTitles = (main: Page): Promise<string[]> =>
     `(db) => new Promise((res, rej) => { const tx = db.transaction('scripts', 'readonly'); const r = tx.objectStore('scripts').getAll(); r.onsuccess = () => res(r.result.map(s => s.title)); r.onerror = () => rej(r.error) })`
   )
 
-/** 產生備份內容。走真實的 renderer 序列化路徑(BackupSection 用的是同一組函式)。 */
-const buildBackupText = (main: Page, poisonKey: boolean): Promise<{ text: string; name: string; counts: any }> =>
-  main.evaluate(
-    async (poison) => {
-      const r = (window as any).__auditForce?.('backup.probe', poison)
-      if (!r) return { text: '', name: '', counts: null, error: 'audit bridge missing' }
-      return (await r).result ?? { error: 'no result' }
-    },
-    poisonKey
-  )
+/** backup.probe 回報的內容。 */
+interface BackupProbeResult {
+  text: string
+  name: string
+  counts: BackupCounts
+}
+
+/**
+ * 產生備份內容。走真實的 renderer 序列化路徑(BackupSection 用的是同一組函式)。
+ *
+ * 這裡曾經是 `counts: any` 加三處 `as any`:型別缺口的來源是稽核橋接沒有宣告,
+ * 補上 helpers/auditBridge.ts 之後,整條鏈(探針 → 橋接 → spec)都拿得到具體形狀,
+ * 而且「橋接沒接上」會變成明確的 error 而不是 undefined。
+ */
+const buildBackupText = async (
+  main: Page,
+  poisonKey: boolean
+): Promise<{ text: string; name: string; counts: BackupCounts | null; error?: string }> => {
+  const r = await auditForce<BackupProbeResult>(main, 'backup.probe', poisonKey)
+  if (!r.result) return { text: '', name: '', counts: null, error: r.error ?? 'no result' }
+  return { ...r.result, error: r.error }
+}
 
 test.describe('資料備份', () => {
   const workDir = join(tmpdir(), `ai-tp-backup-e2e-${Date.now()}`)
@@ -96,9 +110,9 @@ test.describe('資料備份', () => {
       await navTo(main, '設定')
       await seedScripts(main, ['備份測試講稿 A', '備份測試講稿 B', '備份測試講稿 C'])
 
-      const { text, name, counts, error } = (await buildBackupText(main, true)) as any
+      const { text, name, counts, error } = await buildBackupText(main, true)
       expect(error ?? null, `備份探針應該可用: ${String(error)}`).toBeNull()
-      expect(counts.scripts).toBe(3)
+      expect(counts?.scripts).toBe(3)
       expect(name).toMatch(/^ai-teleprompter-backup-\d{8}-\d{4}\.json$/)
 
       const outPath = join(workDir, name)
@@ -134,7 +148,7 @@ test.describe('資料備份', () => {
     try {
       await navTo(main, '設定')
       await seedScripts(main, ['原本的講稿 1', '原本的講稿 2'])
-      const { text } = (await buildBackupText(main, false)) as any
+      const { text } = await buildBackupText(main, false)
       const outPath = join(workDir, 'roundtrip.json')
       writeFileSync(outPath, text, 'utf-8')
 
@@ -146,14 +160,14 @@ test.describe('資料備份', () => {
       // 走 main 的讀檔 IPC 的下半段:原生開檔對話框無法自動操作,
       // 所以直接把磁碟上的字串交給 renderer。真正的風險點是
       // 「從磁碟來的字串能不能變回資料」,那一步仍然是完整的。
-      const restored = (await main.evaluate(async (t) => {
-        const r = (window as any).__auditForce?.('backup.restore', t)
-        if (!r) return { error: 'audit bridge missing' }
-        return await r
-      }, readFileSync(outPath, 'utf-8'))) as any
+      const restored = await auditForce<{ counts: BackupCounts }>(
+        main,
+        'backup.restore',
+        readFileSync(outPath, 'utf-8')
+      )
       expect(restored.error ?? null).toBeNull()
       expect(restored.ok).toBe(true)
-      expect(restored.result.counts.scripts).toBe(2)
+      expect(restored.result?.counts.scripts).toBe(2)
 
       const titles = await listScriptTitles(main)
       expect(titles.sort(), '不在備份裡的資料必須真的消失(取代不是合併)').toEqual(['原本的講稿 1', '原本的講稿 2'])
@@ -170,12 +184,9 @@ test.describe('資料備份', () => {
       await seedScripts(main, ['不能被壞掉的備份吃掉'])
       const before = await listScriptTitles(main)
 
-      const out = (await main.evaluate(async () => {
-        const r = (window as any).__auditForce?.('backup.restore', '{"hello":"world"}')
-        return r ? await r : { error: 'audit bridge missing' }
-      })) as any
+      const out = await auditForce(main, 'backup.restore', '{"hello":"world"}')
       expect(out.ok, '格式不符必須回報失敗,不能假裝成功').toBe(false)
-      expect(out.error).toContain('AI 提詞機')
+      expect(out.error ?? '').toContain('AI 提詞機')
 
       // 最重要的一句:失敗之後資料一筆都不能少
       expect((await listScriptTitles(main)).sort()).toEqual(before.sort())

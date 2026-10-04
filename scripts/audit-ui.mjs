@@ -26,7 +26,7 @@
 import { _electron as electron } from 'playwright-core'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
-import { domAudit } from '../src/renderer/src/lib/domAudit.ts'
+import { domAudit, settleAnimations } from '../src/renderer/src/lib/domAudit.ts'
 import { createReport, fileHash, guardSerializable } from './lib/audit-report.mjs'
 
 // 稽核環境必須乾淨:見檔頭說明。
@@ -57,6 +57,7 @@ const report = createReport('audit-ui')
 async function main() {
   // 序列化契約:domAudit 會被 page.evaluate 送進頁面,函式內不能有型別標註
   // 或模組層級識別字。讓它在啟動第一行就爆,而不是某一頁莫名 audit-failed。
+  guardSerializable(settleAnimations, 'settleAnimations')
   const srcLen = guardSerializable(domAudit, 'domAudit')
   console.log(`domAudit 序列化檢查通過(${srcLen} 字元)`)
 
@@ -160,6 +161,8 @@ async function main() {
     // DOM 層的 UI/UX 檢查:比截圖可靠且能量化。
     // 規則實作是 src/renderer/src/lib/domAudit.ts,與 audit-deep.mjs 及
     // App 內建除錯面板的「稽核」分頁共用同一份。
+    // 先讓有限次動畫跑完再量(理由見 domAudit.ts 的 settleAnimations)。
+    await main.evaluate(settleAnimations).catch(() => {})
     const dom = await main.evaluate(domAudit)
     for (const d of dom) report.add(d.kind, current, d.text)
 

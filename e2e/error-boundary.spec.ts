@@ -20,6 +20,7 @@
  *
  * 執行需先 `npm run build`。
  */
+import './helpers/auditBridge' // 宣告 window.__auditForce 的型別(帶 any 的稽核橋接從此不需要)
 import { test, expect, _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
 import { readFileSync, existsSync } from 'fs'
@@ -69,7 +70,7 @@ test.describe('崩潰復原畫面', () => {
       // 先記下 log 長度,後面只比對「新增的」那一段 —— 舊內容不該算數
       const before = (await readMainLog(app)).length
 
-      const forced = await main.evaluate(() => (window as any).__auditForce?.('crash.render', true))
+      const forced = await main.evaluate(() => window.__auditForce?.('crash.render', true))
       expect(forced?.ok, `強制橋應該可用: ${JSON.stringify(forced)}`).toBe(true)
 
       const screen = main.locator('[data-testid="crash-screen"]')
@@ -137,7 +138,7 @@ test.describe('崩潰復原畫面', () => {
       const saveBtn = main.locator('button').filter({ hasText: /儲存/ }).first()
       await expect(saveBtn).toHaveText(/^\s*儲存\s*$/, { timeout: 5000 })
 
-      await main.evaluate(() => (window as any).__auditForce?.('crash.render', true))
+      await main.evaluate(() => window.__auditForce?.('crash.render', true))
       const screen = main.locator('[data-testid="crash-screen"]')
       await expect(screen).toBeVisible({ timeout: 5000 })
 

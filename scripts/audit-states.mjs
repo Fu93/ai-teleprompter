@@ -24,7 +24,7 @@
 import { _electron as electron } from 'playwright-core'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
-import { domAudit } from '../src/renderer/src/lib/domAudit.ts'
+import { domAudit, settleAnimations } from '../src/renderer/src/lib/domAudit.ts'
 import { createReport, guardSerializable } from './lib/audit-report.mjs'
 
 process.env.AI_TP_E2E = '1'
@@ -282,6 +282,8 @@ async function inspectDialog(main, label, expect) {
 
 /** 量一次畫面:domAudit + 溢出 + 截圖 */
 async function shoot(win, label, file) {
+  // 與 audit-deep 同一個理由:先讓動畫收斂再取樣,否則量到的是過渡態。
+  await win.evaluate(settleAnimations).catch(() => {})
   const dom = await win.evaluate(domAudit).catch((e) => [{ kind: 'audit-failed', text: e.message }])
   for (const d of dom) report.add(d.kind, label, d.text)
   const ov = await win
@@ -988,6 +990,7 @@ async function phaseHotkeys(main) {
 
 // ───────────────────────── main ─────────────────────────
 async function main_() {
+  guardSerializable(settleAnimations, 'settleAnimations')
   const srcLen = guardSerializable(domAudit, 'domAudit')
   console.log(`domAudit 序列化檢查通過(${srcLen} 字元)`)
 

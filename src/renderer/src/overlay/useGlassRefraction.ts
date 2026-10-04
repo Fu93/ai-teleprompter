@@ -68,6 +68,16 @@ export function useGlassRefraction(
     setWinSize({ w, h })
   }, [])
 
+  /**
+   * 視窗寬度是 0 的情況單獨拉出來當依賴。
+   *
+   *   原本寫成 [refractOk, glassOn, rebuild, winSize.w === 0],exhaustive-deps
+   *   會擋(依賴陣列裡有複合運算式,靜態檢查不到)。但那個寫法有一個更實質的
+   *   問題:winSize 是物件,每 render 都是新的,w 的變化會被物件參照掩蓋。
+   *   提成布林值之後,依賴表達的是真正在意的條件 —— 而且真的比較得出變化。
+   */
+  const winWidthMissing = winSize.w === 0
+
   useEffect(() => {
     if (!refractOk || !glassOn) return
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -82,7 +92,7 @@ export function useGlassRefraction(
       window.removeEventListener('resize', onResize)
       if (timer) clearTimeout(timer)
     }
-  }, [refractOk, glassOn, rebuild, winSize.w === 0])
+  }, [refractOk, glassOn, rebuild, winWidthMissing])
 
   // morph 剛收斂:立刻以定案後的尺寸/半徑重建一次(不等 resize debounce)。
   const wasMorphingRef = useRef(false)

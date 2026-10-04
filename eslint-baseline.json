@@ -5,6 +5,6 @@
     "少於 baseline 會通過,但 lint-baseline 會提醒你把上限調低;上限應該永遠等於現況。",
     "新增一筆 warning = 紅燈。要嘛修掉,要嘛調高上限並在 CHANGELOG 寫下理由。"
   ],
-  "@typescript-eslint/no-explicit-any": 13,
-  "react-hooks/exhaustive-deps": 8
+  "@typescript-eslint/no-explicit-any": 0,
+  "react-hooks/exhaustive-deps": 0
 }

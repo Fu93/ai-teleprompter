@@ -27,12 +27,10 @@ async function launch(opts: Parameters<typeof e2eEnv>[0]): Promise<{ app: Electr
   return launchMain(e2eEnv(opts))
 }
 
-/** audit 橋在正式安裝包裡不存在,所以型別上是可選的。 */
-declare global {
-  interface Window {
-    __auditForce?: (name: string, arg?: unknown) => Promise<{ ok: boolean; result?: unknown }>
-  }
-}
+// audit 橋的型別(包含「正式安裝包裡不存在,所以可選」這件事)集中在
+// helpers/auditBridge.ts —— 這裡曾經有第二份宣告,兩份形狀不一樣,
+// tsc 會直接擋下(Subsequent property declarations must have the same type)。
+import './helpers/auditBridge'
 
 /** 走 audit 橋的頁面導航,不用文字 regex 找側欄(那會靜默 no-op)。 */
 const nav = (main: Page, id: string): Promise<unknown> =>

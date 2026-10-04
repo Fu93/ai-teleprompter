@@ -104,6 +104,49 @@ export function isSmallTarget(el: Element): boolean {
 }
 
 /**
+ * settleAnimations — 量測之前先等「有限次、正在跑」的動畫跑完。
+ *
+ * 這是**量測端**的修正,不是產品的。背景:domAudit 的第 8 條規則
+ * animation-unsettled 會回報「取樣當下還在跑的有限次動畫」,它存在的理由是
+ * 白邊診斷的教訓 —— 在過渡態量測,量到的不是使用者看到的樣子。但取樣點常常
+ * 正好壓在某個 transition 的尾巴上:探針 hover 一顆按鈕 → transition-colors
+ * 開始 → 立刻取樣 → 報七筆。實測 2026-10-04:同一份 build、同一行程式碼,
+ * audit:deep 三跑一紅,而產品一行都沒改。
+ *
+ * 正確的修法不是放寬規則(放寬 =「在動畫中途量測」這個提醒會跟著消失),
+ * 而是**讓量測發生在動畫結束之後**:該報的「動畫永遠收斂不了」照報,
+ * 「只是還在跑」不再誤報。規則語意沒變,變的是取樣時機。
+ *
+ * 邊界(每一條都有理由,不是防禦性程式碼):
+ *   - iterations === Infinity(呼吸光暈、spinner)本來就被規則排除,這裡也不等。
+ *   - 收斂不了的動畫不能讓整份稽核永久卡住:每個動畫最多等 waitCapMs。
+ *   - settle 本身可能又觸發新的 transition,所以最多跑 settlePasses 輪。
+ *     常見情況第一輪就是 0 個在跑,立刻返回 —— 不會讓稽核變慢。
+ *
+ * 序列化契約與 domAudit() 相同:函式內不得引用模組層級識別字。
+ */
+export async function settleAnimations(waitCapMs = 600, settlePasses = 3): Promise<void> {
+  for (let pass = 0; pass < settlePasses; pass++) {
+    const running =
+      typeof document !== "undefined" && document.getAnimations ? document.getAnimations() : []
+    const pending = running.filter((a) => {
+      const timing = a.effect && a.effect.getComputedTiming ? a.effect.getComputedTiming() : null
+      const it = timing ? timing.iterations : 1
+      return a.playState === "running" && it !== Infinity
+    })
+    if (pending.length === 0) return
+    await Promise.all(
+      pending.map((a) =>
+        Promise.race([
+          a.finished.catch(() => undefined),
+          new Promise((r) => setTimeout(r, waitCapMs))
+        ])
+      )
+    )
+  }
+}
+
+/**
  * 頁面內 DOM 稽核。
  *
  * 這支函式的原始碼會被序列化送進瀏覽器,因此必須完全自足:

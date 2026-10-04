@@ -147,25 +147,6 @@ export default function OverlayApp(): JSX.Element {
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
-  // ---- 初始化 ----
-  useEffect(() => {
-    document.body.style.background = 'transparent'
-    document.documentElement.style.background = 'transparent'
-    void window.api.getSettings().then(setSettings)
-    void window.api.overlayGetLastPayload().then(setPayload)
-    const offScript = window.api.onOverlayLoadScript((p) => {
-      setPayload(p)
-      follow.resetProgress()
-      // 主視窗「開始提詞」= 打開就開始講;實際 play 在 content 變化後的 effect
-      autoPlayRef.current = true
-    })
-    const offSettings = window.api.onSettingsChanged(setSettings)
-    return () => {
-      offScript()
-      offSettings()
-    }
-  }, [])
-
   const content = payload.content ?? ''
 
   // ---- 四模式定時引擎 ----
@@ -265,9 +246,43 @@ export default function OverlayApp(): JSX.Element {
     onMeSpeech: notifyTurnYield
   })
   const { followStatus, followMsg, lastHeard, activeChunk, followProgress, followChunks, toggleFollow, adjustFollowOffset } = follow
+  /**
+   * 這三個是 useFollowMode 內的 useCallback,身分**永遠不變**。
+   *
+   * 為什麼要從 follow 物件上拆出來(而不是在依賴裡寫 follow.xxx):follow 是每次
+   * render 都新建的物件,寫 follow 會讓 effect 每 render 重跑(訂閱反覆退訂又掛上)。
+   * 拆開之後依賴是恆等的 useCallback,依賴陣列可以照實列出去,effect 仍然只會在
+   * 該跑的時候跑 —— exhaustive-deps 要的不是「少寫」,是「寫真的」
+   */
+  const { stopFollow, rebuildIndex, resetProgress } = follow
   const followStatusRef = follow.followStatusRef
   const followLevelRef = follow.followLevelRef
   const chunkElsRef = follow.chunkElsRef
+
+  // 這個 effect 排在 useFollowMode 之後是刻意的:它要呼叫 resetProgress,而那是
+  // useFollowMode 內的 useCallback —— 寫在前面會變成「宣告前使用」。順序調整是
+  // 安全的:useFollowMode 在掛載時的兩個 effect 分別是除錯日誌與視窗關閉清理,
+  // 都不碰這裡建立的 IPC 訂閱;同一個 commit 之內也不可能從中漏掉事件
+  // (getSettings 的回應是 microtask,更晚)。
+  // ---- 初始化 ----
+  useEffect(() => {
+    document.body.style.background = 'transparent'
+    document.documentElement.style.background = 'transparent'
+    void window.api.getSettings().then(setSettings)
+    void window.api.overlayGetLastPayload().then(setPayload)
+    const offScript = window.api.onOverlayLoadScript((p) => {
+      setPayload(p)
+      resetProgress()
+      // 主視窗「開始提詞」= 打開就開始講;實際 play 在 content 變化後的 effect
+      autoPlayRef.current = true
+    })
+    const offSettings = window.api.onSettingsChanged(setSettings)
+    return () => {
+      offScript()
+      offSettings()
+    }
+    // resetProgress 恆等,所以這個 effect 仍然只跑一次(訂閱一次,不多不少)。
+  }, [resetProgress])
 
   /**
    * 浮層被隱藏 → 自動停止語音跟讀。
@@ -294,13 +309,13 @@ export default function OverlayApp(): JSX.Element {
       }
       const st = followStatusRef.current
       if (st !== 'listening' && st !== 'loading') return
-      follow.stopFollow()
+      stopFollow()
       pendingFollowNoticeRef.current = '浮層隱藏時已自動停止語音跟讀（麥克風已關閉）'
     })
     return off
     // stopFollow 是 useCallback([])、followStatusRef 是 ref:兩者都不隨 render 變動,
     // 所以這裡只會訂閱一次。傳整個 follow 物件會每 render 重新訂閱。
-  }, [follow.stopFollow, followStatusRef])
+  }, [stopFollow, followStatusRef])
 
   // 提示顯示 6 秒後自行消失(它只是告知,不需要使用者處理)
   useEffect(() => {
@@ -312,7 +327,7 @@ export default function OverlayApp(): JSX.Element {
   // 講稿內容變化 → 重建跟讀索引,並把捲動位置歸零
   // (引擎內部 scrollPos 會重置,但 scroll 模式每幀直寫 DOM,暫停時不會再推,殘影會留在畫面上)
   useEffect(() => {
-    follow.rebuildIndex(content)
+    rebuildIndex(content)
     if (scrollRef.current) scrollRef.current.scrollTop = 0
     // 自動播放:引擎此刻已隨 content 重建,play 才會落在正確的實例上。
     // 語音跟讀進行中則不播:兩套捲動來源(定時引擎 vs STT 對位)會互相拉扯。
@@ -320,7 +335,8 @@ export default function OverlayApp(): JSX.Element {
       autoPlayRef.current = false
       if (followStatusRef.current === 'idle' && content) controlsRef.current?.play()
     }
-  }, [content])
+    // 三個依賴都恆等 —— 這個 effect 的觸發條件仍然只有「稿子換了」。
+  }, [content, rebuildIndex, followStatusRef])
 
   /**
    * 教練訊號種類的人話標籤。
@@ -376,7 +392,7 @@ export default function OverlayApp(): JSX.Element {
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [followStatus, isCompact])
+  }, [followStatus, isCompact, followLevelRef])
 
   // ---- 進度條寬度:rAF 直寫 ----
   //
@@ -443,10 +459,10 @@ export default function OverlayApp(): JSX.Element {
 
   const setMode = useCallback(
     (mode: OverlayDisplayMode): void => {
-      if (mode !== 'scroll' && followStatus !== 'idle') follow.stopFollow()
+      if (mode !== 'scroll' && followStatus !== 'idle') stopFollow()
       void patchOverlay({ displayMode: mode })
     },
-    [patchOverlay, followStatus, follow.stopFollow]
+    [patchOverlay, followStatus, stopFollow]
   )
 
   const setMirror = useCallback((): void => {

@@ -7,6 +7,42 @@
 
 ## [Unreleased]
 
+### 清技術債與深度 debug:把量測端的抖動修掉,並把 lint 上限降到 0
+
+這一輪沒有新的使用者可見行為改動,處理的是**量測端會說謊**與**長期累積的靜態債務**。
+
+- **`audit:deep` 的 `animation-unsettled` 會隨機誤報**(實測同一份 build 三跑一紅,
+  7 筆「動畫仍在跑」)。原因不是產品,是取樣時機:探針 hover 一顆按鈕後立刻量,
+  量到的是 `transition-colors` 的過渡態。新增
+  [`settleAnimations()`](src/renderer/src/lib/domAudit.ts) —— 取樣前等有限次動畫跑完,
+  常駐動畫(spinner、呼吸光暈)不等,收斂不了的最多等 600ms 就不等了。
+  **規則本身一個字都沒放寬**:「該收斂卻沒收斂」照報,只有「還在跑」不再誤報。
+  三支稽核腳本(audit:deep / states / ui)都在取樣前呼叫它,並且各自加了一道
+  `guardSerializable` 與一條接線測試 —— 只加函式卻忘記在某支腳本裡呼叫,
+  測試會紅。
+- **13 個 `as any` 全部消失**。它們不是 13 個獨立的問題,而是**同一個**缺口:
+  稽核橋接 `window.__auditForce` 從來沒有型別。新增
+  [`e2e/helpers/auditBridge.ts`](e2e/helpers/auditBridge.ts) 宣告它的形狀,三支
+  spec 裡的 `as any` 一起消失;`mic-denied.spec.ts` 裡那份形狀不同的第二次宣告也刪掉
+  (兩份不一致的宣告本來就會被 tsc 擋下)。順帶把備份探針的 `counts: any` 換成
+  具型的 `BackupCounts`。
+- **8 個 `react-hooks/exhaustive-deps` 全部消失,baseline 降到 0/0**。
+  - 5 個在浮層:把 `stopFollow` / `rebuildIndex` / `resetProgress` 從每次 render
+    都新建的 `follow` 物件上拆出來(它們是 useCallback,身分恆等),依賴就可以照實
+    寫;`resetProgress` 要宣告在前,所以初始化 effect 移到 `useFollowMode` 之後
+    (順序安全性寫在該處註解)。
+  - 音量條與金鑰 effect 改用**具名的 ref 與具名 fallback**(`winWidthMissing`、
+    `aiKeyFallback`/`sttKeyFallback` + `settingsLoaded`),不再在 effect 內文讀整個
+    物件、卻只列兩個欄位當依賴。
+  - 練習頁那則**照規則建議修反而是錯的**(把 `ref.current` 複製成區域變數會讓清理
+    作廢不到當下正在跑的那一代),所以保留 `eslint-disable` 並寫下理由 ——
+    這是本輪唯一新增的 suppression,而且它擋掉的是一條錯的建議。
+- **`npm run lint` 從 21 個 warning 降到 0**,`eslint-baseline.json` 的上限同步
+  降到 0/0(上限本來就該永遠等於現況)。新增的 suppression 只有一條,而且上面說明了
+  為什麼規則的建議在那裡是錯的。
+- 驗證:單元測試 738 個全過、`typecheck` exit 0、`npm run release` 13/13 全綠
+  (含 e2e 57 passed)。三個量測端修復都做過負向驗證(拿掉修法 → 對的斷言轉紅)。
+
 ### 第四輪:親自把 App 用一遍
 
 前三輪的起點都是「稽核說綠,可是…」,這一輪換成**把 App 開起來當人走**:

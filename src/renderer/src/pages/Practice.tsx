@@ -332,6 +332,12 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
 
   useEffect(() => {
     return () => {
+      // 這一則的建議修法在這裡會是錯的:規則要我們把 ref.current 複製成區域變數,
+      // 但清理必須作廢「**當下**正在跑的那一代」。複製會把它釘在掛載時那一代,
+      // 離頁時若有新一代已經開始跑,複製出來的那個就作廢不到它 —— 正好是這段
+      // 清理存在的原因。runGenerationRef.current 的 GenerationGate 建立後不再換,
+      // 所以這裡讀到的永遠是同一顆。
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       runGenerationRef.current.invalidate()
       startAttemptRef.current += 1
       answerIdRef.current += 1
@@ -342,7 +348,12 @@ export default function Practice({ onGuardChange }: { onGuardChange?: (msg: stri
       whisperRef.current?.dispose()
       whisperRef.current = null
     }
-  }, [])
+    // runGenerationRef 是一個恆等的 ref(裡頭的 GenerationGate 建立後就不再換),
+    // 把它列進依賴是為了說清楚「這個清理讀的是 ref,不是某一次 render 的快照」:
+    // 清理要在**當下**把正在跑的那一代作廢,所以不能在建立時把 .current 複製成
+    // 區域變數(exhaustive-deps 那則建議在這裡會是錯的修法)。列 ref 本身不影響
+    // 何時重跑 —— 它的身分永不變動,這個 effect 仍然只掛載一次。
+  }, [runGenerationRef])
 
   // 錄音中的環境指示(見 lib/captureIndicator.ts):
   // 作答時把主視窗最小化,「麥克風還開著」原本完全不可見。

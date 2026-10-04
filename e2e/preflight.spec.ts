@@ -19,6 +19,7 @@
  */
 import { test, expect, _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
+import './helpers/auditBridge' // 宣告 window.__auditForce 的型別(帶 any 的稽核橋接從此不需要)
 
 async function launch(): Promise<{ app: ElectronApplication; main: Page }> {
   const env = { ...process.env, AI_TP_E2E: '1', AI_TP_AUDIT: '1' }
@@ -37,11 +38,11 @@ async function launch(): Promise<{ app: ElectronApplication; main: Page }> {
 
 /** 走 audit 橋的頁面導航,不用文字 regex 找側欄(那會靜默 no-op) */
 const nav = (main: Page, id: string): Promise<unknown> =>
-  main.evaluate((x) => (window as any).__auditForce?.('app.navigate', x), id)
+  main.evaluate((x) => window.__auditForce?.('app.navigate', x), id)
 
 /** 攔截 ollamaListModels 的結果。null = 讓它真的去查(測試環境必然失敗)。 */
 const setModels = (main: Page, models: string[] | null): Promise<unknown> =>
-  main.evaluate((m) => (window as any).__auditForce?.('preflight.models', m), models)
+  main.evaluate((m) => window.__auditForce?.('preflight.models', m), models)
 
 test.describe('第一次使用的準備度', () => {
   test('沒有模型:卡片出現,而且 ollama pull 指令可複製', async () => {
@@ -87,7 +88,7 @@ test.describe('第一次使用的準備度', () => {
     const { app, main } = await launch()
     try {
       // installed=false 是「沒裝 / 沒連上」,和「裝了沒模型」是兩件事
-      await main.evaluate(() => (window as any).__auditForce?.('preflight.ollamaDown', true))
+      await main.evaluate(() => window.__auditForce?.('preflight.ollamaDown', true))
       await nav(main, 'settings')
 
       const item = main.locator('[data-preflight-item="ai-ollama-down"]')

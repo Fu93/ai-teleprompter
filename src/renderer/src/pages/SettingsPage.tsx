@@ -315,8 +315,20 @@ export default function SettingsPage({
     void window.api.sceneList().then(setScenes).catch(() => setScenes([]))
   }, [])
 
+  /**
+   * 安全金鑰讀不到時的 fallback 值,直接從 settings 取。
+   *
+   *   提成具名的兩個值(而不是在 effect 裡寫 settings.xxx):依賴陣列本來就列的是
+   *   這兩個欄位,讓 effect 內文也用同一組名稱,「什麼變了才重讀金鑰」才是
+   *   一句看得出來、也驗得出來的話 —— 而不是「依賴兩個欄位、內文卻讀整個物件」。
+   */
+  const aiKeyFallback = settings?.ai.openaiCompatible.apiKey
+  const sttKeyFallback = settings?.stt.cloud.apiKey
+  /** 設定還沒回來之前不讀金鑰(與原本的 if (!settings) return 同一個條件)。 */
+  const settingsLoaded = settings !== undefined
+
   useEffect(() => {
-    if (!settings) return
+    if (!settingsLoaded) return
     let mounted = true
     void window.api.keysGet().then((keys) => {
       if (!mounted) return
@@ -328,14 +340,14 @@ export default function SettingsPage({
           ? pending.apiKey
           : typeof stored.apiKey === 'string'
             ? stored.apiKey
-            : settings.ai.openaiCompatible.apiKey
+            : aiKeyFallback ?? ''
       )
       setSttApiKey(
         typeof pending.sttApiKey === 'string'
           ? pending.sttApiKey
           : typeof stored.sttApiKey === 'string'
             ? stored.sttApiKey
-            : settings.stt.cloud.apiKey
+            : sttKeyFallback ?? ''
       )
       setSecureKeysLoaded(true)
     }).catch((err) => {
@@ -346,7 +358,7 @@ export default function SettingsPage({
     return () => {
       mounted = false
     }
-  }, [settings?.ai.openaiCompatible.apiKey, settings?.stt.cloud.apiKey])
+  }, [settingsLoaded, aiKeyFallback, sttKeyFallback])
   const [testError, setTestError] = useState<string | null>(null)
 
   /**
