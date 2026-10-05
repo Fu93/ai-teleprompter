@@ -1,7 +1,6 @@
 import { app, BrowserWindow, dialog, screen } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
-import os from 'os'
 import { IPC } from '@shared/types'
 import { EXPANDED_MIN, overlayShapeDesignSize, overlayShapeMin, overlayShapeOf } from '@shared/overlayShapes'
 import { saveSettings } from './settings'
@@ -19,17 +18,6 @@ const PROD_INDEX_URL = pathToFileURL(join(__dirname, '../renderer/index.html')).
 
 function isProdIndexUrl(url: string): boolean {
   return url === PROD_INDEX_URL || url.startsWith(`${PROD_INDEX_URL}#`) || url.startsWith(`${PROD_INDEX_URL}?`)
-}
-
-/**
- * Windows 11 22H2(build ≥22621)才支援 setBackgroundMaterial('acrylic')。
- * 原本這段解析在 applyOverlayWindowSettings 與 syncOverlayMaterial 各寫一份 ——
- * 兩份要改只能一起改,抽成一處。
- */
-function isWin11_22H2(): boolean {
-  if (process.platform !== 'win32') return false
-  const [major = 0, , build = 0] = os.release().split('.').map(Number)
-  return major >= 10 && build >= 22621
 }
 
 /** 視窗安全:禁新視窗;僅允許 dev server 或本 app 的 index.html 內部導航 */
@@ -84,13 +72,6 @@ export function applyOverlayWindowSettings(): void {
   state.overlayWindow.setContentProtection(o.captureProtected)
   state.overlayWindow.setIgnoreMouseEvents(o.clickThrough, { forward: true })
   state.overlayWindow.setAlwaysOnTop(o.alwaysOnTop, 'screen-saver')
-  // 玻璃質感:Win11 22H2+ 嘗試視窗後 acrylic 毛玻璃;不支援或失敗則靜默降級(CSS 玻璃仍生效)
-  // **acrylic 只在展開形態開啟** —— 見 syncOverlayMaterial 的註解(藥丸/貼鏡的
-  // 四個角在頁面層是透明的,acrylic 會在整個視窗矩形鋪磨砂,讓四個角變實補丁)。
-  // 走 syncOverlayMaterial 而不是在這裡重寫一份判斷:閘的邏輯兩邊完全相同,
-  // 但這份原本沒有 lastMaterial 快取 —— 每次設定寫入(滑桿拖曳是每 tick 一次)
-  // 都對 DWM 做一次無謂的 setBackgroundMaterial 原生呼叫。
-  syncOverlayMaterial()
   if (!state.overlayWindow.isDestroyed()) {
     // 順序有意義:setSize 會被最小尺寸夾住,所以下限必須先對齊形態
     applyOverlayMinSize()
@@ -119,51 +100,6 @@ export function applyOverlayWindowSettings(): void {
     const wantResizable = overlayShapeOf(o) === 'expanded'
     if (state.overlayWindow.isResizable() !== wantResizable) {
       state.overlayWindow.setResizable(wantResizable)
-    }
-  }
-}
-
-/**
- * 材質的形態閘:acrylic 只允許出現在展開形態,藥丸/貼鏡一律 auto。
- *
- * 為什麼(使用者視角「永遠都有那四個角」的根因):
- *   setBackgroundMaterial('acrylic') 是**視窗矩形**的背後材質 —— DWM 會在
- *   整個矩形鋪系統模糊,頁面「畫透明」的地方透出的是 acrylic,不是桌布。
- *   藥丸(320×48,rounded-full)的四個角在頁面層是切掉的、畫透明,
- *   結果四個角透出 acrylic 的磨砂補丁 —— 使用者看到「有四個實角的有色矩形」,
- *   形狀再正確也救不回來。貼鏡同理(它的圓角比藥丸還小,違和更明顯)。
- *
- *   展開形態可以開:面板本身就是矩形、四角有內容,acrylic 的模糊是
- *   「毛玻璃質感」的正面貢獻,沒有透明區會被它吃掉。
- *
- * 為什麼獨立成函式而不是只靠 applyOverlayWindowSettings:
- *   這個閘必須在**形態變化的那一刻**(morph 開始)生效,而 morph 的每一幀
- *   走 OverlaySetSizeLive(刻意跳過 applyOverlayWindowSettings 的重活,
- *   見 ipc.ts)。morph 開始時 renderer 會先寫入形態旗標(SettingsSet),
- *   所以在 OverlaySetSizeLive 每幀呼叫這個輕量閘,材質就會在動畫第一幀
- *   切換 —— acrylic→auto 若晚到動畫結束,膠囊四角的磨砂會拖到最後一刻。
- *
- * 為什麼快取 lastMaterial:setBackgroundMaterial 是有成本的原生呼叫,
- *   這個函式每幀被呼叫,「值沒變就不呼叫」與 wantResizable 同一原則。
- */
-let lastMaterial: 'acrylic' | 'auto' | null = null
-export function syncOverlayMaterial(): void {
-  if (!state.overlayWindow || state.overlayWindow.isDestroyed()) return
-  const o = state.settings.overlay
-  const win11 = isWin11_22H2()
-  const want: 'acrylic' | 'auto' =
-    o.glass && win11 && overlayShapeOf(o) === 'expanded' ? 'acrylic' : 'auto'
-  if (lastMaterial !== want) {
-    try {
-      state.overlayWindow.setBackgroundMaterial(want)
-      lastMaterial = want
-      // 稽核探針(probe-material)的斷言來源:沒有公開 API 可以讀回目前材質,
-      // main 端把每次實際切換記出來。只在 AI_TP_AUDIT 下輸出,正式版零成本。
-      if (process.env['AI_TP_AUDIT'] === '1') {
-        logMain('INFO', `[material] shape=${overlayShapeOf(o)} glass=${o.glass} -> ${want}`)
-      }
-    } catch {
-      // 忽略:舊版 Electron/OS 不支援;lastMaterial 保持不變,下次再試
     }
   }
 }
@@ -373,14 +309,14 @@ function coverageOnDisplay(win: BrowserWindow, display: Electron.Display): numbe
  * 把浮層視窗的可縮放下限對齊「目前形態」的需求。
  *
  * 為什麼需要:同一個 frameless 視窗要服務三種需求完全不同的版面 —— 展開(使用者
- * 自訂,可以很窄)、藥丸(固定一列)、貼鏡(420×170)。用單一 280×40 當下限時,
+ * 自訂,可以很窄)、藥丸(固定一列)、貼鏡(640×170)。用單一 280×40 當下限時,
  * 藥丸與貼鏡可以被縮到它們的內容放不下,而超出的部分是 overflow-hidden:
  * 使用者看到的是「按鈕被切掉、正文整段不見」,最右邊那顆(展開鈕,也是藥丸唯一
  * 的出口)甚至點不到。
  *
  * 為什麼取 min(形態下限, 目前尺寸):
  *   形態切換有動畫。若在動畫開始的瞬間就把下限拉到目標形態的需求(例如藥丸
- *   460×56 → 貼鏡 420×170 時把最小高度設成 170),OS 會立刻把視窗擘高,
+ *   460×56 → 貼鏡 640×170 時把最小高度設成 170),OS 會立刻把視窗擘高,
  *   動畫就從一個已被夾過的尺寸起跳。取 min 之後,下限只會跟著目前尺寸走,
  *   永遠不會夾住正在跑的 morph;等 morph 定案(OverlaySetSize)時視窗已經是
  *   目標尺寸,那時算出來的就是完整的形態下限。
@@ -466,9 +402,16 @@ export function createOverlayWindow(): void {
     ...savedPos,
     frame: false,
     transparent: true,
-    // Windows:frameless 視窗預設帶 WS_THICKFRAME,DWM 會沿視窗矩形畫 1px 淺色邊框——
-    // 這是 CSS 怎麼調都還有「白邊」的根因(邊框由系統合成,在 web 內容之外)。
-    // thickFrame:false 移除它;resizable 仍由 electron-vite 的 transparent 路徑處理。
+    // 底色必須是透明。BrowserWindow 的 backgroundColor 預設是 #FFF(白),
+    // 而頁面只在**面板形狀內**畫東西 —— 面板的四個圓角外是透明的,於是那四塊
+    // 三角形露出的是視窗的白底,而它們的外緣就是視窗矩形(方角)。
+    // `transparent: true` 不代表底色透明 —— 那是兩個分開的設定。
+    // (同一輪修掉的另一層是視窗的系統材質;兩層都看不見於頁面稽核。)
+    backgroundColor: '#00000000',
+    // 防禦性設定,不是白角落的根因:本輪實測到的白角落來自底色與系統材質
+    // (兩者都在本檔內修掉)。這一行留著的理由是 frameless + resizable 在某些
+    // Windows 版本上會讓 DWM 沿視窗矩形畫一圈邊框,而那種邊框也是 web 內容
+    // 之外的合成結果、CSS 改不掉;thickFrame:false 拿掉那個可能性,成本零。
     thickFrame: false,
     hasShadow: false,
     resizable: true,
@@ -484,6 +427,28 @@ export function createOverlayWindow(): void {
       nodeIntegration: false
     }
   })
+  // 底色必須是透明,而且**要在視窗存在之後顯式設一次**。
+  //
+  // 為什麼(使用者看得到的缺陷:浮層「四個角有白邊、應該是弧線卻變成方正的」):
+  //   頁面只在**面板形狀內**畫東西,面板的四個圓角外是透明的 —— 那四塊三角形
+  //   露出的是**視窗自己的底色**,而 BrowserWindow 的 backgroundColor 預設是
+  //   #FFF(白)。它們的外緣就是視窗矩形(方角),所以看起來就是「白色的方角」。
+  //   實測(200% DPI,對照值是「把視窗搬走」的同一塊桌面):
+  //     白底: 246,245,244,…  桌面: 43,43,43,…
+  //     底色透明後: 41,41,41,…
+  //   `transparent: true` 不管底色 —— 那是兩個分開的設定。
+  //
+  // 為什麼上面的選項不夠、還要在這裡再設一次:
+  //   選項在建立時不會生效(`getBackgroundColor()` 仍回 #FFFFFF),建立後呼叫
+  //   才會(同一支探針:240 → 38≈桌面)。兩個都留:選項是意圖,這一行是實際生效的。
+  //
+  // **不要再呼叫 setBackgroundMaterial**:它把底色重設回 #FFF。實測順序
+  //   (setBackgroundColor(透明) → 量:37=桌面;setBackgroundMaterial('none')
+  //    → 量:232=白、getBackgroundColor 回 #FFFFFF)。而材質本身也不該用:
+  //   它是畫在**視窗矩形**上的(DWM),展開面板是圓角矩形,四個角會各露出一塊
+  //   方形材質補丁 —— 同一輪量到:展開形態下切換該設定會改變視窗矩形 95.4%
+  //   的像素、平均 165 級。這是兩層同源的缺陷,一起關掉。
+  state.overlayWindow.setBackgroundColor('#00000000')
   state.overlayWindow.setAlwaysOnTop(true, 'screen-saver')
   applyOverlayWindowSettings()
   hardenWebContents(state.overlayWindow)

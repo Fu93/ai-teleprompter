@@ -20,10 +20,10 @@ import { releaseRequest, trackRequest } from './ai/aiAbort'
 import { listAllScenes } from './packs'
 import { importJsonFile } from './importJsonFile'
 import { broadcastSettings, state } from './state'
+import { gazeInfo, resolveGazeDock } from './gaze'
 import {
   applyOverlayMinSize,
   applyOverlayWindowSettings,
-  syncOverlayMaterial,
   setOverlayVisible,
   recenterOverlay,
   cancelCloseRequest,
@@ -255,18 +255,17 @@ export function registerIpc(): void {
   })
 
   /** 動畫用即時尺寸:每幀呼叫,只改視窗與記憶體設定,不落盤(結束時由 OverlaySetSize 定案)。
-   *  刻意不走 applyOverlayWindowSettings:那裡含 setContentProtection/setIgnoreMouseEvents/
-   *  setBackgroundMaterial 與 os.release 解析,每幀 60 次全是浪費,morph 只需要 setSize。
-   *  例外是材質:syncOverlayMaterial 是形態閘(acrylic 只准在展開形態),內部有
-   *  lastMaterial 快取,值沒變就是純比較 —— morph 開始的第一幀就切換,膠囊四角的
-   *  磨砂補丁不會拖到動畫結束才消失。 */
+   *  刻意不走 applyOverlayWindowSettings:那裡含 setContentProtection/setIgnoreMouseEvents
+   *  等原生呼叫,每幀 60 次全是浪費,morph 只需要 setSize。
+   *  這裡以前每幀也呼叫一次 syncOverlayMaterial(材質的形態閘);那個函式已移除
+   *  —— 材質會鋪滿視窗矩形、而且 setBackgroundMaterial 會把底色重設回白色
+   *  (兩者都是實測結論,見 windows.ts 的 createOverlayWindow)。 */
   ipcMain.handle(IPC.OverlaySetSizeLive, (_e, w: number, h: number) => {
     if (state.overlayWindow && !state.overlayWindow.isDestroyed()) {
       // 形態下限必須跟著動畫走,理由見 applyOverlayMinSize 的註解。
-      // 這裡不能整包走 applyOverlayWindowSettings:那會每帧做 setContentProtection、
-      // setIgnoreMouseEvents、setBackgroundMaterial 與 os.release() 解析。
+      // 這裡不能整包走 applyOverlayWindowSettings:那會每帧做 setContentProtection 與
+      // setIgnoreMouseEvents 這類原生呼叫。
       applyOverlayMinSize()
-      syncOverlayMaterial()
       // 刻意不寫 settings.overlay.width/height:那兩個欄位是「使用者選的展開尺寸」，
       // 這條路徑每帧呼叫(morph 動畫)，寫進去等於用動畫中的尺寸不斷污染它。
       state.overlayWindow.setSize(Math.round(w), Math.round(h))
@@ -501,7 +500,10 @@ export function registerIpc(): void {
   })
 
   // ---- 貼鏡模式吸附:浮層移到螢幕上緣角落 ----
-  ipcMain.handle(IPC.OverlaySnapCorner, (_e, corner: 'tl' | 'tc' | 'tr') => {
+  // 抽成內部函式而不是寫在 handler 裡:snapOverlayGaze 的「未鎖定 / 螢幕已拔」
+  // 退回路徑走的是同一條(退回上中),兩份實作遲早漂移 —— 而漂移的症狀是
+  // 「同一顆按鈕在兩種情況下吸到不同的地方」,沒有任何稽核看得到。
+  const snapToCorner = (corner: 'tl' | 'tc' | 'tr'): void => {
     if (!state.overlayWindow || state.overlayWindow.isDestroyed()) return
     // 用「目前遮住浮層最多的那台螢幕」而不是一律主螢幕:浮層在外接/投影
     // 螢幕上時,吸附到主螢幕等於把它從使用者眼前拽走(與 ensureOverlayOnScreen
@@ -510,6 +512,51 @@ export function registerIpc(): void {
     const [w] = state.overlayWindow.getSize()
     const x = corner === 'tl' ? workArea.x + 8 : corner === 'tr' ? workArea.x + workArea.width - w - 8 : workArea.x + Math.round((workArea.width - w) / 2)
     state.overlayWindow.setPosition(x, workArea.y + 8)
+  }
+  ipcMain.handle(IPC.OverlaySnapCorner, (_e, corner: 'tl' | 'tc' | 'tr') => {
+    snapToCorner(corner)
+  })
+
+  // ---- 貼鏡凝視錨點(DESIGN_RESEARCH P0-1):鎖定 / 停靠 / 狀態 ----
+  // 「◎ 鎖定」:把浮層目前位置存成錨點。座標與螢幕 id 都在 main 端取 ——
+  // renderer 的 window.screenX/Y 在 200% DPI 下與 DIP 座標有已知偏差,
+  // 而浮層自己 persist 的 overlay.x/y 用的是 win.getPosition()(DIP),兩套
+  // 座標混用會讓錨點偏半個螢幕縮放。
+  ipcMain.handle(IPC.OverlaySetGazeAnchor, (_e, cameraLabel: unknown) => {
+    const win = state.overlayWindow
+    if (!win || win.isDestroyed()) return false
+    const [x, y] = win.getPosition()
+    const label = typeof cameraLabel === 'string' && cameraLabel.trim() ? cameraLabel.trim() : '攝影機'
+    state.settings.overlay.gazeAnchor = {
+      x,
+      y,
+      displayId: screen.getDisplayMatching(win.getBounds()).id,
+      cameraLabel: label
+    }
+    saveSettings(state.settings)
+    // 廣播兩個消費者:① 貼鏡工具列的「◎ 鎖定」按鈕顏色(已鎖定=綠)② 進貼鏡的
+    // 自動停靠讀的是 renderer 側的 o.gazeAnchor —— 不廣播的話,鎖定後要重啟 App
+    // 自動停靠才會生效,而那是「按了鎖定卻什麼都沒發生」的最糟版本。
+    broadcastSettings()
+    return true
+  })
+  // 「◉ 鏡頭」與進貼鏡的自動停靠:決策全在 gaze.ts(resolveGazeDock),
+  // 這裡只執行 —— 三條路徑(有效/未鎖定/螢幕已拔)才有同一個判斷標準。
+  ipcMain.handle(IPC.OverlaySnapGaze, () => {
+    const win = state.overlayWindow
+    if (!win || win.isDestroyed()) return { docked: false, stale: false }
+    const decision = resolveGazeDock(state.settings.overlay.gazeAnchor, screen.getAllDisplays())
+    if (decision.action === 'dock') {
+      win.setPosition(decision.x, decision.y)
+      return { docked: true, stale: false }
+    }
+    snapToCorner('tc')
+    return { docked: false, stale: decision.stale }
+  })
+  // 設定頁狀態列:只回資料(角度由 renderer 用 calibration.ts 換算 ——
+  // px→cm 的 96dpi 假設住在 renderer,main 不 import renderer 的 lib)。
+  ipcMain.handle(IPC.OverlayGazeInfo, () => {
+    return gazeInfo(state.settings.overlay.gazeAnchor, screen.getAllDisplays())
   })
 
   // ---- 浮層置中:掉出畫面時的保險,使用者不必重開浮層 ----
@@ -630,7 +677,7 @@ export function registerIpc(): void {
       return true
     }
     // 其餘動作交給浮層自己的控制項:形態切換(compact/lens)會改變視窗尺寸
-    // (藥丸 460×56、貼鏡 420×170,展開則回到設定的寬高)。從 main 端 setSettings
+    // (藥丸 460×56、貼鏡 640×170,展開則回到設定的寬高)。從 main 端 setSettings
     // 只會翻動設定旗標而不會 resize,morph 動畫也不會跑 —— 結果是「藥丸的內容
     // 裝在展開的視窗裡」這種前後不一致的狀態。走浮層自己的按鈕才是真實路徑。
     try {

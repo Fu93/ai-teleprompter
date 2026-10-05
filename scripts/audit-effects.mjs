@@ -1116,6 +1116,7 @@ async function stepHotkeys(main) {
 async function stepUpdateBanner(main) {
   console.log('步驟：更新待安裝橫幅(全域)…')
   const pDismiss = probe(idKey('update', 'update-dismiss'), '更新橫幅')
+  const pReentry = probe(idKey('update', 'update-reentry'), '更新橫幅')
 
   // 前置:先確認這顆橫幅真的沒有畫出來(沒有待安裝的更新時它必須不存在)
   await gotoViaSidebar(main, '總覽')
@@ -1179,6 +1180,35 @@ async function stepUpdateBanner(main) {
       pDismiss.dead('按了「稍後」但橫幅還在畫面上 —— 使用者會以為它沒有作用')
     } else {
       pDismiss.works('「稍後」真的把橫幅收掉(換頁之後仍維持關閉)', EVIDENCE.DOM)
+    }
+  }
+
+  // 「稍後」之後的復原入口(側欄):dismiss 把橫幅收掉之後,
+  // 「已下載更新」這個事實還在(autoInstallOnAppQuit 還沒跑),側欄必須接手
+  // 顯示它 —— 否則 dismiss 之後到 App 重啟之前,整個 App 沒有任何地方
+  // 提醒使用者「關掉就會換版本」。這一層是**接線**檢查:條件函式
+  // (updateEntryVisible)本身的邏輯由單元測試釘住,這裡量的是 App 真的
+  // 用它渲染了側欄入口。
+  {
+    await sleep(400)
+    const reentry = await main.evaluate(() => {
+      const el = document.querySelector('[data-effect-id="update-reentry"]')
+      return {
+        present: !!el,
+        text: (el?.textContent || '').replace(/\s+/g, ' ').trim(),
+        version: /v([\w.-]+)/.exec(el?.textContent || '')?.[1] ?? null,
+        inSidebar: !!el?.closest('aside')
+      }
+    })
+    if (!reentry.present) {
+      pReentry.dead('按了「稍後」之後側欄沒有出現復原入口 —— 「已下載更新」從畫面徹底消失,' +
+        '而下次退出時 autoInstallOnAppQuit 會默默裝掉它(等於把關掉 App 當成同意安裝)')
+    } else if (!reentry.inSidebar) {
+      pReentry.dead('復原入口渲染了但不在側欄裡 —— 換頁後它不會一直跟著使用者')
+    } else if (!reentry.version) {
+      pReentry.dead(`側欄入口沒有版本號(文字:「${reentry.text}」)—— 使用者無從知道要裝的是什麼`)
+    } else {
+      pReentry.works(`dismiss 後側欄出現入口「${reentry.text}」(在側欄內,含版本 v${reentry.version})`, EVIDENCE.DOM)
     }
   }
 
@@ -3715,7 +3745,7 @@ async function stepSettingsExtra(app, main, llm, stt) {
   // (a) 8 個開關:逐個驗「aria 翻了、而且對應的設定也翻了」
   const SWITCHES = [
     ['鏡像模式', 'overlay.mirror'],
-    ['毛玻璃質感', 'overlay.glass'],
+    ['玻璃折射', 'overlay.glass'],
     ['該你說話了提示', 'overlay.turnYield'],
     ['即時教練', 'overlay.coaching'],
     ['螢幕擷取隱形', 'overlay.captureProtected'],
@@ -4522,6 +4552,99 @@ async function stepOverlayExtra(app, main) {
         } else {
           const x = (bs) => bs.map((b) => `${b.x},${b.y}`).join(' | ')
           pc.works(`視窗位置 ${x(b0)} → ${x(b1)}`, EVIDENCE.DATA)
+        }
+      }
+
+      /**
+       * 凝視錨點兩顆(DESIGN_RESEARCH P0-1)。
+       *
+       * 順序就是語意,三段缺一不可:
+       *   ① 未鎖定按「◉ 鏡頭」→ 退回上中(bounds 變)——正常的第一天;
+       *   ② 按「◎ 鎖定」→ gazeInfo.anchored false → true(資料層,不是 UI 自稱);
+       *   ③ 先移開(↗ 右上)再按「◉ 鏡頭」→ bounds **回到錨點**——磁吸的正身。
+       * 只做①會把「退回角落」誤當成「吸附到鏡頭有效」——兩者在「bounds 變了」
+       * 這條斷言上長得一模一樣,這正是③存在的理由。
+       */
+      const pLock = probe(key('overlay', 'button', '◎ 鎖定'), '浮層')
+      const pDock = probe(key('overlay', 'button', '◉ 鏡頭'), '浮層')
+      const readGaze = () =>
+        main.evaluate(async () => (await window.api.overlayGazeInfo?.()) ?? null)
+      const waitBoundsChange = async (prev) => {
+        let b = prev
+        for (let i = 0; i < 16 && JSON.stringify(b) === JSON.stringify(prev); i++) {
+          await sleep(200)
+          b = await overlayBounds()
+        }
+        return b
+      }
+      const info0 = await readGaze()
+      const anchored0 = info0?.anchored ?? false
+
+      // ① 未鎖定 → 退回上中(已鎖定的世界沒有這一段,直接進②)
+      if (!anchored0) {
+        const b0 = await overlayBounds()
+        if (!(await overlayClick('吸附到鏡頭錨點'))) {
+          pDock?.unreachable('貼鏡形態找不到「◉ 鏡頭」按鈕')
+        } else {
+          const b1 = await waitBoundsChange(b0)
+          if (JSON.stringify(b1) === JSON.stringify(b0)) {
+            pDock?.dead('未鎖定狀態按「◉ 鏡頭」但視窗完全沒動(應該退回上中角落)')
+          }
+        }
+      }
+      if (!pDock) {
+        // probe() 回 null = self-test 要求跳過;②③不能讓缺失的 pLock/pDock 炸掉整段
+      } else {
+        // ② 鎖定 → 資料層 anchored 翻轉
+        if (!pLock) {
+          // self-test 跳過這顆:不給結論正是它要的
+        } else if (!(await overlayClick('鎖定鏡頭錨點'))) {
+          pLock.unreachable('貼鏡形態找不到「◎ 鎖定」按鈕')
+        } else {
+          let info1 = info0
+          for (let i = 0; i < 16 && (info1?.anchored ?? false) === anchored0; i++) {
+            await sleep(200)
+            info1 = await readGaze()
+          }
+          if ((info1?.anchored ?? false) !== anchored0) {
+            pLock.works(
+              `gazeInfo.anchored ${anchored0} → ${info1.anchored}(cameraLabel=${info1.cameraLabel})`,
+              EVIDENCE.DATA
+            )
+          } else {
+            pLock.dead(`按了「◎ 鎖定」但 gazeInfo.anchored 還是 ${info1?.anchored}`)
+          }
+        }
+
+        // ③ 移開 → 再吸 → bounds 回到錨點(與①的退回上中是不同的座標)
+        // 先讀再點再等:「點完才讀」會把已套用的位置當成 prev,waitBoundsChange
+        // 於是空轉滿 16 拍(結果對,但每次稽核多燒 3.2 秒)。
+        const bBefore = await overlayBounds()
+        // 點 title 而不是可見文字:clickByTitle 比對的是 cut(title)(與列舉端同一套
+        // 規則),角落鈕的 title 是「浮層吸附到螢幕右上」——「↗ 右上」是給 key
+        // 用的可見文字,拿來點會找不到(第一版就是這樣紅在 state-unreached)。
+        if (!(await overlayClick('浮層吸附到螢幕右上'))) {
+          pDock.unreachable('移開用的「↗ 右上」按鈕找不到,無法驗吸附回錨點')
+        } else {
+          const bAway = await waitBoundsChange(bBefore)
+          if (JSON.stringify(bAway) === JSON.stringify(bBefore)) {
+            pDock.unreachable('「↗ 右上」按了但視窗沒動,無法把視窗移開錨點來驗吸附')
+          } else if (!(await overlayClick('吸附到鏡頭錨點'))) {
+            pDock.unreachable('移開後找不到「◉ 鏡頭」按鈕')
+          } else {
+            const bHome = await waitBoundsChange(bAway)
+            if (JSON.stringify(bHome) === JSON.stringify(bAway)) {
+              pDock.dead(
+                `鎖定後按「◉ 鏡頭」但 bounds 沒回到錨點(停在 ${JSON.stringify(bHome)})`
+              )
+            } else {
+              const pos = (bs) => bs.map((b) => `${b.x},${b.y}`).join(' | ')
+              pDock.works(
+                `未鎖定退回上中;鎖定後 ${pos(bAway)} → ${pos(bHome)}(吸附回錨點)`,
+                EVIDENCE.DATA
+              )
+            }
+          }
         }
       }
 
@@ -5436,6 +5559,18 @@ async function stepInventory(app, main, stt, llm) {
     }
     const n = await scan(win, st.page, scope, st.id)
     statesSeen.push({ state: st.id, controls: n })
+
+    // update/banner 狀態的第二段掃描:按「稍後」之後,側欄必須出現復原入口
+    // (update-reentry)。不按的話入口永遠不在任何被宣告的狀態裡 ——
+    // 登記了卻 probe-not-found,而「dismiss 後沒有任何地方看得到更新」
+    // 這個真缺陷就會被登記表自己洗掉。
+    if (st.seed === 'updateBanner') {
+      const clicked = await clickEffectId(main, 'update-dismiss')
+      if (clicked !== true) blocked(`狀態:${st.id}`, `第二段掃描按不了 update-dismiss(${clicked})`)
+      await sleep(600)
+      const n2 = await scan(win, st.page, scope, `${st.id}#dismissed`)
+      statesSeen.push({ state: `${st.id}#dismissed`, controls: n2 })
+    }
 
     // ── 收尾 ──
     // 每一個狀態都要把世界還原,否則下一個狀態會站在上一個的殘留上量測

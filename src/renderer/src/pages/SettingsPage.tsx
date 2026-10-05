@@ -14,7 +14,12 @@ import {
 import { toast } from '../lib/toast'
 import { useHotkeyConflicts } from '../lib/hotkeys'
 import { cn, formatDateTime } from '../lib/utils'
-import type { AppSettings } from '@shared/types'
+import type { AppSettings, GazeInfo } from '@shared/types'
+import {
+  DEFAULT_VIEWING_DISTANCE_CM,
+  gazeOffsetDeg,
+  pxToCm96dpi
+} from '../lib/calibration'
 import type { SceneSummary } from '@shared/api'
 import { Segmented } from '../components/Segmented'
 import { BackupSection } from '../components/BackupSection'
@@ -256,6 +261,18 @@ export default function SettingsPage({
   const [scenes, setScenes] = useState<SceneSummary[] | null>(null)
   const [simBusy, setSimBusy] = useState(false)
   const [simDataUrl, setSimDataUrl] = useState<string | null>(null)
+  const [gaze, setGaze] = useState<GazeInfo | null>(null)
+  // 凝視錨點狀態(DESIGN_RESEARCH P0-1):進頁時取一次 —— App 的路由是條件渲染,
+  // 離開再回來就是重新掛載,所以在浮層裡「◎ 鎖定」之後重開設定頁就會看到新值。
+  useEffect(() => {
+    let alive = true
+    void window.api.overlayGazeInfo().then((g) => {
+      if (alive) setGaze(g)
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   /**
    * **作業系統層級註冊失敗的熱鍵。**
@@ -634,6 +651,31 @@ export default function SettingsPage({
             「下一個關鍵詞」在這個寬度下顯示 {pillKeywordCharsOf(pillSizeOf(o.pillScale).w)} 字。
           </div>
         </div>
+        <div>
+          <div className="label">凝視錨點（貼鏡）</div>
+          {/* 把「眼神自然」從感覺變成度數:角度 = atan(實體偏移 ÷ 臉距)。
+              px→cm 用 calibration.ts 的 96dpi 假設(與 visualAngleDeg 同一套);
+              offsetPx 的幾何(錨點距螢幕物理上緣 + 文字帶在視窗內的偏移)
+              在 main/gaze.ts。臉距未校準時用文獻典型值 50cm 並**標明**,不裝作精確。 */}
+          <div className="mt-1.5 text-[11px] text-ink-400">
+            {!gaze ? (
+              '浮層尚未開啟(進一次貼鏡模式後可校正)'
+            ) : !gaze.anchored ? (
+              '未校正 — 進貼鏡模式,把浮層拖到攝影機正下方,按工具列「◎ 鎖定」'
+            ) : gaze.stale ? (
+              '已校正,但錨點所在的螢幕已拔除 — 進貼鏡重新按「◎ 鎖定」(目前吸附會退回上中)'
+            ) : (
+              `已校正（${gaze.cameraLabel ?? '攝影機'}）:文字帶頂緣在鏡頭下方 ≈ ${
+                (pxToCm96dpi(gaze.offsetPx ?? 0)).toFixed(1)
+              } cm,視線偏角 ${gazeOffsetDeg(
+                gaze.offsetPx ?? 0,
+                settings.personal.profile?.viewingDistanceCm ?? DEFAULT_VIEWING_DISTANCE_CM
+              ).toFixed(1)}°（臉距 ${
+                settings.personal.profile?.viewingDistanceCm ?? DEFAULT_VIEWING_DISTANCE_CM
+              } cm${settings.personal.profile ? '' : ',未校準預設'}）`
+            )}
+          </div>
+        </div>
         <Slider label="字體大小" value={o.fontSize} min={16} max={72} step={2} unit="px" onChange={(v) => patchO({ fontSize: v })} />
         <Slider label="滾動速度" value={o.speed} min={10} max={600} step={10} unit=" px/s" onChange={(v) => patchO({ speed: v })} />
         <Slider label="語速倍率" value={o.rate} min={0.5} max={3} step={0.1} unit="×" onChange={(v) => patchO({ rate: Math.round(v * 10) / 10 })} />
@@ -641,8 +683,8 @@ export default function SettingsPage({
         <Slider label="不透明度" value={o.opacity} min={0.15} max={1} step={0.01} onChange={(v) => patchO({ opacity: v })} />
         <Switch label="鏡像模式" hint="透過反射罩拍攝時使用（左右翻轉）" checked={o.mirror} onChange={(v) => patchO({ mirror: v })} />
         <Switch
-          label="毛玻璃質感"
-          hint="展開面板啟用 Windows 11 acrylic 毛玻璃;藥丸與貼鏡固定使用內建玻璃質感(避免圓角外露出系統磨砂)。舊系統自動退回半透明"
+          label="玻璃折射"
+          hint="面板邊緣折射背後的桌面，液態玻璃的來源（Liquid Glass）。不用系統毛玻璃材質：那種材質是畫在整個視窗矩形上的，會在面板四個圓角外露出方形補丁"
           checked={o.glass}
           onChange={(v) => patchO({ glass: v })}
         />

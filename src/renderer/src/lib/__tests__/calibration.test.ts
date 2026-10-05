@@ -6,8 +6,10 @@ import {
   effectiveEngineRate,
   estimateDistanceCm,
   fontSizeFromDistance,
+  gazeOffsetDeg,
   isCameraDeliveringFrames,
   isPlausibleRate,
+  pxToCm96dpi,
   speedFromRate,
   visualAngleDeg
 } from '../calibration'
@@ -171,5 +173,40 @@ describe('CAMERA_FIRST_FRAME_TIMEOUT_MS', () => {
     // 而不是斷言一個魔術數字。
     expect(CAMERA_FIRST_FRAME_TIMEOUT_MS).toBeGreaterThan(2_000)
     expect(CAMERA_FIRST_FRAME_TIMEOUT_MS).toBeLessThanOrEqual(15_000)
+  })
+})
+
+describe('gazeOffsetDeg 凝視偏移角(DESIGN_RESEARCH P0-1)', () => {
+  it('px → cm 走 96dpi 假設(與 visualAngleDeg 同一套,兩處必須一起變)', () => {
+    expect(pxToCm96dpi(96)).toBeCloseTo(2.54, 5)
+    expect(pxToCm96dpi(0)).toBe(0)
+  })
+
+  it('錨點幾何的實際數字:65px @50cm ≈ 2.0°(與「鏡頭下方 ~2°」的宣稱一致)', () => {
+    // 65px = LENS_BAND_TOP_PX 的視窗內偏移 + 錨點貼在螢幕上緣的極限情況。
+    // 96dpi 下 65px = 1.72cm;atan(1.72/50) ≈ 1.97°。
+    expect(gazeOffsetDeg(65, 50)).toBeCloseTo(1.97, 1)
+    // 舊寬 420 時 band 頂緣在 42px —— 一併釘住兩個設計點的角度。
+    expect(gazeOffsetDeg(42, 50)).toBeCloseTo(1.27, 1)
+  })
+
+  it('隨偏移單調遞增(角度是距離的單調函數,沒有哪一段會「越遠越小」)', () => {
+    let prev = -1
+    for (const px of [0, 10, 42, 65, 130, 400]) {
+      const deg = gazeOffsetDeg(px, 50)
+      expect(deg).toBeGreaterThanOrEqual(prev)
+      prev = deg
+    }
+  })
+
+  it('防呆:距離 0 / NaN / 負偏移都回 0,不回 NaN(設定頁不能印出 NaN°)', () => {
+    expect(gazeOffsetDeg(65, 0)).toBe(0)
+    expect(gazeOffsetDeg(65, Number.NaN)).toBe(0)
+    expect(gazeOffsetDeg(Number.NaN, 50)).toBe(0)
+    expect(gazeOffsetDeg(-65, 50)).toBe(0)
+  })
+
+  it('臉距越遠角度越小(同一段畫面距離,坐遠一點眼睛偏得更少)', () => {
+    expect(gazeOffsetDeg(65, 70)).toBeLessThan(gazeOffsetDeg(65, 50))
   })
 })

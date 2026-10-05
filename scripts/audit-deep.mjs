@@ -502,7 +502,7 @@ async function main() {
             `實際 ${actual.w}x${actual.h} < ${id} 的下限 ${min.w}x${min.h}`
           )
         }
-        // 形態的設計尺寸是硬性的(藥丸跟 pillScale、貼鏡固定 420×170)。
+        // 形態的設計尺寸是硬性的(藥丸跟 pillScale、貼鏡固定 640×170)。
         // 量的是**視窗**而不是設定值:先前那個「設定對、畫面對」的 bug
         // (藥丸/貼鏡被撐回展開尺寸)就是兩者不一致。
         if (
@@ -1480,7 +1480,7 @@ async function main() {
       await sleep(700)
     }
 
-    // 貼鏡(420x170)裡的暫態覆蓋層。
+    // 貼鏡(640x170)裡的暫態覆蓋層。
     //
     // 救援卡是卡片比視窗高的實際受害者;這一版把信心/來源搬進標題列就是為了它。
     // 但這一版同時加了另外兩件事,所以三種暫態都必須各有狀態:
@@ -1488,7 +1488,7 @@ async function main() {
     //      (suppressBottom)—— 「疊印在一起兩行都讀不了」是它要消滅的缺陷;
     //   2. coaching 提示在貼鏡形態原本漏送,這一版補上;
     //   3. turn-yield 與 coaching 同時出現時是一條 flex-col 兩層 pill。
-    // 三者都發生在 420×170 這個會被裁掉的視窗裡 —— 沒有狀態就是沒量過。
+    // 三者都發生在 640×170 這個會被裁掉的視窗裡 —— 沒有狀態就是沒量過。
     {
       let lensPrevShot = `overlay-lens-${LENS_SIZE.w}x${LENS_SIZE.h}.png`
       await clickOverlayButton('貼鏡模式', '退出')

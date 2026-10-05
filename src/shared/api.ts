@@ -9,6 +9,7 @@ import type {
   DebugSignalKind,
   DebugOverlayAction,
   DomFinding,
+  GazeInfo,
   UpdateDownloadedInfo
 } from './types'
 import type { DiagnosticsReport, EventPayload } from './observability'
@@ -234,6 +235,19 @@ export interface Api {
   snapOverlayCorner(corner: 'tl' | 'tc' | 'tr'): Promise<void>
   /** 浮層置中:掉出畫面(拔螢幕/改解析度)時的保險 */
   recenterOverlay(): Promise<void>
+  /**
+   * 貼鏡「◎ 鎖定」:把浮層**目前位置**存成凝視錨點(一次性拖放校正)。
+   * cameraLabel 來自 enumerateDevices,只做設定頁顯示用。
+   */
+  setGazeAnchor(cameraLabel: string): Promise<boolean>
+  /**
+   * 貼鏡「◉ 鏡頭」/ 進貼鏡自動停靠:moveTo 錨點。
+   * 未鎖定 → 退回「上中」角落且 docked:false(stale:false);
+   * 錨點所在螢幕已拔 → 同樣退回角落但 stale:true(設定頁提示重新校正)。
+   */
+  snapOverlayGaze(): Promise<{ docked: boolean; stale: boolean }>
+  /** 設定頁凝視錨點狀態列(偏移角在 renderer 端用 calibration.ts 換算) */
+  overlayGazeInfo(): Promise<GazeInfo | null>
 
   // ===== 開發者除錯(僅 appInfo().debug 為 true 時有效;否則 main 端一律回 null/false)=====
   /** 開啟指定視窗的 DevTools(浮層是無邊框且常開防擷取,無法右鍵檢查) */

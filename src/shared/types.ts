@@ -21,7 +21,11 @@ export interface OverlaySettings {
    * 合法性由 @shared/overlayShapes 的 clampPillScale 把關(設定檔可能被手改)。
    */
   pillScale: number
-  /** 玻璃質感:Windows 11 嘗試啟用視窗後 acrylic 毛玻璃 */
+  /**
+   * 玻璃折射:面板邊緣的 Liquid Glass 折射層(useGlassRefraction 的 SVG 位移圖)。
+   * 不含系統視窗材質 —— 材質畫在視窗矩形上,會在面板圓角外露出方形補丁,
+   * 理由與量測見 windows.ts 的 createOverlayWindow。
+   */
   glass: boolean
   /** turn-yield 提示:對方講完問句時浮層顯示「該你說話了」(Phase B) */
   turnYield: boolean
@@ -40,6 +44,45 @@ export interface OverlaySettings {
   x: number | null
   y: number | null
   alwaysOnTop: boolean
+  /**
+   * 貼鏡凝視錨點(DESIGN_RESEARCH P0-1):一次性拖放校正出的「鏡頭正下方」停靠位置。
+   *
+   * 流程:進貼鏡 → 把浮層拖到攝影機正下方 → 按工具列「◎ 鎖定」→ 之後每次進貼鏡
+   * 自動 moveTo 停靠到這裡(磁吸)。null = 從未校正,此時貼鏡的吸附退回「上中」角落,
+   * 而且**完全不自動移動**(沒有錨點的自動位移只會把使用者剛拖好的位置拽走)。
+   *
+   * x/y 是 DIP 絕對座標(與 overlay.x/y 同一套);displayId 用來偵測「校正後拔了螢幕」
+   * (stale → 退回角落吸附並提示重新校正,而不是把浮層停到錯的螢幕上)。
+   * cameraLabel 是鎖定當下的攝影機名稱,只做顯示 —— 它讓「這個錨點是校給哪台相機的」
+   * 在設定頁可讀,而不是一個沒有出處的座標。
+   */
+  gazeAnchor: GazeAnchor | null
+}
+
+/** 貼鏡凝視錨點(見 OverlaySettings.gazeAnchor) */
+export interface GazeAnchor {
+  x: number
+  y: number
+  displayId: number
+  cameraLabel: string
+}
+
+/**
+ * 凝視錨點的量化狀態(OverlayGazeInfo 的回傳;角度在 renderer 端算 ——
+ * px→cm 的 96dpi 假設住在 renderer/lib/calibration.ts,main 不 import renderer)。
+ *
+ * offsetPx = 錨點座標距螢幕物理上緣的距離 + 文字帶頂緣在貼鏡視窗內的偏移
+ * (LENS_BAND_TOP_PX)。角度 = atan(實體偏移 ÷ 臉距),「眼神自然」因此是個數字。
+ */
+export interface GazeInfo {
+  /** false = 從未鎖定(其餘欄位為 null) */
+  anchored: boolean
+  /** true = 錨點所在螢幕已不在(拔螢幕/換桌機),需要重新校正 */
+  stale: boolean
+  /** 螢幕物理上緣 → 文字帶頂緣的垂直距離(px,未校正或 stale 時 null) */
+  offsetPx: number | null
+  /** 鎖定當下的攝影機名稱 */
+  cameraLabel: string | null
 }
 
 export interface SttSettings {
@@ -141,7 +184,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     height: 260,
     x: null,
     y: null,
-    alwaysOnTop: true
+    alwaysOnTop: true,
+    gazeAnchor: null
   },
   stt: {
     engine: 'local',
@@ -246,6 +290,12 @@ export const IPC = {
   ShareSimulation: 'system:share-simulation',
   OverlaySnapCorner: 'overlay:snap-corner',
   OverlayRecenter: 'overlay:recenter',
+  /** 貼鏡「◎ 鎖定」:把浮層目前位置存成凝視錨點 */
+  OverlaySetGazeAnchor: 'overlay:set-gaze-anchor',
+  /** 貼鏡「◉ 鏡頭」/ 進貼鏡自動停靠:moveTo 錨點(無錨點或 stale 退回上中角落) */
+  OverlaySnapGaze: 'overlay:snap-gaze',
+  /** 設定頁凝視錨點狀態列(偏移角量化) */
+  OverlayGazeInfo: 'overlay:gaze-info',
   RevealPath: 'util:reveal-path',
   /**
    * 用系統瀏覽器開一個外部連結。

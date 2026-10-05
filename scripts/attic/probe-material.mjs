@@ -1,5 +1,16 @@
 /**
- * probe-material.mjs — 驗證材質形態閘(syncOverlayMaterial)。
+ * probe-material.mjs — 驗證材質形態閘(syncOverlayMaterial)。[已失效,保留為歷史]
+ *
+ * 2026-10-05 後這支斷言的東西已經不存在:材質形態閘整條移除,而 App 現在
+ * **完全不呼叫 setBackgroundMaterial**。原因有兩個,都是實機量測:
+ *   1. 材質畫在**視窗矩形**上 —— 展開面板是圓角矩形,四個角會露出方形材質
+ *      補丁(展開形態下切換該設定,視窗矩形 95.4% 的像素改變、平均 165 級)。
+ *   2. setBackgroundMaterial 會把視窗底色**重設回 #FFF** —— 白底從面板圓角外
+ *      露出來(240 vs 桌面 40)。順序實測:底色透明 → 37=桌面;
+ *      再呼叫 setBackgroundMaterial('none') → 232=白。
+ * 現在的驗證在:src/main/__tests__/overlayMaterial.test.ts(行為)
+ *   與 scripts/attic/probe-window-layer.mjs(現象,OS 層)。
+ * 下面對 acrylic 的斷言請不要照著恢復 —— 那是被推翻的設計。
  *
  * 為什麼需要:上一則的限知邊界是「page 層稽核量不到視窗層材質」。
  * 這支不量像素,改量**行為**:Electron 沒有公開「讀取目前 backgroundMaterial」

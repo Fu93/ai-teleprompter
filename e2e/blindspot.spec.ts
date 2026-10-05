@@ -9,6 +9,7 @@
  */
 import { test, expect, _electron as electron } from '@playwright/test'
 import type { ElectronApplication, Page } from '@playwright/test'
+import { LENS_SIZE } from '../src/shared/overlayShapes'
 import type { Server } from 'node:http'
 import http from 'node:http'
 
@@ -167,14 +168,14 @@ test('校準 + Practice + 貼鏡 盲區巡檢', async () => {
     await expect(overlay.locator('[title^="暫停"]')).toHaveCount(1, { timeout: 5_000 })
     await overlay.locator('[title^="貼鏡模式"]').click()
     await overlay.waitForTimeout(1_200)
-    // 進貼鏡:420x170、lens 工具列存在
+    // 進貼鏡:設計尺寸(640×170)、lens 工具列存在
     const size = await overlay.evaluate(() => `${window.innerWidth}x${window.innerHeight}`)
-    expect(size).toBe('420x170')
+    expect(size).toBe(`${LENS_SIZE.w}x${LENS_SIZE.h}`)
     await expect(overlay.locator('[title="退出貼鏡模式"]')).toHaveCount(1)
     await overlay.locator('[title="退出貼鏡模式"]').click()
     await overlay.waitForTimeout(1_200)
     const back = await overlay.evaluate(() => `${window.innerWidth}x${window.innerHeight}`)
-    expect(back).not.toBe('420x170')
+    expect(back).not.toBe(`${LENS_SIZE.w}x${LENS_SIZE.h}`)
   } finally {
     mockStt?.close()
     mockLlm?.close()

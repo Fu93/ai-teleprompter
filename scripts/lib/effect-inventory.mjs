@@ -468,6 +468,11 @@ export const CONTROLS = [
   // 兩顆共用 scope="update" —— 沒有它的話六個頁面會各算成一顆,那是假的。
   { key: idKey('update', 'update-banner'), step: 'update', exempt: { category: EXEMPT_CATEGORY.DESTRUCTIVE_WINDOW, reason: '「重新啟動以更新」會 app.relaunch()+quit —— 它會終止稽核視窗本身,所以不能按;同一顆橫幅的「真的會出現、而且出現在非設定頁」由 update-dismiss 那條一起量(橫幅沒渲染時那顆鈕按不到,是同一個失效)' } },
   { key: idKey('update', 'update-dismiss'), step: 'update', note: '「稍後」真的把橫幅收掉,而且換頁之後仍是關閉的(證明它不是設定頁專屬)' },
+  // 「稍後」之後的側欄復原入口:dismissed 時橫幅消失,但「已下載更新」這個事實
+  // 仍然成立(autoInstallOnAppQuit 還在)。入口是 dismiss 後唯一看得到它的地方,
+  // 所以它有自己的探針:按「稍後」之後側欄必須出現含版本號的入口。
+  // 條件函式本身(updateEntryVisible)另有單元測試 —— 這裡量的是 App 真的接了線。
+  { key: idKey('update', 'update-reentry'), step: 'update', note: '按「稍後」後,側欄出現「已下載更新 vX —— 重新啟動以安裝」入口(dismiss 後唯一看得到更新提示的地方)' },
 
   // ───────────── 浮層 ─────────────
   { key: key('overlay', 'button', '播放'), step: 'overlay', note: '捲動位置真的前進' },
@@ -520,6 +525,13 @@ export const CONTROLS = [
   { key: key('overlay', 'button', '↖ 左上'), step: 'overlay', note: '視窗真的移到螢幕左上角(bounds 改變)' },
   { key: key('overlay', 'button', '↑ 上中'), step: 'overlay', note: '視窗真的移到螢幕上緣正中' },
   { key: key('overlay', 'button', '↗ 右上'), step: 'overlay', note: '視窗真的移到螢幕右上角' },
+  /**
+   * 凝視錨點兩顆(DESIGN_RESEARCH P0-1)。可見文字是身分(與角落三顆同一套規則):
+   * 「已鎖定=綠」刻意**不**改文字 —— 改了就會在鎖定後產生第二個身分,登記表
+   * 對不上,而那種紅燈出現在幾分鐘後的另一支稽核裡。
+   */
+  { key: key('overlay', 'button', '◎ 鎖定'), step: 'overlay', note: '鎖定後 gazeInfo.anchored false → true(錨點真的寫進設定,資料層證據)' },
+  { key: key('overlay', 'button', '◉ 鏡頭'), step: 'overlay', note: '未鎖定退回上中 + 鎖定後吸附回錨點(bounds 兩段都變)' },
   // 無障礙名稱來自鈕上的文字(↺),不是 title(回到開頭)—— 以列舉端會產生的那個為準。
   // 寫 title 的話兩邊都說得通,只是永遠對不上(而那種錯不會自己浮出來)。
   { key: key('overlay', 'button', '↺'), step: 'overlay', note: '捲動位置真的回到 0' },

@@ -50,7 +50,7 @@
 ```bash
 npm install
 npm run dev          # 開發（兩視窗熱重載）
-npm test             # 899 單元測試（79 個檔案）
+npm test             # 934 單元測試（82 個檔案）
 npm run lint         # ESLint（0 error；warning 上限由 eslint-baseline.json 釘住）
 npm run lint:baseline # 確認 warning 沒有超過 baseline（發布閘門會跑）
 npm run test:e2e     # Playwright e2e 封鎖套件（先 npm run build；與 CI 同一份清單）

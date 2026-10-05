@@ -89,6 +89,9 @@ const api: Api = {
   shareSimulation: () => ipcRenderer.invoke(IPC.ShareSimulation),
   snapOverlayCorner: (corner: 'tl' | 'tc' | 'tr') => ipcRenderer.invoke(IPC.OverlaySnapCorner, corner),
   recenterOverlay: () => ipcRenderer.invoke(IPC.OverlayRecenter),
+  setGazeAnchor: (cameraLabel: string) => ipcRenderer.invoke(IPC.OverlaySetGazeAnchor, cameraLabel),
+  snapOverlayGaze: () => ipcRenderer.invoke(IPC.OverlaySnapGaze),
+  overlayGazeInfo: () => ipcRenderer.invoke(IPC.OverlayGazeInfo),
 
   // 開發者除錯(見 src/main/debug.ts;未啟用時 main 端一律回 null/false)
   debugOpenDevTools: (target: 'main' | 'overlay') => ipcRenderer.invoke(IPC.DebugOpenDevTools, target),

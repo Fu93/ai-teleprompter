@@ -35,6 +35,22 @@ export const useUpdate = create<UpdateStore>((set) => ({
 }))
 
 /**
+ * 側欄復原入口的渲染條件(單一齣處,App.tsx 與測試共用)。
+ *
+ * 為什麼抽成函式而不是把 `info && dismissed` 寫在元件裡:
+ * 「元件裡的條件」單元測試觸不到 —— 把條件拿掉的負向驗證會照樣綠
+ * (測的是狀態組合,不是渲染)。抽成純函式後,App.tsx 直接呼叫它,
+ * 拿掉呼叫 = 拿掉功能,測試才能紅在正確的地方。
+ *
+ * 兩個條件都是必須的:
+ *   - info 非空:沒有待安裝更新時入口是謊言。
+ *   - dismissed 為真:橫幅在場時它是重複 —— 兩個「重新啟動」互搶焦点。
+ */
+export function updateEntryVisible(s: Pick<UpdateStore, 'info' | 'dismissed'>): boolean {
+  return s.info !== null && s.dismissed
+}
+
+/**
  * 掛載時補問一次 main。
  *
  * 只在 mount 時呼叫一次:更新下載完成與畫面掛載沒有因果關係,而這是一個

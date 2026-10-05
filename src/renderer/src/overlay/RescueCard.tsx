@@ -3,6 +3,7 @@ import { Loader2, Siren, X } from 'lucide-react'
 import type { RescuePayload } from '@shared/types'
 import { cn } from '../lib/utils'
 import { useEscape } from '../lib/useEscape'
+import { overlayMirrorStyle } from './mirror'
 
 /** v3 AICard 的信心顏色門檻:>=0.6 綠 / >=0.3 橙 / 其餘紅 */
 function confidenceColor(confidence: number): string {
@@ -12,7 +13,7 @@ function confidenceColor(confidence: number): string {
 }
 
 /**
- * @param compact 貼鏡模式(420×170)用。
+ * @param compact 貼鏡模式(640×170)用。
  *
  * 為什麼需要一個尺寸參數:貼鏡視窗只有 170px 高,扣掉工具列(36) 與底部提示後
  * 幾乎沒有餘裕 —— 而救援卡的內容是動態的(句子長度、要點數)。原本同一個版面
@@ -25,13 +26,20 @@ export function RescueCard({
   rescue,
   errorMsg,
   onDismiss,
-  compact = false
+  compact = false,
+  mirror = false
 }: {
   phase: 'thinking' | 'rescue'
   rescue: RescuePayload | null
   errorMsg: string
   onDismiss: () => void
   compact?: boolean
+  /**
+   * 鏡像模式(反射罩)下卡內文字必須跟著翻轉,否則透過玻璃是反字 ——
+   * 而救援正是使用者最輸不起的一段文字(見 UX_FINDINGS 之六)。
+   * 預設 false:貼鏡(lens)分支直接閱讀、無玻璃,不傳這個 prop。
+   */
+  mirror?: boolean
 }): JSX.Element {
   // Esc 關掉救援卡。它是浮層上層的暫態內容,而浮層經常有滑鼠穿透或失焦的狀況,
   // 只能靠滑鼠點右上角 ✕ 在實務上太脆弱(尤其簡報中只剩鍵盤可用)。
@@ -51,6 +59,9 @@ export function RescueCard({
       // 而永遠紅的報告只會訓練人忽略它。
       data-overlay-card="rescue"
       className={cn('absolute inset-x-3 top-3 z-30 flex justify-center', !compact && 'inset-x-4 top-4')}
+      // inset-x 對稱、內容置中:翻轉不位移;CSS transform 會映射命中區,
+      // 裡面的可點元素照樣點得到。
+      style={{ transform: overlayMirrorStyle(mirror) }}
     >
       <div
         className={cn('glass-pill anim-rise w-full rounded-2xl', compact ? 'max-w-md p-3' : 'max-w-md p-4')}

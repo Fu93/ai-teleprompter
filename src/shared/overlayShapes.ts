@@ -5,7 +5,7 @@
  *   這組數字有兩個必須一致的消費者 —— renderer 的 morph 動畫（要長成多大）與
  *   main 的視窗最小尺寸（不准被縮到比形態需求更小）。寫成兩份就一定會漂移，
  *   而漂移的症狀正是這輪修掉的那個 bug:視窗被允許縮到 280×40，但藥丸的內容
- *   需要約 300px、貼鏡需要 420×170 —— 於是最後一顆按鈕（展開鈕，也是藥丸唯一
+ *   需要約 300px、貼鏡需要 640×170 —— 於是最後一顆按鈕（展開鈕，也是藥丸唯一
  *   的出口）被 overflow 裁掉，貼鏡的正文整段消失。
  *
  * 為什麼「每個形態各自有下限」而不是統一個 280×40:
@@ -184,8 +184,35 @@ export function pillMinOf(scale: number): { w: number; h: number } {
   }
 }
 
-/** 貼鏡（lens）的設計尺寸 */
-export const LENS_SIZE = { w: 420, h: 170 } as const
+/**
+ * 貼鏡（lens）的設計尺寸。
+ *
+ * 寬 420 → 640 是 DESIGN_RESEARCH P0-1 的「行寬鎖 30–34 字/行」(W3C 中文排版
+ * 甜蜜點):正文兩側 px-4 共 32px、字級 LENS_BODY_FONT_PX=19,640 下每行
+ * (640−32)/19 ≈ 32 字。舊寬 420 只放得下約 20 字 —— 行太短,讀者每隔兩三字
+ * 就要回掃一次,而「當前句 ±1 句」的上下文行在 420 下也沒有位置放。
+ * 行寬是否守住由 overlayShapes.test.ts 斷言,改字級或內距時它會紅。
+ */
+export const LENS_SIZE = { w: 640, h: 170 } as const
+
+/** 貼鏡正文(當前句/要點/詞組)字級 —— Surfaces.tsx 的 LensSurface 共用這個數字 */
+export const LENS_BODY_FONT_PX = 19
+
+/** 貼鏡上下文行(上一句/下一句)字級 —— 比正文小一級,視覺上退到「背景資訊」 */
+export const LENS_CONTEXT_FONT_PX = 17
+
+/**
+ * 貼鏡「camera band」(當前句頂緣)在視窗內的垂直偏移(px)。
+ *
+ * 工具列 h-9 = 36 + 正文 pt-1.5 ≈ 6 + 上下文行(LENS_CONTEXT_FONT_PX ×
+ * leading-snug 1.375 = 23.4,無顯式 gap,靠行距呼吸)= 65。
+ *
+ * 這個數字是凝視偏移角的一半(另一半是錨點距螢幕上緣的距離):
+ * GazeInfo.offsetPx = 錨點距離 + 這裡。它變,設定頁顯示的角度就變 ——
+ * 所以要改 LensSurface 的垂直結構(加行/換行距)時,這裡必須跟著重算,
+ * 不然角度會安靜地謊報。
+ */
+export const LENS_BAND_TOP_PX = 65
 
 /** 展開形態的最小尺寸（使用者可以拖曳到這麼小） */
 export const EXPANDED_MIN = { w: 280, h: 40 } as const

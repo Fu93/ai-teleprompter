@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import { AlignJustify, AudioLines, List, Type } from 'lucide-react'
 import type { AppSettings, OverlayDisplayMode } from '@shared/types'
+import { LENS_BODY_FONT_PX, LENS_CONTEXT_FONT_PX } from '@shared/overlayShapes'
 import { cn } from '../lib/utils'
 import type { FollowChunk } from '../lib/follow'
 import { PhraseVisuals } from '../lib/teleprompter/constants'
@@ -307,7 +308,7 @@ export function LensSurface({
     const next = model.bullets[state.bulletIndex + 1]
     return (
       <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
-        <div className="font-semibold leading-snug text-white/72 reading-shadow" style={{ fontSize: 19 }}>
+        <div className="font-semibold leading-snug text-white/72 reading-shadow" style={{ fontSize: LENS_BODY_FONT_PX }}>
           {bullet?.title ?? '—'}
         </div>
         {bullet && bullet.subPoints.length > 0 && (
@@ -332,7 +333,7 @@ export function LensSurface({
       <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
         {/* 詞距只留在原文有空白的邊界:逐字切出來的中文字序列若套 gap,
             字與字之間會被拉開 6px,整行讀起來像被拆散。 */}
-        <div className="flex flex-wrap font-semibold leading-snug reading-shadow" style={{ fontSize: 19 }}>
+        <div className="flex flex-wrap font-semibold leading-snug reading-shadow" style={{ fontSize: LENS_BODY_FONT_PX }}>
           {words.map((w, i) => (
             <span
               key={i}
@@ -359,13 +360,32 @@ export function LensSurface({
     )
   }
 
-  // phrase / scroll:句子 band + 短語高亮
+  // phrase / scroll:上下文 ±1 句 + 當前句 band(DESIGN_RESEARCH P0-1)
+  //
+  // ── 為什麼上一句在 band **上方**、而且永遠佔位 ──
+  // 讀序自上而下:上一句 → 當前句(band) → 下一句。上一句行用 min-h 固定幾何
+  // (第一句時沒有上一句,列仍在),band 頂緣因此恆在 LENS_BAND_TOP_PX ——
+  // 那是凝視偏移角的一半(另一半是錨點距螢幕上緣),改行數/行距必須同步改
+  // overlayShapes 的常數,不然設定頁的角度會安靜地謊報。
+  //
+  // ── 行寬 30–34 字/行 ──
+  // 由 LENS_SIZE=640 與 LENS_BODY_FONT_PX=19 決定((640−32)/19 ≈ 32),
+  // 守在 overlayShapes.test.ts。舊寬 420 只有約 20 字,而且放不下上下文行。
   const phrases = model.phrases[state.sentenceIndex] ?? []
+  const prevSentence = model.sentences[state.sentenceIndex - 1] ?? null
   const nextSentence = model.sentences[state.sentenceIndex + 1] ?? null
-  const upcoming = model.sentences[state.sentenceIndex + 2] ?? null
   return (
     <div className="flex min-h-0 flex-1 flex-col px-4 pt-1.5 select-none">
-      <div className="flex flex-wrap gap-x-2 font-medium leading-snug reading-shadow" style={{ fontSize: 19 }}>
+      <div
+        className="min-h-[23px] truncate leading-snug text-white/72 reading-shadow"
+        style={{ fontSize: LENS_CONTEXT_FONT_PX, opacity: 0.38 }}
+      >
+        {prevSentence}
+      </div>
+      <div
+        className="flex min-h-0 flex-1 flex-wrap gap-x-2 overflow-hidden font-medium leading-snug reading-shadow"
+        style={{ fontSize: LENS_BODY_FONT_PX }}
+      >
         {phrases.map((p, i) => (
           <span
             key={i}
@@ -386,15 +406,11 @@ export function LensSurface({
         ))}
       </div>
       {!suppressBottom && (
-        <div className="mt-auto space-y-0.5 pb-1.5">
-          <div className="truncate text-[12px] text-white/72" style={{ opacity: 0.62 }}>
-            下一句:{nextSentence ?? '—'}
-          </div>
-          {upcoming && (
-            <div className="truncate text-[11px] text-white/72" style={{ opacity: 0.38 }}>
-              再下一句:{upcoming}
-            </div>
-          )}
+        <div
+          className="truncate pb-1.5 leading-snug text-white/72 reading-shadow"
+          style={{ fontSize: LENS_CONTEXT_FONT_PX, opacity: 0.62 }}
+        >
+          下一句:{nextSentence ?? '—'}
         </div>
       )}
     </div>

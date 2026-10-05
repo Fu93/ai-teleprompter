@@ -38,6 +38,7 @@ import { useFollowMode } from './useFollowMode'
 import { useLiveEvents } from './useLiveEvents'
 import { LENS_SIZE, useMorph } from './useMorph'
 import { paceReadoutFits, pillFitOf, pillKeywordCharsOf, pillSizeOf, statusBarFits } from '@shared/overlayShapes'
+import { overlayMirrorStyle } from './mirror'
 import { useGlassRefraction } from './useGlassRefraction'
 import { OverlayDebugRoot } from './DebugHud'
 import { registerAuditControl } from '../lib/auditBridge'
@@ -185,7 +186,7 @@ export default function OverlayApp(): JSX.Element {
   // 貼鏡形態下的實際引擎模式。
   //
   // 為什麼要導一層:連續捲動的推進依賴「捲動容器已量測」(engine.tickScroll 對
-  // 未量測直接 return),而貼鏡 420×170 沒有捲動容器 —— 於是 displayMode=scroll
+  // 未量測直接 return),而貼鏡 640×170 沒有捲動容器 —— 於是 displayMode=scroll
   // 進貼鏡後,時鐘照走、狀態點照亮,但畫面一格都不動:看起來在播、實際凍結,
   // 而且只在錄影當下才看得出來。貼鏡渲染的是索引驅動的 band,其中逐句與
   // scroll 的語意最接近,所以貼鏡 + scroll 一律以 phrase 驅動;游標歸零與
@@ -564,6 +565,60 @@ export default function OverlayApp(): JSX.Element {
   // morphSize 不在這裡解構:那是 useMorph 的內部動作(animate→patch),
   // 組件這層只宣告「進/出 compact、進/出 lens」四個意圖。
   const { enterCompact, exitCompact, enterLens, exitLens, morphing } = useMorph({ patchOverlay })
+
+  // ── 凝視錨點(DESIGN_RESEARCH P0-1):「◎ 鎖定」/「◉ 鏡頭」──
+  // gazeHint 與 lensHint 共用同一條底部提示列(絕對定位的同一段高度,疊印
+  // 兩行都讀不了 —— 與 suppressBottom 同一條規則),渲染時二選一,gazeHint 優先
+  // (它是剛剛的動作回饋,比「每次開啟都播」的教學提示更新鮮)。
+  const [gazeHint, setGazeHint] = useState<string | null>(null)
+  const gazeHintTimer = useRef<number | null>(null)
+  const showGazeHint = (msg: string): void => {
+    setGazeHint(msg)
+    if (gazeHintTimer.current) clearTimeout(gazeHintTimer.current)
+    gazeHintTimer.current = window.setTimeout(() => setGazeHint(null), 6000)
+  }
+  useEffect(
+    () => () => {
+      if (gazeHintTimer.current) clearTimeout(gazeHintTimer.current)
+    },
+    []
+  )
+
+  /**
+   * 「◎ 鎖定」:把浮層**目前位置**存成凝視錨點(一次性拖放校正)。
+   * 攝影機名稱來自 enumerateDevices,只供設定頁顯示 —— 拿不到 label
+   * (未授權/無設備)不擋鎖定,座標才是本體,名字退回「攝影機」。
+   */
+  const lockGaze = (): void => {
+    void (async () => {
+      let label = '攝影機'
+      try {
+        const cams = await navigator.mediaDevices.enumerateDevices()
+        label = cams.find((d) => d.kind === 'videoinput')?.label?.trim() || '攝影機'
+      } catch {
+        // enumerateDevices 失敗不擋鎖定(見 JSDoc)
+      }
+      const ok = await window.api.setGazeAnchor(label)
+      showGazeHint(ok ? '已鎖定鏡頭錨點 ✓ 之後進貼鏡會自動停靠到這裡' : '鎖定失敗:浮層視窗不存在')
+    })()
+  }
+
+  /**
+   * 「◉ 鏡頭」:停靠到錨點。未鎖定/螢幕已拔時 main 退回上中角落並回報原因 ——
+   * 靜默的退回會讓使用者以為「吸附壞了」,其實只是還沒校正。
+   */
+  const dockGaze = (): void => {
+    void (async () => {
+      const r = await window.api.snapOverlayGaze()
+      if (!r.docked) {
+        showGazeHint(
+          r.stale
+            ? '錨點所在的螢幕已拔除 — 先吸到上中,請重新鎖定'
+            : '還沒鎖定錨點 — 先吸到上中;拖到鏡頭正下方後按「◎ 鎖定」'
+        )
+      }
+    })()
+  }
 
   // ── Liquid Glass 真折射(P2-13)──
   // morphing 傳進去:動畫途中位移圖快取的是舊尺寸/舊半徑,那時候套折射會把背景
@@ -1028,15 +1083,37 @@ export default function OverlayApp(): JSX.Element {
             {overlayState === 'clickThrough' && <MousePointerClick size={8} className="text-amber-450" />}
           </span>
           <span className="flex-1" />
-          {/* 角落吸附:貼到螢幕上緣,離鏡頭軸線最近。
-              貼鏡的寬度下限就是它的設計寬度(420),所以這一段只會在「morph 動畫
-              途中」遇到更窄的視窗 —— 那時候先讓位的應該是三顆角落鈕,而不是
+          {/* 凝視錨點 + 角落吸附:貼到螢幕上緣,離鏡頭軸線最近。
+              貼鏡的寬度下限就是它的設計寬度(640),所以這一段只會在「morph 動畫
+              途中」遇到更窄的視窗 —— 那時候先讓位的應該是這五顆位置鈕,而不是
               右邊的退出/pause/隱藏。 */}
           {winW >= 400 && (
           <div
             className="flex items-center gap-1"
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
+            {/* 可見文字是身分(effects 稽核以文字列舉),**不要**隨狀態改寫 ——
+                「◎ 鎖定 → ◎ 已鎖定」會在鎖定後產生一個登記表裡沒有的新身分,
+                而那種紅燈出現在幾分鐘後的另一支稽核裡。狀態由顏色與設定頁表達。 */}
+            <button
+              onClick={lockGaze}
+              title="鎖定鏡頭錨點:先把這條拖到攝影機正下方,按我鎖定(下次進貼鏡自動停靠)"
+              className={cn(
+                'cursor-pointer whitespace-nowrap rounded-full px-2 py-2 text-[10px] transition-colors',
+                o.gazeAnchor
+                  ? 'bg-emerald-500/25 text-emerald-200 hover:bg-emerald-500/35'
+                  : 'bg-white/8 text-white/72 hover:bg-white/15'
+              )}
+            >
+              ◎ 鎖定
+            </button>
+            <button
+              onClick={dockGaze}
+              title="吸附到鏡頭錨點:停靠到鎖定的攝影機正下方(未鎖定時先吸到上中)"
+              className="cursor-pointer whitespace-nowrap rounded-full bg-white/8 px-2 py-2 text-[10px] text-white/72 transition-colors hover:bg-white/15"
+            >
+              ◉ 鏡頭
+            </button>
             {(
               [
                 { id: 'tl', label: '↖ 左上' },
@@ -1080,22 +1157,27 @@ export default function OverlayApp(): JSX.Element {
           displayMode={engineMode}
           // 預讀行與所有暫態提示是絕對定位的同一段高度:任一條出現都先收起,
           // 否則 turn-yield / coaching 會直接疊印在「下一句」上(與 lensHint 同型缺陷)
-          suppressBottom={(lensHint || !!turnYieldHint || !!coachingHint) && panicPhase === 'idle'}
+          suppressBottom={(lensHint || !!gazeHint || !!turnYieldHint || !!coachingHint) && panicPhase === 'idle'}
         />
-        {/* 角落吸附:貼到螢幕上緣,離鏡頭軸線最近。
-            原本是 absolute top-9 浮在正文上方,實測把第一行提詞文字整行蓋住;
-            改成把正文往下讓位(pt-8)又會把底部的「下一句」擠出 170px 的視窗。
-            貼鏡視窗只有 420x170,扣掉工具列 36px、底部提示 22px 後,
-            「下一句/再下一句」再吃掉 40px,留給正文只剩 70px ——
-            沒有任何浮層層能再吃高度。所以這三顆按鈕改放進工具列的空白處
-            (原本是 flex-1 spacer,什麼都沒放),不再占用正文空間。*/}
+        {/* 位置按鈕(凝視錨點 + 角落吸附)原本是 absolute top-9 浮在正文上方,
+            實測把第一行提詞文字整行蓋住;改成把正文往下讓位(pt-8)又會把底部的
+            「下一句」擠出 170px 的視窗。貼鏡視窗只有 640x170,扣掉工具列 36px、
+            上下文行(上一句 ~23 + 下一句 ~30)後,留給當前句 band 的只剩約 80px
+            (2–3 行)—— 沒有任何浮層層能再吃高度。所以這五顆按鈕(◎ 鎖定 /
+            ◉ 鏡頭 / 三顆角落)都放進工具列的空白處(flex-1 spacer),
+            不占用正文空間。*/}
         {null}
         {/* 貼鏡只有 170px 高:救援卡顯示中時先把這兩條提示收起來。
             三者都在絕對定位的同一段高度上,疊在一起會讓救援句的可讀性變差,
             而救援永遠比提醒重要(提示條本身也會自己重播)。 */}
-        {lensHint && panicPhase === 'idle' && (
+        {lensHint && !gazeHint && panicPhase === 'idle' && (
           <div className="pointer-events-none absolute inset-x-3 bottom-1.5 z-10 rounded-full bg-black/60 px-3 py-1 text-center text-[10px] text-white/72">
-            把這條貼到攝影機 5cm 內 — 眼神會自然對準鏡頭,錄起來不像看稿
+            把這條拖到攝影機正下方,按「◎ 鎖定」記住位置 — 眼神會自然對準鏡頭
+          </div>
+        )}
+        {gazeHint && panicPhase === 'idle' && (
+          <div className="pointer-events-none absolute inset-x-3 bottom-1.5 z-10 rounded-full bg-black/60 px-3 py-1 text-center text-[10px] text-white/72">
+            {gazeHint}
           </div>
         )}
         {panicPhase === 'idle' && (turnYieldHint || coachingHint) && (
@@ -1501,7 +1583,7 @@ export default function OverlayApp(): JSX.Element {
       {content ? (
         <div
           className="relative flex min-h-0 flex-1 flex-col"
-          style={{ transform: o.mirror ? 'scaleX(-1)' : undefined }}
+          style={{ transform: overlayMirrorStyle(o.mirror) }}
         >
           {displayMode === 'scroll' && (
             <ScrollSurface
@@ -1578,9 +1660,14 @@ export default function OverlayApp(): JSX.Element {
             'pointer-events-none absolute inset-x-4 z-20 flex flex-col items-center gap-2',
             bottomBarShown ? 'bottom-12' : 'bottom-4'
           )}
+          // 鏡像模式下這些文字與正文同一條閱讀路徑(反射罩):不翻的話透過玻璃
+          // 是反字。說明列/跟讀條在正文容器裡已經翻了(見 UX_FINDINGS 之六);
+          // 這個堆疊在容器外,必須自己翻。inset-x-4 對稱、內容置中,翻轉不位移;
+          // CSS transform 會映射命中區,裡面 pointer-events-auto 的按鈕照樣點得到。
+          style={{ transform: overlayMirrorStyle(o.mirror) }}
         >
           {/* 瞬時節奏讀數(P4):只出現在展開態。
-              藥丸(320px 扣三顆按鈕)與貼鏡(420×170,高度預算被量過三次)
+              藥丸(320px 扣三顆按鈕)與貼鏡(640×170,高度預算被量過三次)
               都沒有空間給一個**持續**讀數 —— 那兩個形態的職責是「看著稿」,
               不是「看著自己」;教練提示在那裡是暫態事件,與讀數不同。
               放在堆疊的**第一項**:讀數隨著開口/停頓出現又消失,而位移總要有人
@@ -1656,7 +1743,15 @@ export default function OverlayApp(): JSX.Element {
 
       {/* Panic 救援卡(thinking / rescue)*/}
       {panicPhase !== 'idle' && (
-        <RescueCard phase={panicPhase} rescue={rescue} errorMsg={errorMsg} onDismiss={dismissRescue} />
+        <RescueCard
+          phase={panicPhase}
+          rescue={rescue}
+          errorMsg={errorMsg}
+          onDismiss={dismissRescue}
+          // 救援卡是鏡像模式下最輸不起的表面:使用者透過玻璃讀談話要點,
+          // 不翻的話它就是一整片反字(見 UX_FINDINGS 之六)。
+          mirror={o.mirror}
+        />
       )}
 
       {/* 進度條(軌道用暗色:底部 2px 亮軌在深色內容上讀作白邊;

@@ -24,7 +24,7 @@ import { useDebug } from './lib/debug'
 import { registerAuditControl } from './lib/auditBridge'
 import { confirmDialog } from './lib/confirm'
 import { registerNavigator } from './lib/nav'
-import { hydrateUpdate, installUpdateBridge, useUpdate, watchUpdate } from './lib/update'
+import { hydrateUpdate, installUpdateBridge, updateEntryVisible, useUpdate, watchUpdate } from './lib/update'
 import {
   installHotkeyConflictBridge,
   useHotkeyConflicts,
@@ -56,6 +56,21 @@ function SidebarHotkeyHint({ onNavigate }: { onNavigate: (page: PageId) => void 
    */
   const conflicts = useHotkeyConflicts()
   const toggleBroken = !!toggleKey && conflicts.includes(toggleKey)
+  /**
+   * 「稍後」之後的復原入口(單一狀態源 useUpdate)。
+   *
+   * 為什麼需要:橫幅按「稍後」之後,整個 App 沒有任何地方能再看到
+   * 「已下載更新」—— 實測(探針)含設定頁在內的所有頁面都沒有這個字樣。
+   * 而橫幅是唯一一個提醒「autoInstallOnAppQuit 會在下次關閉時換版本」的地方,
+   * dismiss 它的使用者並沒有說「永遠不要再告訴我」,只說了「現在別擋路」。
+   * 下一個自然觸發點是 App 重啟 —— 那時更新已經裝完了,提示永遠不會再出現。
+   *
+   * 入口放在側欄(每頁都在)而不是設定頁:dismiss 的人不會為了找一個
+   * 他不知道存不存在的東西去開設定頁。只在 dismissed 時渲染 ——
+   * 橫幅在場時它就是重複,會變成兩個「重新啟動」互相搶焦点。
+   */
+  const updateInfo = useUpdate((s) => s.info)
+  const updateDismissed = useUpdate((s) => s.dismissed)
   // 除錯層由其 root 向 main 問 appInfo().debug 後設起來,這裡只讀結果
   const debugReady = useDebug((s) => s.enabled)
   // settings 尚未載入時補一次 load(防外部清除 store);正常啟動流程已載
@@ -87,6 +102,26 @@ function SidebarHotkeyHint({ onNavigate }: { onNavigate: (page: PageId) => void 
           {conflicts.length} 顆熱鍵沒有註冊成功 —— 到設定頁修改
         </button>
       )}
+      {/* 「稍後」之後的復原入口:見上方 updateDismissed 的註解。
+          點按不重開橫幅(dismissed 維持 true —— 使用者已說過現在別擋路),
+          而是直接走與橫幅同一條安裝路徑(relaunchApp)。
+          updateInfo 先存進區域常數:函式守衛幫不了 JSX 內的窄化。 */}
+      {updateEntryVisible({ info: updateInfo, dismissed: updateDismissed }) &&
+        (() => {
+          const info = updateInfo!
+          return (
+        <button
+          data-effect-id="update-reentry"
+          // 與橫幅兩顆鈕同一個 scope:它們是「同一件事的同一組控制項」
+          data-effect-scope="update"
+          className="w-full cursor-pointer rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2 py-1 text-left text-[10px] text-emerald-300 transition-colors hover:bg-emerald-500/25"
+          onClick={() => void window.api.relaunchApp()}
+          title={`已下載更新 v${info.version},重新啟動後安裝(你在橫幅上按過「稍後」)`}
+        >
+          已下載更新 v{info.version} —— 重新啟動以安裝
+        </button>
+          )
+        })()}
       {/* 除錯面板的入口:快捷鍵是 Ctrl+Shift+D,但沒必要讓人先記住它 */}
       {debugReady && (
         <button

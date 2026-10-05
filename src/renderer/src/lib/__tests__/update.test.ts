@@ -80,4 +80,30 @@ describe('更新提示的補問與事件', () => {
     expect(typeof off).toBe('function')
     off()
   })
+
+  it('「稍後」之後復原入口必須看得到:App 用的是同一個渲染條件函式,拿掉它就是拿掉功能', async () => {
+    const { emit } = installApi(null)
+    const { watchUpdate, useUpdate, updateEntryVisible } = await import('../update')
+
+    const off = watchUpdate()
+    emit()
+
+    // 渲染條件是 lib/update.ts 的 updateEntryVisible:App.tsx 呼叫它,
+    // 所以「拿掉呼叫」與「函式本身壞掉」都會在這裡紅。
+    // (元件渲染本身由 audit-effects 的真探針量 —— 兩層各守一半。)
+    const s = useUpdate.getState()
+    // 橫幅在場(dismissed=false):入口必須隱藏 —— 兩個「重新啟動」會互搶焦点
+    expect(updateEntryVisible(s), '橫幅在場時側欄不該再出現入口').toBe(false)
+    // 按「稍後」:橫幅消失,入口必須接手 —— 否則整個 App 沒有任何地方
+    // 再看得到「已下載更新」,而它是 autoInstallOnAppQuit 的唯一提醒
+    useUpdate.getState().dismiss()
+    expect(updateEntryVisible(useUpdate.getState()), 'dismiss 後側欄入口必須成立,否則「已下載更新」從畫面徹底消失').toBe(true)
+    // 入口點下去之後 dismissed 仍應是 true:使用者已說過「別擋路」,
+    // 入口只是把它收進側欄,不該反悔成全螢幕橫幅
+    expect(useUpdate.getState().dismissed).toBe(true)
+    // 版本清掉(例如更新已安裝、main 不再回報)時入口跟著消失
+    useUpdate.setState({ info: null, dismissed: false })
+    expect(updateEntryVisible(useUpdate.getState())).toBe(false)
+    off()
+  })
 })

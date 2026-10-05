@@ -45,7 +45,7 @@ import { blockingArgs } from '../e2e/manifest.mjs'
 const BASELINE = {
   'audit:ui': { file: 'docs/audit/report.json', minStates: 6 },
   // 40 → 42(2026-10-02):貼鏡形態原本只量了 panic 一種暫態。turn-yield 與 coaching
-  // 這兩條路徑都發生在 420×170 這個會被裁掉的視窗裡(turn-yield 會讓底部預讀行收起、
+  // 這兩條路徑都發生在 640×170 這個會被裁掉的視窗裡(turn-yield 會讓底部預讀行收起、
   // coaching 是這一版才補上的),沒有狀態就是沒量過。此輪決定:接受 42。
   // 42 → 43(2026-10-05):瞬時節奏讀數(P4)是**持續型** UI —— 每 2 秒心跳、
   // 使用者會照著它調整語速,而原本 45 個狀態裡沒有一個會說話,讀數在新 UI

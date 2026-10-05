@@ -64,6 +64,38 @@ export function clampFontSize(px: number): number {
   return Math.round(Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, px)))
 }
 
+// ── 貼鏡凝視錨點的量化(DESIGN_RESEARCH P0-1) ──
+// 「眼神自然」在這裡從感覺變成一個度數:眼球從鏡頭(≈螢幕物理上緣)偏到
+// 文字帶頂緣,張開的角度 = atan(實體偏移 ÷ 臉距)。
+
+/** 96dpi CSS px → 實體 mm。與 visualAngleDeg 同一個假設 —— 兩處必須一起改 */
+export const MM_PER_PX_96DPI = 25.4 / 96
+
+/** px → cm(96dpi 近似) */
+export function pxToCm96dpi(px: number): number {
+  return (px * MM_PER_PX_96DPI) / 10
+}
+
+/** 未校準時展示用的臉距備援(研究文獻的典型值;顯示時會標明「未校準」) */
+export const DEFAULT_VIEWING_DISTANCE_CM = 50
+
+/**
+ * 凝視偏移角(度):畫面偏移 px 換算實體距離後,對臉距取 atan。
+ *
+ * 只算單邊偏移(atan)而不是張角(2·atan):這裡問的是「眼睛相對直視鏡頭
+ * 偏了幾度」,不是「文字高度張開幾度」—— 後者是 visualAngleDeg 的問題。
+ *
+ * 防呆:距離非正數(未校準被清成 0 / 手改壞設定)回 0 —— 回傳 NaN 會讓
+ * 設定頁印出「NaN°」,那是比「沒有數字」更糟的謊言。
+ */
+export function gazeOffsetDeg(offsetPx: number, viewingDistanceCm: number): number {
+  if (!Number.isFinite(offsetPx) || !Number.isFinite(viewingDistanceCm) || viewingDistanceCm <= 0 || offsetPx <= 0) {
+    return 0
+  }
+  const offsetCm = pxToCm96dpi(offsetPx)
+  return (Math.atan(offsetCm / viewingDistanceCm) * 180) / Math.PI
+}
+
 /**
  * 計算朗讀轉錄文字的「可讀字數」：
  * 中文字逐字計；英數字串（單字）每個視為 1 字（中文語速基準的等效換算）。

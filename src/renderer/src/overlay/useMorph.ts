@@ -115,7 +115,7 @@ export function useMorph(params: UseMorphParams): UseMorphResult {
    * --pill-r 是藥丸的設計半徑(= 目前倍率下的 PILL_BASE.h / 2)。
    *
    * 這裡刻意用設計尺寸而不是「目前視窗高度的一半」:morph 的目標一定是藥丸尺寸,
-   * 而定義上膠囊半徑就是它的高度一半 —— 但「藥丸 → 貼鏡」的目標視窗是 420×170,
+   * 而定義上膠囊半徑就是它的高度一半 —— 但「藥丸 → 貼鏡」的目標視窗是 640×170,
    * 用目前高度來算會得到 85px 的圓角(整個貼鏡變成圓牌),那是錯的。
    * 每個 morph 都從同一組數字開始,輪廓才有一致的基準。
    */
@@ -236,6 +236,11 @@ export function useMorph(params: UseMorphParams): UseMorphResult {
       lensPrevSize.current = expanded
       void patchOverlay({ lensMode: true, compact: false })
       morphSize(LENS_SIZE.w, LENS_SIZE.h, false, expanded, false, o.compact, o.pillScale)
+      // 凝視錨點(DESIGN_RESEARCH P0-1):有錨點就自動停靠到「鏡頭正下方」——
+      // 這是「磁吸」的兌現:一次性拖放校正之後,每次進貼鏡都回到同一個位置。
+      // 未校正時**完全不動**:沒有錨點的自動位移只會把使用者剛拖好的位置
+      // 拽走,而那種「進貼鏡就被跳一下」的行為比沒有自動停靠更糟。
+      if (o.gazeAnchor) void window.api.snapOverlayGaze()
     },
     [patchOverlay, morphSize]
   )
