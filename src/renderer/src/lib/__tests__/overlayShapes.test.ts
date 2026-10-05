@@ -4,9 +4,10 @@ import { join } from 'path'
 import {
   clampPillScale,
   EXPANDED_MIN,
+  LENS_BODY_FONT_PX,
+  LENS_SIZE,
   OVERLAY_STATUS_BAR_MIN_H,
   PACE_READOUT_MIN_H,
-  PACE_READOUT_MIN_H_LIFTED,
   PACE_READOUT_PER_ITEM_H,
   paceReadoutFits,
   statusBarFits,
@@ -209,7 +210,7 @@ describe('overlayShapeMin / overlayShapeDesignSize', () => {
       w: 338,
       h: 62
     })
-    expect(overlayShapeMin({ compact: false, lensMode: true })).toEqual({ w: 420, h: 170 })
+    expect(overlayShapeMin({ compact: false, lensMode: true })).toEqual({ w: 640, h: 170 })
     expect(overlayShapeMin({ compact: false, lensMode: false })).toEqual({ w: 280, h: 40 })
   })
 
@@ -222,7 +223,7 @@ describe('overlayShapeMin / overlayShapeDesignSize', () => {
       w: 256,
       h: 38
     })
-    expect(overlayShapeDesignSize({ compact: false, lensMode: true })).toEqual({ w: 420, h: 170 })
+    expect(overlayShapeDesignSize({ compact: false, lensMode: true })).toEqual({ w: 640, h: 170 })
     expect(overlayShapeDesignSize({ compact: false, lensMode: false })).toBeNull()
   })
 })
@@ -337,7 +338,6 @@ describe('paceReadoutFits', () => {
    * 有狀態條 → 108 不行;沒有狀態條 → 100 可以。
    */
   it('狀態條可見時門檻升到 36 + 48 + 25 = 109px', () => {
-    expect(PACE_READOUT_MIN_H_LIFTED).toBe(109)
     expect(paceReadoutFits(109, true)).toBe(true)
     expect(paceReadoutFits(108, true)).toBe(false)
   })
@@ -347,6 +347,11 @@ describe('paceReadoutFits', () => {
       expect(paceReadoutFits(h, false), `沒有狀態條時 ${h}px 應該畫`).toBe(true)
       expect(paceReadoutFits(h, true), `有狀態條時 ${h}px 不該畫`).toBe(false)
     }
+  })
+
+  it('720x260 不會因為提示條而失去讀數(兩條提示 + 已靜默鈕也還在)', () => {
+    expect(paceReadoutFits(260, false, 3)).toBe(true)
+    expect(paceReadoutFits(260, true, 3)).toBe(true)
   })
 
   it('有狀態條時非有限值也不畫(barVisible 不能繞過那道檢查)', () => {
@@ -400,6 +405,7 @@ describe('paceReadoutFits', () => {
     expect(paceReadoutFits(9999, false, 1.7)).toBe(true) // 1.7 → 1 項
     expect(paceReadoutFits(9999, false, 2)).toBe(true)
   })
+
 })
 
 /* ── 底部狀態條自己的高度預算(說明列 / 跟讀條)──
@@ -430,5 +436,22 @@ describe('statusBarFits', () => {
   it('非有限值不畫(NaN / Infinity 都不是「應該畫」的證據)', () => {
     expect(statusBarFits(Number.NaN)).toBe(false)
     expect(statusBarFits(Number.POSITIVE_INFINITY)).toBe(false)
+  })
+})
+
+/**
+ * 貼鏡行寬契約(DESIGN_RESEARCH P0-1):正文 30–34 字/行(W3C 中文排版甜蜜點)。
+ *
+ * 這條測試是 LENS_SIZE 420 → 640 的存在理由:舊寬在 19px 字級下只有約 20 字/行,
+ * 讀者每隔兩三字就要回掃一次。行寬 = (視窗寬 − 兩側 px-4 內距) ÷ 字級 ——
+ * 三者任一被改(加寬/縮字級/改內距),這裡先紅,而不是等到有人盯著畫面覺得
+ * 「行好像太短」。
+ */
+describe('貼鏡行寬 30–34 字/行', () => {
+  it('LENS_SIZE × LENS_BODY_FONT_PX 守住中文排版甜蜜點', () => {
+    const LENS_PADDING_X_PX = 32 // px-4 × 2(Surfaces.tsx 的 LensSurface)
+    const charsPerLine = (LENS_SIZE.w - LENS_PADDING_X_PX) / LENS_BODY_FONT_PX
+    expect(charsPerLine).toBeGreaterThanOrEqual(30)
+    expect(charsPerLine).toBeLessThanOrEqual(34)
   })
 })
