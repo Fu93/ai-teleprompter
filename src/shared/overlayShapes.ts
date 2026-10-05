@@ -204,6 +204,19 @@ export const OVERLAY_TOOLBAR_H = 36
 /** 底部回饋堆疊離視窗底邊的距離(OverlayApp 的 `bottom-4`) */
 export const OVERLAY_STACK_BOTTOM = 16
 /**
+ * 底部狀態條(工具列說明列 / 跟讀狀態條)可見時,堆疊改用的距離(OverlayApp 的 `bottom-12`)。
+ *
+ * 為什麼是 48 而不是「狀態條高 + 間隙」:狀態條自己貼在 `bottom-1.5`(6px)、高 23px
+ * (audit-deep 實測),上緣在 29px;48 留了 19px 呼吸空間,兩塊不會貼在一起。
+ * 這是**第二條位移路徑**:第一版只算了 bottom-4,於是狀態條一出現,讀數就
+ * 少了 32px 的可用高度(稽核實測 720x100 時與工具列重疊 8px)。
+ */
+export const OVERLAY_STACK_BOTTOM_LIFTED = 48
+/** 底部狀態條自己的高度(audit-deep 實測 23px:`py-1` + `text-[10px]` 的一行) */
+export const OVERLAY_STATUS_BAR_H = 23
+/** 狀態條離視窗底邊的距離(`bottom-1.5` = 6px) */
+export const OVERLAY_STATUS_BAR_BOTTOM = 6
+/**
  * 瞬時節奏讀數 chip 的實測高度。
  *
  * 來源不是估算:audit-deep 的 `overlay.pace.geometry` 在 720x260 的展開態量到
@@ -212,7 +225,7 @@ export const OVERLAY_STACK_BOTTOM = 16
  */
 export const PACE_READOUT_H = 25
 /**
- * 放得下底部讀數的最小展開態高度(36 + 16 + 25 = 77px)。
+ * 放得下底部讀數的最小展開態高度(36 + 16 + 25 = 77px) —— 堆疊貼在 bottom-4 時。
  *
  * 為什麼需要它:讀數 chip 是絕對定位在視窗底部的**持續型**元件 —— 它不像
  * turn-yield / coaching 提示會自己退場("暫態貼到東西上"可以接受,因為它
@@ -224,10 +237,76 @@ export const PACE_READOUT_H = 25
  * 讀數是「看著自己」的資訊,工具列是「操作提詞機」的入口,後者不能被蓋掉。
  */
 export const PACE_READOUT_MIN_H = OVERLAY_TOOLBAR_H + OVERLAY_STACK_BOTTOM + PACE_READOUT_H
+/**
+ * 同一條線,但底部狀態條可見、堆疊被抬到 bottom-12 時(36 + 48 + 25 = 109px)。
+ *
+ * 為什麼要分成兩條而不是取大的那條:「沒有狀態條時也要求 109px」等於讓讀數
+ * 在 77–108px 這個**狀態條不在場**的高度區間白白消失 —— 而那個區間正是
+ * 「拖小的長條 + 在講話」這個使用情境。有兩條線,才兩邊都對。
+ */
+export const PACE_READOUT_MIN_H_LIFTED =
+  OVERLAY_TOOLBAR_H + OVERLAY_STACK_BOTTOM_LIFTED + PACE_READOUT_H
+/**
+ * 同一個堆疊裡的其他項:一條暫態提示條的高度(實測 32px —— turn-yield 與 coaching
+ * 都是 `px-4 py-2 text-xs`)。「本場已靜默」的恢復鈕只有 25px,但這裡**一律以 32 計**
+ * (保守:寧可早 7px 收起讀數,也不能讓它壓在工具列上)。
+ */
+export const OVERLAY_HINT_H = 32
+/** 堆疊項之間的間距(`gap-2`) */
+export const OVERLAY_STACK_GAP = 8
+/**
+ * 每一個「與讀數同框」的項要為它多留的高度。
+ *
+ * 為什麼讀數要把別人算進來:堆疊是一個 bottom 錨定的 flex-col,內容比空間高時
+ * **最上面的項**被推出頂端 —— 而讀數就是第一項(見 OverlayApp 的堆疊註解)。
+ * 稽核實測:720x120 + 狀態條 + 一條提示條時,讀數被推到 `top=8`、與工具列重疊
+ * 24px。(以「讀數自己放不放得下」為準的門檻看不見這件事:它問的是自己的高度,
+ * 而把它推出去的是別人的高度。)位移由讀數吸收不變 —— 差別是在這種排列裡
+ * 它選擇**不出現**,而不是壓在出口按鈕上。
+ */
+export const PACE_READOUT_PER_ITEM_H = OVERLAY_HINT_H + OVERLAY_STACK_GAP
 
-/** 這個視窗高度放得下底部讀數嗎?不夠就不畫(見 PACE_READOUT_MIN_H 的理由)。 */
-export function paceReadoutFits(winH: number): boolean {
-  return Number.isFinite(winH) && winH >= PACE_READOUT_MIN_H
+/**
+ * 這個視窗高度放得下底部讀數嗎?不夠就不畫(見 PACE_READOUT_MIN_H 的理由)。
+ *
+ * `barVisible` = 底部狀態條(說明列/跟讀條)這一刻真的畫在畫面上:它會把整個
+ * 堆疊抬到 bottom-12,讀數的可用高度因此少 32px。第一版沒有這個參數,於是
+ * 「狀態條可見 + 77–108px」這一小段高度裡,讀數是畫出來的、而且貼在工具列上。
+ *
+ * `extraItems` = 這一刻與它同在堆疊裡的項數(提示條 / 已靜默的恢復鈕)。每一項要多
+ * 留 PACE_READOUT_PER_ITEM_H:堆疊比空間高時被推出頂端的是**第一項**(讀數),
+ * 而「讀數自己放得下」不等於「讀數加別人放得下」。沒有這一項的第二版會把讀數
+ * 推到工具列上(720x120 + 狀態條 + 一條提示條 → 重疊 24px,稽核實測)。
+ */
+export function paceReadoutFits(winH: number, barVisible = false, extraItems = 0): boolean {
+  if (!Number.isFinite(winH)) return false
+  const anchor = barVisible ? OVERLAY_STACK_BOTTOM_LIFTED : OVERLAY_STACK_BOTTOM
+  // 非有限的項數(NaN / Infinity)一律視為「不畫」:那是呼叫端的錯,不是「沒有別人」
+  // 的證據;負數夾成 0(等於沒有別人)、小數向下取整。
+  const items = Number.isFinite(extraItems) ? Math.max(0, Math.floor(extraItems)) : Number.POSITIVE_INFINITY
+  return winH >= OVERLAY_TOOLBAR_H + anchor + PACE_READOUT_H + items * PACE_READOUT_PER_ITEM_H
+}
+
+/**
+ * 底部狀態條放得下的最小展開態高度(36 + 6 + 23 = 65px)。
+ *
+ * 為什麼狀態條也要有門檻:它與讀數同一個位置、也**不會自己退場**(跟讀中、
+ * 或說明列被焦點/游標叫出來之後就一直留著),而展開態下限 40px 比它需要的 65
+ * 還小。實測 720x40(下限本身)時它與工具列重疊 23px、720x60 時 5px —— 蓋住的
+ * 是工具列左側那幾顆圖示鈕(它們沒有文字,所以 domAudit 的文字遮擋規則看不到)。
+ *
+ * 門檻的方向與讀數一致:沒有空間就不畫。狀態條的文字在高度不足時讓位,理由與
+ * 讀數相同 —— 工具列是提詞機的出口(它同時是視窗的拖曳把手),不能被蓋住。
+ * 狀態條承載的跟讀狀態不會因此消失:按鈕自己的 spinner("loading")與 active 態
+ * ("listening")仍在工具列上,藥丸形態也有同一條訊息通道;把視窗拉回來,
+ * 狀態條就跟著回來(與讀數的 `overlay-pace-lost` 是同一個「收起後要能回來」的約束)。
+ */
+export const OVERLAY_STATUS_BAR_MIN_H =
+  OVERLAY_TOOLBAR_H + OVERLAY_STATUS_BAR_BOTTOM + OVERLAY_STATUS_BAR_H
+
+/** 這個視窗高度放得下底部狀態條嗎?不夠就不畫(見 OVERLAY_STATUS_BAR_MIN_H 的理由)。 */
+export function statusBarFits(winH: number): boolean {
+  return Number.isFinite(winH) && winH >= OVERLAY_STATUS_BAR_MIN_H
 }
 
 export type OverlayShape = 'expanded' | 'pill' | 'lens'

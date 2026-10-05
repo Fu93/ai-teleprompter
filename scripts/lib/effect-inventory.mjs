@@ -281,6 +281,12 @@ export const CONTROLS = [
   { key: key('scripts', 'button', '新講稿'), step: 'scripts', note: 'IndexedDB scripts 真的 +1' },
   { key: key('scripts', 'button', '匯入 .txt / .md'), step: 'scripts', exempt: { category: EXEMPT_CATEGORY.NATIVE_DIALOG, reason: '檔案選擇器是作業系統對話框,headless 點不到;匯入的解析由 e2e/scripts-import.spec.ts 以真實檔案覆蓋' } },
   { key: key('scripts', 'input:text', '搜尋講稿'), step: 'scripts', note: '列表真的被過濾' },
+  // 排序列的 segmented control。**兩顆各登記一筆** —— 它們是兩個控制項,
+  // 而效果是同一件事的兩面:清單順序。只登記一顆,另一顆就是覆蓋率的洞。
+  // 為什麼不是豁免:排序是這個功能的全部效果,而且它在 headless 裡量得到
+  // (造出 updatedAt 與 lastUsedAt 相反的兩份稿,看誰在第一列)。
+  { key: idKey('scripts', 'scripts-order-edited'), step: 'scripts', note: '切回「最近編輯」:剛剛編輯的那份回到第一列(預設排序)' },
+  { key: idKey('scripts', 'scripts-order-used'), step: 'scripts', note: '切到「最近使用」:用過的那份(即使很久沒編輯)排到第一列,那一列同時顯示「最後使用」時間' },
   { key: key('scripts', 'button', '建立第一份講稿'), step: 'scripts', note: '空狀態的建立鈕,scripts +1' },
   // 空狀態的第二條路(先看到成品再說)。它與總覽頁那顆 demo-script 做同一件事,
   // 但**是兩顆不同的控制項**(不同頁、不同文案):只登記其中一邊,

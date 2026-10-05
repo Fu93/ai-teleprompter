@@ -37,7 +37,7 @@ import { usePace } from './usePace'
 import { useFollowMode } from './useFollowMode'
 import { useLiveEvents } from './useLiveEvents'
 import { LENS_SIZE, useMorph } from './useMorph'
-import { paceReadoutFits, pillFitOf, pillKeywordCharsOf, pillSizeOf } from '@shared/overlayShapes'
+import { paceReadoutFits, pillFitOf, pillKeywordCharsOf, pillSizeOf, statusBarFits } from '@shared/overlayShapes'
 import { useGlassRefraction } from './useGlassRefraction'
 import { OverlayDebugRoot } from './DebugHud'
 import { registerAuditControl } from '../lib/auditBridge'
@@ -1150,6 +1150,23 @@ export default function OverlayApp(): JSX.Element {
   // 說明列也佔用同一條底欄:提示 pill 的避讓判斷必須一起看它,
   // 否則 tooltip 出現的那一瞬間,提示条會與它疊印(兩行都讀不了)。
   const followBarVisible = !!toolbarHint || followStatus !== 'idle' || !!followNotice
+  /**
+   * 這一刻**真的畫出來**的底部狀態條:高度不足時整條讓位(見 overlayShapes 的
+   * statusBarFits —— 它與讀數一樣不會自己退場,而工具列是提詞機的出口)。
+   *
+   * 讓位之後堆疊不能再被抬起,否則提示條會為了避開一個看不見的東西而被推出
+   * 視窗(實測 720x40 時堆疊 top=-40:整個提示條在視窗上緣之外)。
+   */
+  const bottomBarShown = followBarVisible && statusBarFits(winH)
+  /**
+   * 這一刻與讀數同在底部堆疊裡的其他項(turn-yield 提示 / 教練提示 / 已靜默的恢復鈕)。
+   *
+   * 為什麼讀數要問這個:堆疊比空間高時被推出頂端的是**第一項** —— 也就是讀數。
+   * 它的門檻若只算自己,就會壓在工具列上(稽核實測 720x120 + 狀態條 + 一條提示條
+   * → 讀數 top=8、與工具列重疊 24px)。
+   */
+  const stackItems =
+    (turnYieldHint ? 1 : 0) + (coachingHint ? 1 : 0) + (coachingMuted.length > 0 ? 1 : 0)
 
   return (
     <div
@@ -1508,7 +1525,7 @@ export default function OverlayApp(): JSX.Element {
           {/* 工具列說明列 / 跟讀狀態條:同一條底欄的兩個使用者(見 toolbarHint)。
               說明列優先:它是使用者當下滑鼠所在的那一顆(即時意圖),
               而跟讀狀態是背景事實;兩者同時存在時,先回答他正在問的問題。 */}
-          {toolbarHint ? (
+          {bottomBarShown && (toolbarHint ? (
             <div
               data-toolbar-legend="1"
               className="pointer-events-none absolute bottom-1.5 left-1/2 flex max-w-[92%] -translate-x-1/2 items-center gap-2 rounded-full bg-black/75 px-3 py-1 text-[10px] text-white/72"
@@ -1526,7 +1543,7 @@ export default function OverlayApp(): JSX.Element {
                 {followBarText}
               </span>
             </div>
-          ) : null}
+          ) : null)}
         </div>
       ) : (
         <div className="flex h-full flex-col items-center justify-center gap-2.5 px-6 text-center text-xs leading-relaxed text-white/52">
@@ -1559,7 +1576,7 @@ export default function OverlayApp(): JSX.Element {
           // 兩者都是暫態,同時出現時兩行都讀不了 → 條存在時提示上移避讓
           className={cn(
             'pointer-events-none absolute inset-x-4 z-20 flex flex-col items-center gap-2',
-            followBarVisible ? 'bottom-12' : 'bottom-4'
+            bottomBarShown ? 'bottom-12' : 'bottom-4'
           )}
         >
           {/* 瞬時節奏讀數(P4):只出現在展開態。
@@ -1570,10 +1587,14 @@ export default function OverlayApp(): JSX.Element {
               吸收 —— 提示鈕是可點擊的(點它把這一種靜默到本場結束),讀數不是。
               稽核實測(`overlay-pace-shifts-hint`):放最後一項時,讀數出現會把
               提示鈕往上推 32px,使用者正在瞄準的那一顆就跑掉了。
-              高度不夠時不畫(paceReadoutFits):展開態最小高度 40px 比它需要的
-              77px 還小,持續讀數會**永久**蓋住 36px 的工具列 —— 那幾顆按鈕是
-              提詞機的出口,寧可沒有讀數也不能蓋掉它。 */}
-          {pace && paceReadoutFits(winH) && (
+              高度不夠時不畫(paceReadoutFits):它有**兩條**門檻 —— 堆疊貼在
+              bottom-4 時需要 77px,而底部狀態條(說明列/跟讀條)出現時整個堆疊
+              被抬到 bottom-12,需要 109px。展開態最小高度 40px 比兩條都小,
+              持續讀數會**永久**蓋住 36px 的工具列 —— 那幾顆按鈕是提詞機的出口,
+              寧可沒有讀數也不能蓋掉它。
+              第二條門檻是稽核量出來的:只算 bottom-4 時,720x100(狀態條可見)
+              與工具列重疊 8px、720x90 時 18px、720x80 時 24px。 */}
+          {pace && paceReadoutFits(winH, bottomBarShown, stackItems) && (
             <div
               data-pace="1"
               data-pace-verdict={pace.verdict}

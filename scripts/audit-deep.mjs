@@ -1287,6 +1287,191 @@ async function main() {
             `高度不夠時讀數收起是對的,但還原到 ${restored.winH}px 之後它沒有回來(窗內樣本還在)—— 使用者從此看不到讀數`
           )
         }
+
+        /**
+         * 底部狀態條(工具列說明列 / 跟讀狀態條)出現時的**第二條位移路徑**。
+         *
+         * 為什麼要另立一段:狀態條出現時整條堆疊被抬到 bottom-12(+32px),讀數
+         * 需要的可用高度從 77px 變成 109px。第一版只算了 bottom-4 —— 於是
+         * 720x100(狀態條可見)時 chip 與工具列重疊 8px、720x90 時 18px、
+         * 720x80 時 24px,而 720x260 的對照組完全正常:缺陷只落在
+         * 「拖小 + 狀態條在場」這一小段高度裡,單看那個常用尺寸看不到它。
+         *
+         * 為什麼用焦點而不是游標:說明列同時吃 mouseover 與 focus(事件委派在
+         * [data-toolbar-shell] 上),而焦點不會因為滑鼠抖一下就跑掉 —— 量測期間
+         * 它必須是穩定的。焦點留在工具列上也是真實狀態:使用者按過任何一顆鈕
+         * 之後就是這個樣子(所以狀態條與讀數是同一類:不會自己退場)。
+         *
+         * 三個高度各自代表一件事:
+         *   120px → 兩者都放得下(109):chip 必須在,且不碰工具列也不碰狀態條
+         *   100px → 放得下狀態條(65)但放不下 chip(109):chip 收起,狀態條在
+         *    60px → 連狀態條都放不下(65):它讓位,工具列上只留按鈕
+         * 兩個「必須在」是為了不讓缺陷被「那干脆都不要畫」蓋掉 —— 「讓位」與
+         * 「壞掉」的差別只在這一側看得出來(與 overlay-pace-lost 同一個理由)。
+         */
+        await force(overlay, state, 'overlay.coachingHint', null)
+        // 窗內樣本會過期(10 秒),而這一段要跨三個 resize:先把樣本補回來。
+        for (let i = 0; i < 2; i++) {
+          await main
+            .evaluate((t) => window.api.pushTranscript({ text: t, speaker: 'me' }), SEG)
+            .catch(() => {})
+          await sleep(1_500)
+        }
+        await overlay.locator('[data-overlay-toolbar="1"] [data-tooltip-label]').first().focus().catch(() => {})
+        await sleep(600) // 說明列有 120ms 的顯示延遲,不是立刻出現
+
+        const bottomGeo = async () =>
+          overlay
+            .evaluate(() => {
+              const rectOf = (el) => {
+                if (!el) return null
+                const b = el.getBoundingClientRect()
+                return { t: Math.round(b.top), b: Math.round(b.bottom), l: Math.round(b.left), rt: Math.round(b.right) }
+              }
+              const chip = rectOf(document.querySelector('[data-pace="1"]'))
+              const toolbar = rectOf(document.querySelector('[data-overlay-toolbar="1"]'))
+              const bar = rectOf(
+                document.querySelector('[data-toolbar-legend="1"]') ??
+                  document.querySelector('[class*="bottom-1.5"]')
+              )
+              const overlap = (a, b2) => {
+                if (!a || !b2) return 0
+                const dy = Math.min(a.b, b2.b) - Math.max(a.t, b2.t)
+                const dx = Math.min(a.rt, b2.rt) - Math.max(a.l, b2.l)
+                return dx > 0 && dy > 0 ? Math.round(dy) : 0
+              }
+              const stack = document.querySelector('[class*="flex-col"][class*="bottom-"]')
+              return {
+                winH: window.innerHeight,
+                chip: !!chip,
+                bar: !!bar,
+                chipTop: chip ? chip.t : null,
+                barTop: bar ? bar.t : null,
+                toolbarBottom: toolbar ? toolbar.b : null,
+                chipVsToolbar: overlap(chip, toolbar),
+                chipVsBar: overlap(chip, bar),
+                barVsToolbar: overlap(bar, toolbar),
+                // 非 chip 的堆疊項數(提示條 / 已靜默鈕):用來記錄這一格是在哪一種
+                // 排列下量的 —— 提示條在場時讀數的門檻不同(見 paceReadoutFits)。
+                items: stack ? Math.max(0, stack.childElementCount - (chip ? 1 : 0)) : null,
+                // 說明列的來源是 focus(委派在 [data-toolbar-shell] 上):焦點不在
+                // 工具列上時,「狀態條不在」是沒有需求而不是它讓位。
+                focusInToolbar: !!document.activeElement?.closest?.('[data-toolbar-shell]')
+              }
+            })
+            .catch(() => null)
+
+        /**
+         * 一個高度量三件事:讀數不碰工具列、狀態條不碰工具列、讀數不碰狀態條。
+         *
+         * 三組都是矩形對矩形的物理不變量(不拿 App 自己的門檻來比 —— 那等於
+         * 問它「你自己覺得對嗎」,門檻調小就會跟著通過)。「必須在」的兩條是
+         * 反面:它們防的是「把兩個元素都收起來」這種把缺陷藏起來的解法。
+         */
+        const checkBottomBarPhase = async (phase, w, h, must) => {
+          await main.evaluate(([ww, hh]) => window.api.overlaySetSize(ww, hh), [w, h]).catch(() => {})
+          await sleep(900)
+          const g = await bottomGeo()
+          if (!g) {
+            report.unreached(state, `量不到底部幾何(工具列/狀態條/讀數)—— ${phase} 的重疊量不到`)
+            return null
+          }
+          if (must.bar && !g.focusInToolbar) {
+            report.unreached(
+              state,
+              `${phase}:焦點已經不在工具列上 —— 狀態條不在場不是它讓位,而是根本沒有需求(這一格量不下去)`
+            )
+            return null
+          }
+          report.tallyRule('overlay-bottom-bar-overlap')
+          const overlaps = []
+          if (g.chip && g.chipVsToolbar > 0) {
+            overlaps.push(
+              `讀數 chip 與工具列重疊 ${g.chipVsToolbar}px(chipTop=${g.chipTop} 工具列下緣=${g.toolbarBottom})`
+            )
+          }
+          if (g.bar && g.barVsToolbar > 0) {
+            overlaps.push(
+              `底部狀態條與工具列重疊 ${g.barVsToolbar}px(狀態條上緣=${g.barTop} 工具列下緣=${g.toolbarBottom})`
+            )
+          }
+          if (g.chip && g.chipVsBar > 0) {
+            overlaps.push(`讀數 chip 與底部狀態條重疊 ${g.chipVsBar}px(兩者都不會自己退場)`)
+          }
+          if (overlaps.length > 0) {
+            report.add('overlay-bottom-bar-overlap', state, `${phase}(視窗高 ${g.winH}px):${overlaps.join(';')}`)
+          }
+          if (must.chip) {
+            report.tallyRule('overlay-pace-lost')
+            if (!g.chip) {
+              report.add(
+                'overlay-pace-lost',
+                state,
+                `${phase}:視窗高 ${g.winH}px 放得下讀數(109px + 同框項各 40px —— 狀態條在場時再加 32px)、樣本也還在,chip 卻不在 —— 收起變成了壞掉`
+              )
+            }
+          }
+          if (must.bar) {
+            report.tallyRule('overlay-status-bar-lost')
+            if (!g.bar) {
+              report.add(
+                'overlay-status-bar-lost',
+                state,
+                `${phase}:焦點在工具列上、視窗高 ${g.winH}px 放得下狀態條(65px),它卻不在 —— 使用者看不到自己焦點在哪一顆按鈕上`
+              )
+            }
+          }
+          if (overlaps.length === 0 && (!must.chip || g.chip) && (!must.bar || g.bar)) {
+            report.note(
+              `overlay.bottomBar.${phase}`,
+              `視窗高 ${g.winH}px → 讀數${g.chip ? '在' : '收起'}、狀態條${g.bar ? '在' : '讓位'}` +
+                `${g.items === null ? '' : `、同框提示 ${g.items} 條`};讀數/狀態條/工具列三組矩形兩兩不相交`
+            )
+          }
+          return g
+        }
+        // 三個**沒有強制**提示條的高度。為什麼是兩個高度(100 與 130)而不是一個:
+        // 讀數被推出工具列的那一段高度取決於**提示條在不在**(沒有提示條時是
+        // 77–108px,有提示條時是 113–148px),而真實提示條在這一格是不是在場
+        // **不由這支腳本決定**(main 的冷場訊號只給 8 秒淡出)── 每一格的
+        // `同框提示 N 條` 會寫進 note,兩種排列各自都被覆蓋。
+        // (實測時真實提示正好在場:100px 與 130px 都量到 1 條。)
+        // 兩個高度在修好的程式碼裡都是綠的;而對修法前的程式碼,任一排列都
+        // 至少有一個高度會紅(1 條提示時 130px 重疊 19px、100px 重疊 12px)。
+        await checkBottomBarPhase('bar@260', 720, 260, { chip: true, bar: true })
+        await checkBottomBarPhase('bar@100', 720, 100, { chip: false, bar: true })
+        await checkBottomBarPhase('bar@130', 720, 130, { chip: false, bar: true })
+
+        /**
+         * 讀數與**其他項**同框的排列。
+         *
+         * 為什麼要這一組:堆疊比空間高時被推出頂端的是第一項(讀數) ——
+         * 「讀數自己放得下」不等於「讀數加別人放得下」。用稽核橋強制一條提示條
+         * (它是持續的,而且 `auditCoaching ?? realCoachingHint` 讓它蓋過真實訊號),
+         * 排列就是確定的:這就是實測到 24px 重疊的那一格。
+         */
+        await force(overlay, state, 'overlay.coachingHint', {
+          kind: 'filler',
+          message: '稽核:與讀數同框的提示'
+        })
+        await sleep(500)
+        await checkBottomBarPhase('bar+hint@120', 720, 120, { chip: false, bar: true })
+        await checkBottomBarPhase('bar+hint@260', 720, 260, { chip: true, bar: true })
+        await force(overlay, state, 'overlay.coachingHint', null)
+        await sleep(500)
+        // 連狀態條都放不下的高度(65px):它讓位,工具列上只留按鈕。
+        await checkBottomBarPhase('bar@60', 720, 60, { chip: false, bar: false })
+
+        // 收尾:焦點與尺寸都要還原 —— 說明列是元件層的狀態,留著會跟著進下一個
+        // 形態的截圖(下一格是貼鏡暫態)。
+        await overlay.evaluate(() => document.activeElement?.blur?.()).catch(() => {})
+        await main.evaluate(() => window.api.overlaySetSize(720, 260)).catch(() => {})
+        await sleep(700)
+        const restored2 = await bottomGeo()
+        report.note(
+          'overlay.bottomBar.restored',
+          `焦點已放開、尺寸還原 720x260 → 狀態條${restored2 && restored2.bar ? '仍在(不該)' : '已收起'}`
+        )
       }
       // 收尾:讀數、強制的提示與語音上下文都不得留給下一格(下一格是貼鏡暫態;
       // 這裡開始說話之後,若不清掉,8 秒冷場會落在別人的截圖上)。

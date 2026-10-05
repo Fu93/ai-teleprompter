@@ -4,8 +4,12 @@ import { join } from 'path'
 import {
   clampPillScale,
   EXPANDED_MIN,
+  OVERLAY_STATUS_BAR_MIN_H,
   PACE_READOUT_MIN_H,
+  PACE_READOUT_MIN_H_LIFTED,
+  PACE_READOUT_PER_ITEM_H,
   paceReadoutFits,
+  statusBarFits,
   overlayShapeDesignSize,
   overlayShapeMin,
   pillFitOf,
@@ -321,5 +325,110 @@ describe('paceReadoutFits', () => {
   it('非有限值不畫(NaN / Infinity 都不是「應該畫」的證據)', () => {
     expect(paceReadoutFits(Number.NaN)).toBe(false)
     expect(paceReadoutFits(Number.POSITIVE_INFINITY)).toBe(false)
+  })
+
+  /**
+   * 第二條門檻:底部狀態條(說明列/跟讀條)可見時,堆疊被抬到 bottom-12,
+   * 讀數需要的不是 77 而是 109px。
+   *
+   * 這條線與 77 是**兩條**,不是「取大的那一條」:沒有狀態條時也要求 109,
+   * 等於讓讀數在 77–108px 這個狀態條不在場的高度區間白白消失(而那正是
+   * 「把浮層拖成小長條、又剛好在講話」的情境)。所以要同時有下面兩個方向:
+   * 有狀態條 → 108 不行;沒有狀態條 → 100 可以。
+   */
+  it('狀態條可見時門檻升到 36 + 48 + 25 = 109px', () => {
+    expect(PACE_READOUT_MIN_H_LIFTED).toBe(109)
+    expect(paceReadoutFits(109, true)).toBe(true)
+    expect(paceReadoutFits(108, true)).toBe(false)
+  })
+
+  it('77–108px 之間:有沒有狀態條決定畫不畫(兩條線都不能被拿掉)', () => {
+    for (const h of [77, 90, 100, 108]) {
+      expect(paceReadoutFits(h, false), `沒有狀態條時 ${h}px 應該畫`).toBe(true)
+      expect(paceReadoutFits(h, true), `有狀態條時 ${h}px 不該畫`).toBe(false)
+    }
+  })
+
+  it('有狀態條時非有限值也不畫(barVisible 不能繞過那道檢查)', () => {
+    expect(paceReadoutFits(Number.NaN, true)).toBe(false)
+    expect(paceReadoutFits(Number.POSITIVE_INFINITY, true)).toBe(false)
+  })
+
+  /**
+   * 第三條:堆疊裡的其他項也要算。
+   *
+   * 這一條是稽核**量出來**的:720x120 + 狀態條 + 一條提示條時,讀數被推到 top=8、
+   * 與工具列重疊 24px —— 因為 bottom 錨定的 flex-col 在內容超高時,被推出頂端的
+   * 是**第一項**(讀數)。「自己的高度放得下」不等於「自己和別人放得下」。
+   *
+   * 每一項 40px = 提示條 32(實測)+ gap 8。四個數字兩側都釘:
+   *   沒有狀態條:77 / 117 / 157 / 197;有狀態條:109 / 149 / 189 / 229。
+   */
+  it('每一項同框提示多要 40px(32 + gap 8),兩側各自成立', () => {
+    expect(PACE_READOUT_PER_ITEM_H).toBe(40)
+    expect(paceReadoutFits(116, false, 1)).toBe(false)
+    expect(paceReadoutFits(117, false, 1)).toBe(true)
+    expect(paceReadoutFits(148, true, 1)).toBe(false)
+    expect(paceReadoutFits(149, true, 1)).toBe(true)
+  })
+
+  it('0/1/2/3 項的門檻是一條等差線(77→117→157→197;有狀態條各 +32)', () => {
+    const withBar = (n: number): number => 109 + n * 40
+    expect([0, 1, 2, 3].map((n) => 77 + n * 40)).toEqual([77, 117, 157, 197])
+    expect([0, 1, 2, 3].map((n) => 109 + n * 40)).toEqual([109, 149, 189, 229])
+    for (let n = 0; n <= 3; n++) {
+      expect(paceReadoutFits(77 + n * 40, false, n), `沒有狀態條、${n} 項`).toBe(true)
+      expect(paceReadoutFits(76 + n * 40, false, n), `沒有狀態條、${n} 項差 1px`).toBe(false)
+      expect(paceReadoutFits(withBar(n), true, n), `有狀態條、${n} 項`).toBe(true)
+      expect(paceReadoutFits(withBar(n) - 1, true, n), `有狀態條、${n} 項差 1px`).toBe(false)
+    }
+  })
+
+  /**
+   * 反面:這個參數不能把讀數變成「有提示條就消失」。260px 是實際使用的展開尺寸,
+   * 即使同時有兩個提示條 + 已靜默鈕(3 項)、而且狀態條也在,仍然放得下。
+   */
+  it('720x260 不會因為提示條而失去讀數(兩條提示 + 已靜默鈕也還在)', () => {
+    expect(paceReadoutFits(260, false, 3)).toBe(true)
+    expect(paceReadoutFits(260, true, 3)).toBe(true)
+  })
+
+  it('項數是 NaN 不畫;負數夾成 0、小數向下取整', () => {
+    expect(paceReadoutFits(9999, false, Number.NaN)).toBe(false)
+    expect(paceReadoutFits(Number.NaN, false, 1)).toBe(false)
+    expect(paceReadoutFits(9999, false, -2)).toBe(true) // 負數夾成 0:沒有別人
+    expect(paceReadoutFits(9999, false, 1.7)).toBe(true) // 1.7 → 1 項
+    expect(paceReadoutFits(9999, false, 2)).toBe(true)
+  })
+})
+
+/* ── 底部狀態條自己的高度預算(說明列 / 跟讀條)──
+   它與讀數同一個位置,而且也**不會自己退場**(跟讀中、或焦點/游標把說明列
+   叫出來之後就一直留著)。實測(audit-deep 的 tmp 探針,720 寬):
+     720x40(展開態下限)→ 狀態條 11..34,與工具列重疊 23px
+     720x60          → 上緣 31 < 工具列下緣 36,重疊 5px
+     720x100         → 71..94,不重疊
+   蓋住的是工具列左側那幾顆圖示鈕 —— 它們沒有文字,所以 domAudit 的文字
+   遮擋規則看不到這種缺陷(只有矩形對矩形的量測看得到)。 */
+describe('statusBarFits', () => {
+  it('門檻是 36 + 6 + 23 = 65px,而且兩側各自成立', () => {
+    expect(OVERLAY_STATUS_BAR_MIN_H).toBe(65)
+    expect(statusBarFits(65)).toBe(true)
+    expect(statusBarFits(64)).toBe(false)
+  })
+
+  it('實測重疊的兩個高度都在門檻之外(40px 下限、60px)', () => {
+    expect(statusBarFits(EXPANDED_MIN.h)).toBe(false)
+    expect(statusBarFits(60)).toBe(false)
+    expect(statusBarFits(100)).toBe(true)
+  })
+
+  it('它需要的比讀數少(65 < 77):狀態條不會比讀數更早消失', () => {
+    expect(OVERLAY_STATUS_BAR_MIN_H).toBeLessThan(PACE_READOUT_MIN_H)
+  })
+
+  it('非有限值不畫(NaN / Infinity 都不是「應該畫」的證據)', () => {
+    expect(statusBarFits(Number.NaN)).toBe(false)
+    expect(statusBarFits(Number.POSITIVE_INFINITY)).toBe(false)
   })
 })

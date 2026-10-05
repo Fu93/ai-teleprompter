@@ -2578,6 +2578,120 @@ async function stepScripts(app, main) {
     }
   }
 
+  // (h1) 排序切換 → 清單順序真的換了(兩顆鈕各驗一次)。
+  //
+  // 為什麼需要這一組:它們是「最近使用」排序的入口,而**排序**就是這個功能的
+  // 全部效果。只驗「鈕自己的 aria-pressed 變了」是 self 證據 —— 這個稽核不把
+  // 那種東西算成效果(見 effect-inventory 的 EVIDENCE)。
+  //
+  // 排列是**造出來的**,不是靠現況:甲有最舊的 updatedAt(10 分鐘前)但最新的
+  // lastUsedAt(剛剛用過),乙相反(剛剛編輯、從未使用)。兩種排序下誰在第一列
+  // 因此相反 —— 這是唯一能確定「按下去真的有換」的排列。
+  const pOrderUsed = probe(idKey('scripts', 'scripts-order-used'), '講稿')
+  const pOrderEdited = probe(idKey('scripts', 'scripts-order-edited'), '講稿')
+  const ORDER_A = '稽核排序甲'
+  const ORDER_B = '稽核排序乙'
+  await dbEval(
+    main,
+    `(db) => new Promise((res, rej) => { const tx = db.transaction('scripts','readwrite'); const os = tx.objectStore('scripts'); const now = Date.now(); os.put({ title: ${JSON.stringify(ORDER_A)}, content: '內容:' + ${JSON.stringify(ORDER_A)} + '。已用過、但很久沒編輯。', createdAt: now - 600000, updatedAt: now - 600000, lastUsedAt: now }); os.put({ title: ${JSON.stringify(ORDER_B)}, content: '內容:' + ${JSON.stringify(ORDER_B)} + '。剛剛編輯、從未使用。', createdAt: now - 30000, updatedAt: now }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error) })`
+  )
+  // 清單在 mount 時讀一次資料層 → 寫完要走開再回來(與 (h) 同一招)。
+  await gotoViaSidebar(main, '總覽')
+  await gotoViaSidebar(main, '提詞講稿')
+  await sleep(900)
+  const rowTitles = () =>
+    main.evaluate(() =>
+      [...document.querySelectorAll('[data-effect-id="script-row"]')].map((b) =>
+        (b.querySelector('div')?.textContent || '').trim()
+      )
+    )
+  const rowTextOf = (title) =>
+    main.evaluate((t) => {
+      const row = [...document.querySelectorAll('[data-effect-id="script-row"]')].find(
+        (b) => (b.querySelector('div')?.textContent || '').trim() === t
+      )
+      return row ? (row.textContent || '').replace(/\s+/g, ' ').trim() : null
+    }, title)
+  const clickOrder = (which) =>
+    main.evaluate((w) => {
+      const b = document.querySelector(`[data-effect-id="scripts-order-${w}"]`)
+      if (!b) return false
+      b.click()
+      return true
+    }, which)
+
+  const editedClicked = await clickOrder('edited')
+  await sleep(700)
+  const editedRows = await rowTitles()
+  const usedClicked = await clickOrder('used')
+  await sleep(700)
+  const usedRows = await rowTitles()
+  const usedRowTextA = await rowTextOf(ORDER_A)
+  // 收尾同時是「最近編輯」那一半的第二次轉移證據:切回預設排序,順便把
+  // localStorage 的 scripts-order 歸位(不留給下一個跑的人)。
+  const backClicked = await clickOrder('edited')
+  await sleep(700)
+  const editedRows2 = await rowTitles()
+
+  /**
+   * ⚠️ 為什麼兩顆都要斷「轉移」而不只是「順序是對的」——這是負向驗證抓到的。
+   *
+   * 清單的載入端本來就是 `orderBy('updatedAt').reverse()`(見 Scripts.tsx 的
+   * refresh),所以「最近編輯」那個分支把 updatedAt 遞減再排一次,結果與載入端
+   * **完全一樣**:把 `sortScripts` 改成不排序,那個分支的絕對順序斷言仍然成立。
+   * 實測過:壞掉的排序下只多了一筆 dead(「最近使用」那一顆),「最近編輯」看起來
+   * 還是綠的 —— 而它根本沒有在做事。
+   *
+   * 加上「按下去之後順序真的變了」之後,壞掉的實作兩顆都會紅。
+   */
+  const diff = (a, b) => JSON.stringify(a) !== JSON.stringify(b)
+
+  if (!editedClicked || !usedClicked || !backClicked) {
+    pOrderUsed.unreachable('找不到排序切換鈕([data-effect-id="scripts-order-used"])')
+    pOrderEdited.unreachable('找不到排序切換鈕([data-effect-id="scripts-order-edited"])')
+  } else if (
+    editedRows.length < 2 ||
+    !editedRows.includes(ORDER_A) ||
+    !editedRows.includes(ORDER_B)
+  ) {
+    pOrderUsed.unreachable(`清單裡看不到兩份種子稿:${JSON.stringify(editedRows.slice(0, 5))}`)
+    pOrderEdited.unreachable('同上')
+  } else {
+    /**
+     * 「最近使用」的兩個部分一起斷:順序**與**那一列的「最後使用」時間。
+     *
+     * 為什麼兩個都要:排序是主效果,時間欄是它存在的理由(使用者要看「多久前
+     * 講的」)。只斷順序的話,那一欄整段不渲染也會是綠的 —— 而它只在這個排序下
+     * 出現,所以這是它唯一能被量到的時機。
+     */
+    const usedHasRecency = String(usedRowTextA).includes('剛剛')
+    const usedMoved = diff(usedRows, editedRows)
+    if (usedRows[0] === ORDER_A && usedHasRecency && usedMoved) {
+      pOrderUsed.works(
+        `「最近使用」把用過的「${ORDER_A}」排到第一列(它在「最近編輯」下是第 ${editedRows.indexOf(ORDER_A) + 1} 列),那一列同時顯示「最後使用」「剛剛」`,
+        EVIDENCE.DOM
+      )
+    } else {
+      pOrderUsed.dead(
+        `「最近使用」第一列是「${usedRows[0]}」、預期「${ORDER_A}」;` +
+          `順序${usedMoved ? '有' : '沒有'}變;「最後使用」時間${usedHasRecency ? '有' : '沒有'};` +
+          `那一列的內容=${JSON.stringify(String(usedRowTextA).slice(0, 60))}`
+      )
+    }
+    const editedMoved = diff(editedRows2, usedRows)
+    if (editedRows2[0] === ORDER_B && editedRows2.indexOf(ORDER_A) > 0 && editedMoved) {
+      pOrderEdited.works(
+        `「最近編輯」把剛剛編輯的「${ORDER_B}」排回第一列(舊的「${ORDER_A}」在第 ${editedRows2.indexOf(ORDER_A) + 1} 列),順序真的從「最近使用」那版換回來`,
+        EVIDENCE.DOM
+      )
+    } else {
+      pOrderEdited.dead(
+        `「最近編輯」第一列是「${editedRows2[0]}」,「${ORDER_A}」在第 ${editedRows2.indexOf(ORDER_A) + 1} 列;` +
+          `順序${editedMoved ? '有' : '沒有'}從「最近使用」那版換回來`
+      )
+    }
+  }
+
   // (h2) 錄影預覽的兩個關閉口徑。
   //
   // 這個 modal 只在 MediaRecorder 真的錄完之後出現 —— headless 做不到,
