@@ -72,6 +72,76 @@ describe('resolveEndpoint', () => {
     expect(resolveEndpoint(PROVIDERS['openai-compatible'], 'ftp://x')).toBeNull()
   })
 
+  /**
+   * 這組是**為了擋住一個真的發生過的漏接**才加的。
+   *
+   * 背景:outboundEndpoint.ts 建立了統一的出站政策(擋 link-local metadata、
+   * 未指定位址、內嵌憑證…),ipc.ts 的 OpenAiChat / CloudTranscribe 兩條路徑
+   * 都接上了。但 resolveEndpoint 的 openai-compatible 分支原本只做
+   * `/^https?:\/\//` 前綴檢查,**沒有**呼叫那份政策 —— 而 chatCompletion
+   * (Panic 救援 Alt+P 與 AiChatCompletion 走的就是它)正是經過這裡。
+   * 結果是:填錯網址後按救援鍵,應用程式會帶著
+   * `Authorization: Bearer <你的金鑰>` 打到 169.254.169.254。
+   *
+   * 這裡測純函式(回 null),「擋在 fetch 之前」那一半在
+   * src/main/__tests__/outboundFetchGuard.test.ts —— 兩邊缺一不可:
+   * 只測這裡,整套換掉 fetch 仍會綠;只測那邊,這裡可以整段刪掉仍會綠。
+   */
+  it('openai-compatible:雲端 metadata / link-local 一律回 null', () => {
+    const cfg = PROVIDERS['openai-compatible']
+    expect(resolveEndpoint(cfg, 'http://169.254.169.254')).toBeNull()
+    expect(resolveEndpoint(cfg, 'http://169.254.169.254/v1')).toBeNull()
+    expect(resolveEndpoint(cfg, 'https://169.254.1.1/latest/meta-data')).toBeNull()
+  })
+
+  it('openai-compatible:URL 正規化後的 IPv4-mapped metadata 一樣被擋', () => {
+    // new URL() 會把 [::ffff:169.254.169.254] 變成 hex 形狀 [::ffff:a9fe:a9fe],
+    // 只比點號形狀的防護在這裡是空的(見 ipHost.ts 的說明)。
+    expect(resolveEndpoint(PROVIDERS['openai-compatible'], 'http://[::ffff:169.254.169.254]/v1')).toBeNull()
+    expect(resolveEndpoint(PROVIDERS['openai-compatible'], 'http://[::ffff:a9fe:a9fe]:8000/v1')).toBeNull()
+  })
+
+  it('openai-compatible:未指定位址 / multicast / reserved 被擋', () => {
+    const cfg = PROVIDERS['openai-compatible']
+    expect(resolveEndpoint(cfg, 'http://0.0.0.0:8000/v1')).toBeNull()
+    expect(resolveEndpoint(cfg, 'http://[::]:8000/v1')).toBeNull()
+    expect(resolveEndpoint(cfg, 'http://239.1.2.3:8000/v1')).toBeNull()
+    expect(resolveEndpoint(cfg, 'http://255.255.255.255:8000/v1')).toBeNull()
+  })
+
+  it('openai-compatible:內嵌憑證被擋(會被 Authorization 蓋掉,留著只是誤導)', () => {
+    expect(resolveEndpoint(PROVIDERS['openai-compatible'], 'http://user:pass@api.example.com/v1')).toBeNull()
+  })
+
+  it('openai-compatible:query / fragment 被丟掉,不讓路徑掉進 query', () => {
+    // 沒有這條的話,使用者填 https://host/v1?x=1 會得到
+    // https://host/v1?x=1/chat/completions —— 一個沒有原因的 404。
+    expect(resolveEndpoint(PROVIDERS['openai-compatible'], 'https://api.example.com/v1?x=1')).toBe(
+      'https://api.example.com/v1/chat/completions'
+    )
+  })
+
+  /**
+   * 政策是黑名單,所以**正常使用方式必須證明沒有被擋掉**。
+   * 這一條比上面那些擋截測試更重要:區網自架 vLLM / LM Studio / Tailscale
+   * (CGNAT 100.64/10、Docker ULA fc00::/7)被誤擋,就是把產品弄壞。
+   */
+  it('openai-compatible:區網自架 / loopback / CGNAT 照常可用', () => {
+    const cfg = PROVIDERS['openai-compatible']
+    expect(resolveEndpoint(cfg, 'http://127.0.0.1:8000/v1')).toBe('http://127.0.0.1:8000/v1/chat/completions')
+    expect(resolveEndpoint(cfg, 'http://192.168.1.20:8000/v1')).toBe('http://192.168.1.20:8000/v1/chat/completions')
+    expect(resolveEndpoint(cfg, 'http://100.101.102.103:11434/v1')).toBe(
+      'http://100.101.102.103:11434/v1/chat/completions'
+    )
+    expect(resolveEndpoint(cfg, 'http://[fd00::1]:8000/v1')).toBe('http://[fd00::1]:8000/v1/chat/completions')
+  })
+
+  it('openai-compatible:已經帶 /chat/completions 的網址不被重複拼接', () => {
+    expect(resolveEndpoint(PROVIDERS['openai-compatible'], 'https://api.example.com/v1/chat/completions')).toBe(
+      'https://api.example.com/v1/chat/completions'
+    )
+  })
+
   it('具名 provider 用註冊表 endpoint', () => {
     expect(resolveEndpoint(PROVIDERS['groq'], undefined)).toBe('https://api.groq.com/openai/v1/chat/completions')
     expect(resolveEndpoint(PROVIDERS['anthropic'], undefined)).toBe('https://api.anthropic.com/v1/messages')

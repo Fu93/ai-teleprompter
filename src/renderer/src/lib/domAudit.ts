@@ -42,15 +42,18 @@ import type { DomFinding } from '@shared/types'
  * 規則清單:
  *   1. low-contrast         文字對比低於 WCAG AA(一般 4.5:1、大字 3:1)
  *   2. small-tap-target     可點擊目標小於 28px
- *   3. thin-slider          range 軌道高度 < 8px(滑鼠難以瞄準)
- *   4. clipped              被「不可捲動的容器」裁掉
- *   5. truncated-no-label   文字被截斷但沒有 title/aria-label
- *   6. no-accessible-name   可操作控制項沒有無障礙名稱
- *   7. text-covered         文字被不透明元素蓋住(取中心點;為何單點就足夠見該節註解;
+ *   3. small-label-target   包住表單控制項的 <label> 小於 28px(輸入框本身被
+ *                            規則 2 刻意略過,而它才是真實命中區 —— 見 isSmallLabelTarget)
+ *   4. thin-slider          range 軌道高度細到連滑鼠都難以瞄準(< 3px;
+ *                            門檻從 8px 降下來的理由見該規則的註解)
+ *   5. clipped              被「不可捲動的容器」裁掉
+ *   6. truncated-no-label   文字被截斷但沒有 title/aria-label
+ *   7. no-accessible-name   可操作控制項沒有無障礙名稱
+ *   8. text-covered         文字被不透明元素蓋住(取中心點;為何單點就足夠見該節註解;
  *                            `[data-overlay-card]` / `[data-modal-backdrop]` 的覆蓋是刻意宣告的例外)
- *   8. animation-unsettled  有限次動畫在量測時仍在跑(量到的是過渡態)
- *   9. h-overflow-container 意外的橫向捲動容器
- *  10. tiny-text            字級低於可讀下限(對比公式抓不到的那一類)
+ *   9. animation-unsettled  有限次動畫在量測時仍在跑(量到的是過渡態)
+ *  10. h-overflow-container 意外的橫向捲動容器
+ *  11. tiny-text            字級低於可讀下限(對比公式抓不到的那一類)
  */
 
 /** 可點擊目標下限(px)。除錯面板的標記層與離線稽核共用同一個數值。 */
@@ -89,18 +92,163 @@ export function clipperOf(el: Element): Element {
  *
  * 踩過的坑:原本無差別檢查所有 button/a/input,於是 13x13 的 checkbox 被報出來
  * —— 但它包在 <label> 裡,點文字同樣會切換,實際觸控目標是整個 label,
- * 不是那 13px。range 輸入框的軌道天生就細,拿元素盒高度去比 28px 也不準
- * (Chromium 會另外給命中容差)。所以:在 label 內的輸入框直接略過,
- * range 改看軌道高度是否細到連滑鼠都難以瞄準。
+ * 不是那 13px。所以:在 label 內的輸入框直接略過(那個歸屬由 isSmallLabelTarget
+ * 接手 —— 輸入框的命中區既然被算給了 label,label 本身就必須夠大)。
+ *
+ * range **在這裡一律回 false**,軌道由 isThinTrack 單獨量。原因見該函式。
  */
 export function isSmallTarget(el: Element): boolean {
   if (!el.matches(SMALL_TARGET_SELECTOR)) return false
   if (el.closest('label')) return false
+  const type = (el.getAttribute('type') || '').toLowerCase()
+  // range 的元素高度是**命中帶**(第四輪 P2-2 從 22px 改成 28px),拿它去比
+  // 28px 永遠成立;而它宣稱要量的**軌道**是偽元素,這個函式量不到。
+  if (el.tagName === 'INPUT' && type === 'range') return false
   const r = el.getBoundingClientRect()
   if (r.width === 0 || r.height === 0) return false
-  const type = (el.getAttribute('type') || '').toLowerCase()
-  const isRange = el.tagName === 'INPUT' && type === 'range'
-  return isRange ? r.height < 8 : r.width < MIN_TAP_PX || r.height < MIN_TAP_PX
+  return r.width < MIN_TAP_PX || r.height < MIN_TAP_PX
+}
+
+/**
+ * range 的軌道細到瞄不準(< 3px)。與 domAudit 的 thin-slider 同語意。
+ *
+ * 門檻 3px 的來由(**先量過才定**):這個專案的滑桿軌道真實高度是 **4px**
+ * (global.css 的 ::-webkit-slider-runnable-track),而那是被 P2-2 刻意保留的
+ * 視覺 —— 元素撐到 28px 當命中帶、軌道維持 4px 畫線,兩者分工不同。門檻必須
+ * 低於「已知良好」的 4px,否則六個滑桿會全部被報,而把正確的設計回報成缺陷
+ * 正是這個專案拒絕做的事。2px 在深色背景上就幾乎看不見,那才是真的值得報。
+ *
+ * 量不到軌道時回 false(非 WebKit、或沒有自訂 track):寧可漏報也不誤報。
+ */
+export function isThinTrack(el: Element): boolean {
+  if (el.tagName !== 'INPUT') return false
+  if ((el.getAttribute('type') || '').toLowerCase() !== 'range') return false
+  if (el.getBoundingClientRect().width <= 0) return false
+  const h = trackHeightFromCssom(el)
+  return h !== null && h > 0 && h < 3
+}
+
+/**
+ * 從 **CSSOM** 讀出 range 軌道的宣告高度(px);讀不到回 null。
+ *
+ * ## 為什麼不能用 getComputedStyle(這裡踩過,值得寫下來)
+ *
+ * 直覺上應該是 `getComputedStyle(el, '::-webkit-slider-runnable-track').height`。
+ * 實測(2026-10-05,真實 Chromium / Electron 44)證明**那行永遠回傳元素的
+ * 高度**,不管軌道被設成 2px、4px 還是 6px —— 三次都拿到 28px:
+ *
+ *     軌道 2px → getComputedStyle(偽元素).height = "28px"   ← 元素的高度
+ *     軌道 4px → "28px"
+ *     軌道 6px → "28px"
+ *
+ * 帶引號的寫法(`"'::-…'"`)與 `getPropertyValue('height')` 也一樣是 28px。
+ * 也就是說偽元素查詢在這個引擎上**靜默退化成查元素本身**,不報錯、不警告 ——
+ * 所以第一版的修正是「把一條不會觸發的規則換成另一條不會觸發的規則」。
+ *
+ * 可行的做法是走 CSSOM:`document.styleSheets` → `cssRules` → 找 selectorText
+ * 含 `slider-runnable-track` 且對應到這個元素的規則,讀它的 `style.height`。
+ * 同一組測試下 CSSOM 正確回傳 2 / 4 / 6。
+ *
+ * ## 邊界(每條都有理由)
+ *
+ *   - **只讀同一個 document 的 stylesheets**:外部樣式表(Cross-origin)的
+ *     `cssRules` 會拋 SecurityError,一律 catch 掉當作讀不到 → 不報。
+ *   - **只認完全匹配的元素自己的規則**:`#id::-…`、`input[name=x]::-…`、
+ *     `.cls::-…`。萬用選擇器(無前置條件)不算,因為無法確定它作用在哪個元素上。
+ *   - **讀不到就回 null → 不報**:寧可漏報也不誤報。這與「軌道高度拿不到」
+ *     的真實情況(沒有自訂 track、用瀏覽器預設外觀)一致。
+ *   - **不解析 `height: auto`**:非 px 值一律當成讀不到。
+ */
+function trackHeightFromCssom(el: Element): number | null {
+  if (el.tagName !== 'INPUT') return null
+  if ((el as HTMLInputElement).type !== 'range') return null
+
+  let sheets: StyleSheetList
+  try {
+    sheets = document.styleSheets
+  } catch {
+    return null
+  }
+
+  let bestPx: number | null = null
+  let bestSpec = -1
+  for (let i = 0; i < sheets.length; i++) {
+    let rules: CSSRuleList
+    try {
+      rules = sheets[i].cssRules
+    } catch {
+      continue // cross-origin
+    }
+    for (let j = 0; j < rules.length; j++) {
+      const rule = rules[j] as CSSStyleRule
+      const sel = rule.selectorText
+      if (!sel || !rule.style) continue
+      for (const part of sel.split(',')) {
+        const s = part.trim()
+        if (!s.endsWith('::-webkit-slider-runnable-track')) continue
+        const base = s.slice(0, -'::-webkit-slider-runnable-track'.length).trim()
+        // base 必須真的綁到這個元素,且不是萬用選擇器
+        if (base === '' || base === '*') continue
+        let hit = false
+        try {
+          hit = el.matches(base)
+        } catch {
+          hit = false
+        }
+        if (!hit) continue
+        const px = parseFloat(rule.style.height)
+        if (!Number.isFinite(px) || px <= 0) continue
+        // 具體度:id > class > 屬性 > 元素(與 CSS 規則一致的近似)
+        const spec = base.startsWith('#') ? 100 : base.startsWith('.') ? 10 : base.includes('[') ? 5 : 1
+        if (spec > bestSpec) {
+          bestSpec = spec
+          bestPx = px
+        }
+      }
+    }
+  }
+  return bestPx
+}
+
+/**
+ * 包住 form control 的 <label> 本身是不是過小的命中區。
+ *
+ * ## 為什麼需要這一條(isSmallTarget 抓不到這件事)
+ *
+ * isSmallTarget 對「在 label 內的輸入框」一律略過 —— 理由寫在它的註解裡:
+ * 13x13 的 checkbox 包在 label 裡時,使用者的觸控目標是**整個 label**,不是那 13px。
+ * 那個判斷是對的。但它有一個後果:**label 自己變小時,沒有任何人報。**
+ *
+ * 實測過的案例(第四輪 P2-1):錄音頁兩個音訊來源的 label 是 113x20 / 155x20,
+ * 20px 低於本專案自己在 ToastHost 用的 28px。而當時**所有稽核都綠** —— 因為
+ * 被量到的是 13px 的 input,而那條規則刻意略過 label 內的輸入框。規則的「不誤報」
+ * 保證是對的,代價是這類缺陷有了一個結構性的盲區。
+ *
+ * 所以這一條量的是**那個被當成真實命中區的東西本身**。輸入框的命中區既然被
+ * 歸給了 label,那麼 label 就必須自己夠大 —— 否則那個歸屬只是一句空話。
+ *
+ * ## 邊界
+ *
+ *   - 只看**直接包住**控制項的 label(`label.matches('input, select, textarea')`
+ *     或 control.closest('label') === label)。巢狀 label 不合法,不需處理。
+ *   - 沒有可見文字的 label 排除:那類多半是 layout 包裝而非可點擊區域,
+ *     把它算進來會讓規則變成一個發報機。至少要有文字或 title 才算。
+ *   - width 不設門檻:label 是橫向的(113/155px),寬度不是問題。
+ *   - **不**取代 isSmallTarget 的 label 略過 —— 那一半仍要略過,否則同一個
+ *     控制項會被報兩次(一次 13px 的 input、一次 20px 的 label)。
+ */
+export function isSmallLabelTarget(el: Element): boolean {
+  if (el.tagName !== 'LABEL') return false
+  // 必須真的包住一個可切換的控制項,否則它只是版面
+  const owns = el.querySelector('input, select, textarea')
+  if (!owns) return false
+  // 「可點擊」的證據:有可見文字或有 title,而不是純空間
+  const text = (el.textContent ?? '').trim()
+  const labelled = text.length > 0 || !!el.getAttribute('title')
+  if (!labelled) return false
+  const r = el.getBoundingClientRect()
+  if (r.width === 0 || r.height === 0) return false
+  return r.height < MIN_TAP_PX
 }
 
 /**
@@ -154,6 +302,21 @@ export async function settleAnimations(waitCapMs = 600, settlePasses = 3): Promi
  */
 export function domAudit(): DomFinding[] {
   const out: DomFinding[] = []
+  /**
+   * 每條規則的**評估次數**(不是命中次數)。
+   *
+   * 為什麼要這個:`thin-slider` 存在三輪、看起來在工作,卻一次都沒觸發過 ——
+   * 而「0 筆問題」正是它在報告裡的樣子。沒有計數,「從不觸發的規則」與
+   * 「很有用的規則」在報告裡無法區分。
+   *
+   * 計數是「有機會被評估」的次數,不是「有東西中」的次數 —— 後者是 0 才是問題,
+   * 前者為 0 才代表這條規則的觸發路徑根本沒被走到(例如這個頁面沒有 range)。
+   */
+  const tally: Record<string, number> = Object.create(null)
+  /** 把最後一筆 tally 推進去。刻意在回傳前才加,不影響任何既有消費端 */
+  const pushTally = (): void => {
+    out.push({ kind: '__tally', text: JSON.stringify(tally) })
+  }
   const srgb = (c: number): number => {
     const v = c / 255
     return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
@@ -199,6 +362,58 @@ export function domAudit(): DomFinding[] {
     }
     return true
   }
+  /**
+   * 從 CSSOM 讀 range 軌道高度(px),讀不到回 null。
+   *
+   * 與模組層級的 trackHeightFromCssom 同語意,這裡刻意內聯(見檔頭序列化契約第 1 條)。
+   * 為什麼不能用 getComputedStyle(偽元素):實測它一律回傳**元素**的高度 ——
+   * 軌道 2/4/6px 三次都拿到 28px,而且不報錯。細節見模組層級那個函式。
+   */
+  const trackHeightCssomInner = (el: Element): number | null => {
+    let sheets: StyleSheetList
+    try {
+      sheets = document.styleSheets
+    } catch {
+      return null
+    }
+    let bestPx: number | null = null
+    let bestSpec = -1
+    for (let i = 0; i < sheets.length; i++) {
+      let rules: CSSRuleList
+      try {
+        rules = sheets[i].cssRules
+      } catch {
+        continue
+      }
+      for (let j = 0; j < rules.length; j++) {
+        const rule = rules[j] as CSSStyleRule
+        const sel = rule.selectorText
+        if (!sel || !rule.style) continue
+        for (const part of sel.split(',')) {
+          const s = part.trim()
+          const pseudo = '::-webkit-slider-runnable-track'
+          if (!s.endsWith(pseudo)) continue
+          const base = s.slice(0, -pseudo.length).trim()
+          if (base === '' || base === '*') continue
+          let hit = false
+          try {
+            hit = el.matches(base)
+          } catch {
+            hit = false
+          }
+          if (!hit) continue
+          const px = parseFloat(rule.style.height)
+          if (!Number.isFinite(px) || px <= 0) continue
+          const spec = base.charAt(0) === '#' ? 100 : base.charAt(0) === '.' ? 10 : base.indexOf('[') >= 0 ? 5 : 1
+          if (spec > bestSpec) {
+            bestSpec = spec
+            bestPx = px
+          }
+        }
+      }
+    }
+    return bestPx
+  }
 
   const seen = new Set<string>()
   const all = Array.from(document.querySelectorAll('*'))
@@ -219,6 +434,7 @@ export function domAudit(): DomFinding[] {
       textEls.push({ el, r })
       const fg = parse(cs.color)
       if (fg && fg.a > 0.5) {
+        tally['low-contrast'] = (tally['low-contrast'] || 0) + 1
         const L1 = lum(fg.rgb)
         const L2 = lum(bgOf(el))
         const ratio = (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05)
@@ -239,6 +455,7 @@ export function domAudit(): DomFinding[] {
 
       // 10. 字級下限。對比公式只看顏色比值,9px 的淺色字會通過對比檢查但沒人讀得到。
       //     只看「本身有文字」的元素,繼承字級的大容器不必重複報。
+      tally['tiny-text'] = (tally['tiny-text'] || 0) + 1
       if (parseFloat(cs.fontSize) < 10) {
         const key = 'tinytext:' + el.className + ':' + cs.fontSize
         if (!seen.has(key)) {
@@ -253,22 +470,87 @@ export function domAudit(): DomFinding[] {
 
     // 2. 可點擊目標過小(<28px)。
     //    與模組層級的 isSmallTarget 同語意,這裡刻意內聯(見檔頭序列化契約第 1 條)。
-    //    排除:label 內的輸入框(點文字同樣有效)、range 改看軌道高度。
+    //    排除:label 內的輸入框(點文字同樣有效)。
+    //
+    //    range **不走這條**(改由 3b 的 thin-slider 量軌道):元素高度是命中帶,
+    //    而軌道才是「滑鼠瞄不瞄得到」的那個東西。見 3b 的註解。
     const type = (el.getAttribute('type') || '').toLowerCase()
     const isRange = el.tagName === 'INPUT' && type === 'range'
     const inLabel = !!el.closest('label')
     const clickable =
       el.matches('button, a, [role="button"]') ||
       (el.matches('input, select, textarea') && !inLabel)
-    if (clickable && !inLabel) {
-      const tooSmall = isRange ? r.height < 8 : r.width < 28 || r.height < 28
+    if (clickable && !inLabel && !isRange) {
+      tally['small-tap-target'] = (tally['small-tap-target'] || 0) + 1
+      const tooSmall = r.width < 28 || r.height < 28
       if (tooSmall) {
         const key = 'tap:' + el.tagName + ':' + type + ':' + Math.round(r.width) + 'x' + Math.round(r.height)
         if (!seen.has(key)) {
           seen.add(key)
           out.push({
-            kind: isRange ? 'thin-slider' : 'small-tap-target',
+            kind: 'small-tap-target',
             text: `<${el.tagName.toLowerCase()}${type ? ' type=' + type : ''}> ${Math.round(r.width)}x${Math.round(r.height)} class="${String(el.className).slice(0, 50)}"`
+          })
+        }
+      }
+    }
+
+    // 3b. range 軌道細到瞄不準。
+    //
+    //    **這一條曾經是壞的,而且從未觸發過。修它時又差點壞第二次。**
+    //
+    //    歷史:原本寫成 `isRange ? r.height < 8 : ...`,而 `r` 是**元素**的
+    //    boundingRect —— 那是命中帶,不是軌道。range 元素高度在 P2-2 被從
+    //    22px 改成 28px,所以從那之後 `28 < 8` 永不成立。而宣稱要量的
+    //    軌道是偽元素,getBoundingClientRect 量不到。
+    //
+    //    第一版修正改成 `getComputedStyle(el, '::-webkit-slider-runnable-track')`
+    //    —— **那也是壞的**:實測(2026-10-05,真實 Chromium)該行不管軌道設成
+    //    2px / 4px / 6px 一律回傳 "28px"(元素高度),帶引號寫法與
+    //    getPropertyValue 也一樣。它**不報錯、不警告**,所以看起來在工作。
+    //    這就是「換了一條同樣不會觸發的規則」。
+    //
+    //    現在走 CSSOM:document.styleSheets → cssRules → 找綁到這個元素的
+    //    ::-webkit-slider-runnable-track 規則,讀它的 style.height。同一組
+    //    實測下 CSSOM 正確回傳 2 / 4 / 6。讀不到就當沒有軌道 → 不報。
+    //
+    //    門檻 3px 的來由(**先量過才定**):這個專案的滑桿軌道真實高度是 4px
+    //    (global.css),而那是被 P2-2 刻意保留的視覺 —— 元素 28px 當命中帶、
+    //    軌道 4px 畫線,兩者分工不同。門檻必須低於「已知良好」的 4px,否則六個
+    //    滑桿會全部被報,而把正確設計回報成缺陷是這個專案拒絕做的事。
+    //    2px 在深色背景上就幾乎看不見,那才是真的值得報。
+    if (isRange) {
+      tally['thin-slider'] = (tally['thin-slider'] || 0) + 1
+      const trackH = trackHeightCssomInner(el)
+      if (trackH !== null && trackH > 0 && trackH < 3 && r.width > 0) {
+        const key = 'thin:' + Math.round(r.width) + 'x' + trackH
+        if (!seen.has(key)) {
+          seen.add(key)
+          out.push({
+            kind: 'thin-slider',
+            text: `<input type="range"> 軌道 ${trackH}px(下限 3px;命中帶 ${Math.round(r.height)}px 正常)class="${String(el.className).slice(0, 50)}"`
+          })
+        }
+      }
+    }
+
+    // 2b. 包住表單控制項的 <label> 過小。
+    //     規則 2 刻意略過 label 內的輸入框(因為真實命中區是整個 label),
+    //     所以 label 自己變小時這裡是唯一的看守。與 isSmallLabelTarget 同語意,
+    //     內聯是為遵守檔頭的序列化契約。量測對象是 label 本身(下方的 each
+    //     走的是同一批元素,所以這裡只認 LABEL 標籤)。
+    if (el.tagName === 'LABEL') {
+      tally['small-label-target'] = (tally['small-label-target'] || 0) + 1
+      const owns = el.querySelector('input, select, textarea')
+      const text = (el.textContent ?? '').trim()
+      const labelled = text.length > 0 || !!el.getAttribute('title')
+      if (owns && labelled && r.height < 28) {
+        const key = 'label:' + Math.round(r.width) + 'x' + Math.round(r.height)
+        if (!seen.has(key)) {
+          seen.add(key)
+          out.push({
+            kind: 'small-label-target',
+            text: `<label> ${Math.round(r.width)}x${Math.round(r.height)} 包住 <${owns.tagName.toLowerCase()}> "${text.slice(0, 24)}"`
           })
         }
       }
@@ -283,6 +565,7 @@ export function domAudit(): DomFinding[] {
     const cr = clip.getBoundingClientRect()
     const overX = r.right > cr.right + 1 || r.left < cr.left - 1
     const overY = r.bottom > cr.bottom + 1 || r.top < cr.top - 1
+    tally['clipped'] = (tally['clipped'] || 0) + 1
     if (overX || overY) {
       const scrollsX = ccs.overflowX === 'auto' || ccs.overflowX === 'scroll'
       const scrollsY = ccs.overflowY === 'auto' || ccs.overflowY === 'scroll'
@@ -302,6 +585,7 @@ export function domAudit(): DomFinding[] {
     // 4. 文字被截斷但沒有 title/aria-label(使用者看不到完整內容)
     //    排除自己就是橫向捲動容器的情況:那裡的 scrollWidth > clientWidth
     //    是「捲得到」而不是「被截斷」,報出來就是把設計當缺陷(工具列外殼就是)。
+    tally['truncated-no-label'] = (tally['truncated-no-label'] || 0) + 1
     const selfScrollsX = cs.overflowX === 'auto' || cs.overflowX === 'scroll'
     if (hasText && !selfScrollsX && el.scrollWidth > el.clientWidth + 2 && el.clientWidth > 0) {
       if (!el.getAttribute('title') && !el.getAttribute('aria-label')) {
@@ -319,7 +603,20 @@ export function domAudit(): DomFinding[] {
     // 5. 可操作控制項沒有無障礙名稱。螢幕閱讀器只會報「按鈕」,
     //    使用者不知道要按什麼。icon-only 按鈕最容易中招。
     //    (toggle 缺 role/aria-checked 這類要另外查,通用規則抓不到。)
-    if (el.matches('button, a, input, select, textarea') && !inLabel) {
+    //
+    //    `!inLabel` 這個排除**不再是無條件的**。原本的寫法是
+    //    `el.matches(...) && !inLabel`,理由是「在 label 裡 → label 提供名稱」。
+    //    但那只在 label **有文字或 title** 時成立。實測過的反例:
+    //    `<label><input type="checkbox"></label>` —— label 沒有任何文字,
+    //    沒有 aria-label,input 也沒有,於是螢幕閱讀器拿到的是**空名稱**,
+    //    而規則因為「它在 label 裡」而略過 —— 沒有任何人報。
+    //    與 small-label-target 是同一族問題:為了不誤報而做的排除,自己變成了一個
+    //    結構性的盲區。
+    //
+    //    所以改成:只有在 label **真的提供得到名字**時才略過。
+    //    labelText 是上面為了 small-label-target 算過的同一個值,不重複算。
+    if (el.matches('button, a, input, select, textarea')) {
+      tally['no-accessible-name'] = (tally['no-accessible-name'] || 0) + 1
       const type2 = (el.getAttribute('type') || '').toLowerCase()
       // hidden 沒有可存取名稱是正常的;submit/button/reset 預設用 value
       const implicit = ['hidden', 'submit', 'button', 'reset', 'image'].includes(type2)
@@ -330,13 +627,21 @@ export function domAudit(): DomFinding[] {
         el.getAttribute('title') ||
         (labelledBy ? (document.getElementById(labelledBy)?.textContent || '').trim() : '') ||
         (el.tagName === 'INPUT' ? String((el as HTMLInputElement).value || '').trim() : '')
-      if (!name && !implicit && !inLabel) {
+      // label 裡的表單控制項:名稱來自 label 的文字。label 沒文字 → 沒有名稱。
+      const ownerLabel = el.closest('label')
+      const nameFromLabel = ownerLabel
+        ? (ownerLabel.textContent || '').trim() || (ownerLabel.getAttribute('title') || '').trim()
+        : ''
+      const skippedByLabel = !!inLabel && nameFromLabel.length > 0
+      if (!name && !implicit && !skippedByLabel) {
         const key = 'anon:' + el.tagName + ':' + String(el.className).slice(0, 40)
         if (!seen.has(key)) {
           seen.add(key)
           out.push({
             kind: 'no-accessible-name',
-            text: `<${el.tagName.toLowerCase()}${type2 ? ' type=' + type2 : ''}> class="${String(el.className).slice(0, 60)}"`
+            text: `<${el.tagName.toLowerCase()}${type2 ? ' type=' + type2 : ''}>` +
+              (inLabel ? ' 包在**沒有文字**的 <label> 裡,無障礙名稱為空' : '') +
+              ` class="${String(el.className).slice(0, 60)}"`
           })
         }
       }
@@ -346,6 +651,7 @@ export function domAudit(): DomFinding[] {
     //    但「刻意讓工具列橫向捲動」是合理設計。工具無法分辨意圖,
     //    所以提供 data-allow-h-scroll 明確宣告例外,而不是在這裡猜。
     const ox = cs.overflowX
+    if (ox === 'auto' || ox === 'scroll') tally['h-overflow-container'] = (tally['h-overflow-container'] || 0) + 1
     if (
       (ox === 'auto' || ox === 'scroll') &&
       el.scrollWidth > el.clientWidth + 2 &&
@@ -441,6 +747,7 @@ export function domAudit(): DomFinding[] {
     const key = 'covered:' + el.className
     if (seen.has(key)) continue
     seen.add(key)
+    tally['text-covered'] = (tally['text-covered'] || 0) + 1
     out.push({
       kind: 'text-covered',
       text: `<${el.tagName.toLowerCase()}>「${(el.textContent || '').trim().slice(0, 20)}」被 <${hit.tagName.toLowerCase()} class="${String(hit.className).slice(0, 40)}"> 蓋住`
@@ -457,6 +764,7 @@ export function domAudit(): DomFinding[] {
     const r = el.getBoundingClientRect()
     if (r.width === 0 || r.height === 0) continue
     if (!el.getAnimations) continue
+    tally['animation-unsettled'] = (tally['animation-unsettled'] || 0) + 1
     const running = el.getAnimations().filter((a) => {
       const timing = a.effect && a.effect.getComputedTiming ? a.effect.getComputedTiming() : null
       const it = timing ? timing.iterations : 1
@@ -478,5 +786,6 @@ export function domAudit(): DomFinding[] {
     out.push({ kind: 'animation-unsettled', text: s })
   }
 
+  pushTally()
   return out
 }

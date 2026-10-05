@@ -14,6 +14,7 @@ import { PROVIDERS, buildAuthHeaders, buildRequestBody, extractChatText, resolve
 import type { ProviderConfig } from './providerRegistry'
 import { resolveProviderId, resolveModel } from './providerDetection'
 import { OLLAMA_DEFAULT_ENDPOINT } from './ollamaEndpoint'
+import { describeOutboundDenial, normalizeCloudEndpointUrl } from './outboundEndpoint'
 import type { ChatCompletionRequest, ChatCompletionResult } from './types'
 import type { ChatMessage } from './types'
 
@@ -127,8 +128,48 @@ export function resolveProvider(settings: AppSettings): ResolvedProvider | null 
   return { cfg, endpoint, model, apiKey }
 }
 
-export function isAIConfigured(settings: AppSettings): boolean {
-  return resolveProvider(settings) !== null
+/**
+ * 為什麼 resolveProvider 回 null —— 給「使用者該改什麼」而不是「未設定」。
+ *
+ * 為什麼需要這個:resolveProvider 回 null 有兩種完全不同的原因,而它們要修的
+ * 地方不同:
+ *   - 出站政策擋下網址(metadata / 未指定位址 / 內嵌憑證): 要改的是**網址**
+ *   - 缺金鑰 / provider 不完整:                       要改的是**金鑰欄位**
+ * 原先兩者都回同一句「AI 未設定——請到設定頁選擇 provider 並填入金鑰」。於是
+ * 一個把網址填成 169.254.169.254 的使用者會被引導去檢查金鑰,填完金鑰仍然不動,
+ * 而畫面上沒有任何一句話提到網址。這正是 outboundFetchGuard.test.ts 記錄過的
+ * 那類問題:「網址不能用」不該被偽裝成「設定還沒填完」。
+ *
+ * 這裡刻意**不**順手把 resolveProvider 改成回傳 union:它的呼叫端
+ * (chatCompletion、liveCoaching、testConnection)要的是「能不能用」這個布林/物件,
+ * 讓它順便攜帶原因會讓那些地方多寫一層處理而用不到。診斷與判斷分開,各自保持
+ * 單一用途。
+ *
+ * (順帶一提:這段註解原本寫「它的呼叫端(preflight、isAIConfigured)」—— 兩個都不是。
+ *  preflight 在 renderer、跨 process 不可能 import main 的模組;isAIConfigured 則是
+ *  從 d94d5cc 引入以來**零呼叫端**的匯出,連同它一起刪掉了。一個自稱有呼叫端的
+ *  死碼比沒有這段註解更糟:它讓下一個人以為這條路徑是有人走的。)
+ */
+export function explainUnresolvedProvider(settings: AppSettings): string {
+  const ai = settings.ai
+  // 只有非本機 provider 才可能是「網址被擋」;ollama 走的是另一套白名單政策,
+  // 而且擋下時 resolveProvider 會回退到預設 endpoint,所以不會落到這裡。
+  if (ai.provider !== 'ollama') {
+    const named =
+      !ai.openaiCompatible.baseUrl &&
+      resolveProviderId(ai.openaiCompatible.apiKey, ai.provider) !== 'openai-compatible'
+    const cfg = named ? PROVIDERS[resolveProviderId(ai.openaiCompatible.apiKey, ai.provider)] : PROVIDERS['openai-compatible']
+    if (!resolveEndpoint(cfg, named ? cfg.endpoint : ai.openaiCompatible.baseUrl)) {
+      // 重新跑一次政策判定只为拿到**原因**;resolveEndpoint 的回傳型別刻意是
+      // string | null(不帶原因),所以這裡直接問政策函式。
+      const raw = named ? cfg.endpoint : ai.openaiCompatible.baseUrl
+      const outcome = normalizeCloudEndpointUrl(raw, '')
+      if (!outcome.ok) {
+        return `API 位址無法使用:${describeOutboundDenial(outcome.reason)}`
+      }
+    }
+  }
+  return 'AI 未設定——請到設定頁選擇 provider 並填入金鑰'
 }
 
 /** 單發非串流 chat completion;panic 等低延遲場景用 */
@@ -139,7 +180,7 @@ export async function chatCompletion(
 ): Promise<ChatCompletionResult> {
   const resolved = resolveProvider(settings)
   if (!resolved) {
-    return { ok: false, error: 'AI 未設定——請到設定頁選擇 provider 並填入金鑰' }
+    return { ok: false, error: explainUnresolvedProvider(settings) }
   }
 
   const { cfg, endpoint, model, apiKey } = resolved

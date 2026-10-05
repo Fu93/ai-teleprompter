@@ -7,6 +7,7 @@
 
 import type { ChatMessage } from './types'
 import { normalizeOllamaEndpointUrl } from './ollamaEndpoint'
+import { normalizeCloudEndpointUrl } from './outboundEndpoint'
 
 export interface ProviderConfig {
   id: string
@@ -141,16 +142,27 @@ export function extractChatText(cfg: ProviderConfig, data: unknown): string {
 /**
  * 解析實際請求用的 endpoint:
  * - ollama:以使用者設定的 baseUrl 經 SSRF 正規化(無效→回 null)
- * - openai-compatible:使用者 baseUrl + /chat/completions(去尾斜線)
+ * - openai-compatible:使用者 baseUrl 經**出站統一政策** + /chat/completions
  * - 其他:註冊表預設
+ *
+ * 為什麼 openai-compatible 改走 normalizeCloudEndpointUrl:
+ *   這一分支原本只做 `/^https?:\/\//` 前綴檢查,完全沒有用 outboundEndpoint.ts
+ *   的 denylist。而這正是 chatCompletion 走的那條路 —— 也就是 **Panic 救援
+ *   (Alt+P)** 與 AiChatCompletion。於是填 `http://169.254.169.254` 後按救援鍵,
+ *   應用程式會帶著 `Authorization: Bearer <金鑰>` 打到雲端 metadata 位址。
+ *   ipc.ts 的 OpenAiChat / CloudTranscribe 早就有擋,唯獨這條漏接,而漏掉的
+ *   恰好是按一下就會發生、而且會把金鑰送出去的那條。
+ *
+ *   suffix 傳空字串而不是 '/chat/completions':這裡的職責是**把 base 正規化乾淨**,
+ *   路徑後綴由下面統一補。若在這裡就把 suffix 拼上,「已經帶 /chat/completions
+ *   的網址」會被補成 /chat/completions/chat/completions。
  */
 export function resolveEndpoint(cfg: ProviderConfig, userEndpoint: unknown): string | null {
   if (cfg.isLocal) return normalizeOllamaEndpointUrl(userEndpoint)
   if (cfg.id === 'openai-compatible') {
-    if (!userEndpoint || typeof userEndpoint !== 'string') return null
-    const base = userEndpoint.replace(/\/+$/, '')
-    if (!/^https?:\/\//.test(base)) return null
-    return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`
+    const base = normalizeCloudEndpointUrl(userEndpoint, '')
+    if (!base.ok) return null
+    return base.url.endsWith('/chat/completions') ? base.url : `${base.url}/chat/completions`
   }
   return cfg.endpoint
 }

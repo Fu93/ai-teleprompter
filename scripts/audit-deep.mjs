@@ -53,7 +53,7 @@ import {
   pillMinOf,
   pillSizeOf
 } from '../src/shared/overlayShapes.ts'
-import { createReport, fileHash, guardSerializable } from './lib/audit-report.mjs'
+import { createReport, fileHash, guardSerializable, splitDomFindings} from './lib/audit-report.mjs'
 import sharp from 'sharp'
 
 process.env.AI_TP_E2E = '1'
@@ -250,7 +250,9 @@ async function auditShot(win, label, file) {
   // 規則語意不變,只是把取樣時機移到動畫結束之後(見 domAudit.ts 的 settleAnimations)。
   await win.evaluate(settleAnimations).catch(() => {})
   const dom = await win.evaluate(domAudit).catch((e) => [{ kind: 'audit-failed', text: e.message }])
-  for (const d of dom) report.add(d.kind, label, d.text)
+  const split = splitDomFindings(dom)
+  for (const d of split.problems) report.add(d.kind, label, d.text)
+  if (split.tally) report.tallyRule(split.tally)
   const path = join(OUT, `${file}.png`)
   await win.screenshot({ path }).catch(() => {})
   return { count: report.length - n, hash: fileHash(path) }

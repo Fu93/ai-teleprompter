@@ -71,12 +71,45 @@ export function watchHotkeyConflicts(): () => void {
   }
 }
 
-let bridgeInstalled = false
-/** 稽核橋:強制一份衝突名單,讓「沒衝突的機器」也量得到「有衝突時的畫面」 */
+/** 目前已註冊的解除函式;null = 未註冊 */
+let unregisterBridge: (() => void) | null = null
+/**
+ * 稽核橋:強制一份衝突名單,讓「沒衝突的機器」也量得到「有衝突時的畫面」。
+ *
+ * ## 這裡修的是一個 StrictMode 造成的真實缺陷(2026-10-05)
+ *
+ * 原本這裡有一個 `bridgeInstalled` 布林,**而且從來沒有被設回 false**。在
+ * `React.StrictMode` 下(這個專案有,見 main.tsx)開發模式的 effect 會:
+ *
+ *     掛載 → 註冊(bridgeInstalled = true)→ 清理(unregister 被呼叫,
+ *     registry 裡的項目被刪掉)→ 再掛載(看到 bridgeInstalled === true,
+ *     **直接 return 空函式,什麼都不註冊**)
+ *
+ * 結果是第二次掛載之後 `window.__auditForce('app.hotkeyConflicts', …)`
+ * 完全失效 —— 稽核呼叫它時回 ok,但畫面上什麼都沒變。
+ *
+ * ## 這個 bug 曾經被誤判為 `hotkey-conflict-stale` 的根因(2026-10-05 更正)
+ *
+ * `audit:states` 長期的確報過那筆問題,症狀也一模一樣。但**根因是量測端**:
+ * `audit-states.mjs` 清除畫面時傳的是 `null`,而 store 的讀法是
+ * `forced ?? conflicts` —— `null` 是「解除覆寫、回到真實名單」。
+ * 在這台真的被別的程式佔走 Alt+K 的機器上,警示如實長回來,於是量測端
+ * 把自己的錯記成了產品的「過期警示缺陷」。
+ * 修的是量測端(見 scripts/lib/hotkey-override.mjs),這個 StrictMode 的坑是
+ * **另一件真的 bug**,只是碰巧有相同的症狀。記在這裡是因為教訓本身成立:
+ * 「症狀吻合」不是「根因相同」的證據 —— 兩邊都修完之後症狀才會真的消失。
+ *
+ * ## 為什麼不用「先解除再註冊」
+ *
+ * 那樣會讓兩個同時掛載的 App 互相踢掉對方(浮層與主視窗各有一份 React 樹)。
+ * 正確的形狀是「記住自己註冊的解除函式,重複呼叫時把前一份先解除」——
+ * 這與 `lib/nav.ts` 的導航註冊是同一個模式,那裡的註解也記了同一個坑。
+ */
 export function installHotkeyConflictBridge(): () => void {
-  if (bridgeInstalled) return () => undefined
-  bridgeInstalled = true
-  return registerAuditControl('app.hotkeyConflicts', (arg) => {
+  // 已經註冊過一份:先解除,再重新註冊。否則第二次掛載拿到的是一份
+  // 什麼都不做的清理函式,稽核橋就靜默失效了。
+  unregisterBridge?.()
+  unregisterBridge = registerAuditControl('app.hotkeyConflicts', (arg) => {
     if (arg === null || arg === undefined) {
       useHotkeyConflictStore.setState({ forced: null })
       return true
@@ -85,6 +118,10 @@ export function installHotkeyConflictBridge(): () => void {
     useHotkeyConflictStore.setState({ forced: arg.map(String) })
     return true
   })
+  return () => {
+    unregisterBridge?.()
+    unregisterBridge = null
+  }
 }
 
 /** 設定頁 / 側欄 / 總覽頁共用的讀取 hook */

@@ -27,7 +27,7 @@ import { _electron as electron } from 'playwright-core'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { domAudit, settleAnimations } from '../src/renderer/src/lib/domAudit.ts'
-import { createReport, fileHash, guardSerializable } from './lib/audit-report.mjs'
+import { createReport, fileHash, guardSerializable, splitDomFindings} from './lib/audit-report.mjs'
 
 // 稽核環境必須乾淨:見檔頭說明。
 process.env.AI_TP_E2E = '1'
@@ -164,7 +164,9 @@ async function main() {
     // 先讓有限次動畫跑完再量(理由見 domAudit.ts 的 settleAnimations)。
     await main.evaluate(settleAnimations).catch(() => {})
     const dom = await main.evaluate(domAudit)
-    for (const d of dom) report.add(d.kind, current, d.text)
+    const split = splitDomFindings(dom)
+    for (const d of split.problems) report.add(d.kind, current, d.text)
+    if (split.tally) report.tallyRule(split.tally)
 
     // 六頁必須各自不同。相同 hash 代表有兩次導航其實停在同一頁。
     const hash = fileHash(shot)

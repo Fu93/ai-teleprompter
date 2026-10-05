@@ -17,6 +17,8 @@ import { setCaptureIndicator } from '../lib/captureIndicator'
 import { unlinkScriptFromSessions } from '../lib/sessionToScript'
 import { describeImportTooLarge } from '../lib/scriptImport'
 import { shouldReuseEmptyDraft, UNTITLED_TITLE } from '../lib/scriptDraft'
+import { formatLastUsed, sortScripts } from '../lib/scriptOrder'
+import type { ScriptOrder } from '../lib/scriptOrder'
 
 function estimateMinutes(content: string, charsPerMin: number): string {
   const chars = content.replace(/\s/g, '').length
@@ -32,6 +34,30 @@ export default function Scripts({
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [draft, setDraft] = useState<{ title: string; content: string }>({ title: '', content: '' })
   const [query, setQuery] = useState('')
+  /**
+   * 清單排序。預設 edited —— 與原本的 orderBy(updatedAt).reverse() 完全一致,
+   * 所以加上這個功能之後,使用者看到的預設排列不會變。
+   *
+   * 記在 localStorage 而不是 settings.json:它是「這個裝置上我习惯怎麼看清單」,
+   * 與 ai-tp.preflight.dismissed / rec-countdown-off 同一類(理由見 onboarding.ts:
+   * 這種一次性偏好不值得進 settings.json 的同步層)。讀不到就退回預設,
+   * 不能讓整頁壞掉。
+   */
+  const [order, setOrder] = useState<ScriptOrder>(() => {
+    try {
+      return localStorage.getItem('scripts-order') === 'used' ? 'used' : 'edited'
+    } catch {
+      return 'edited'
+    }
+  })
+  const changeOrder = (next: ScriptOrder): void => {
+    setOrder(next)
+    try {
+      localStorage.setItem('scripts-order', next)
+    } catch {
+      /* localStorage 不可得(隱私模式)時放棄記得,而不是讓整頁壞掉 */
+    }
+  }
   const [dirty, setDirty] = useState(false)
   /** 最近一次寫入的時間戳;只在「已儲存」提示需要暫時顯示時才用到 */
   /**
@@ -830,8 +856,9 @@ export default function Scripts({
 
   // 標題與內容統一不分大小寫(原本標題忽略大小寫、內容分,搜尋行為不可預期)
   const q = query.toLowerCase()
-  const filtered = scripts.filter(
-    (s) => s.title.toLowerCase().includes(q) || s.content.toLowerCase().includes(q)
+  const filtered = sortScripts(
+    scripts.filter((s) => s.title.toLowerCase().includes(q) || s.content.toLowerCase().includes(q)),
+    order
   )
 
   return (
@@ -873,6 +900,29 @@ export default function Scripts({
             />
           </div>
         </div>
+        {/* 排序切換。為什麼需要:清單原本只能按「最後編輯」排,而使用者開一個
+            演講 App 的典型動作是回到上次講的那一份 ——「最近編輯」答不出那個問題。
+            用 segmented control 而不是 <select>:兩個固定選項、下拉框在觸控螢幕上
+            反而更難點(這個專案對點擊目標有明確下限),而且不會蓋掉畫面。 */}
+        <div className="flex gap-1 px-4 pb-2">
+          {(['edited', 'used'] as const).map((o) => (
+            <button
+              key={o}
+              data-effect-id={`scripts-order-${o}`}
+              aria-pressed={order === o}
+              onClick={() => changeOrder(o)}
+              className={cn(
+                // h-7 = 28px = domAudit 的 MIN_TAP_PX。實測過:原本的 py-1 量到
+                // 24.5px,低於下限 —— 單元測試完全看不出來(排序規則與版面無關),
+                // 但 audit:ui 會報 small-tap-target。h-7 與 PreflightCard / ToastHost 同值。
+                'flex h-7 flex-1 items-center justify-center rounded-md px-2 text-[11px] transition-colors',
+                order === o ? 'bg-ink-800 text-ink-100' : 'text-ink-400 hover:bg-ink-850'
+              )}
+            >
+              {o === 'edited' ? '最近編輯' : '最近使用'}
+            </button>
+          ))}
+        </div>
         <div className="flex-1 overflow-y-auto px-2 pb-3">
           {filtered.length === 0 && (
             <div className="px-3 py-6 text-center text-xs text-ink-400">
@@ -901,6 +951,15 @@ export default function Scripts({
               >
                 {s.content ? s.content.slice(0, 40) : '（空白）'} ·{' '}
                 {formatDateTime(s.updatedAt)}
+                {/* 「最後使用」只在「最近使用」排序下出現,而且只在真的用過時出現。
+                    理由見 scriptOrder.ts 的 formatLastUsed:對一個大多數時候是
+                    預期狀態的事情說「從未使用」,只會白佔掉欄位寬度。
+                    綁在排序上是刻意的 —— 使用者切過去就是要看這個欄位。 */}
+                {order === 'used' &&
+                  (() => {
+                    const used = formatLastUsed(s.lastUsedAt, Date.now())
+                    return used !== null ? <span className="text-ink-500"> · {used}用過</span> : null
+                  })()}
               </div>
             </button>
           ))}

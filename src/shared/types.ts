@@ -560,6 +560,18 @@ export type DebugOverlayAction =
 export interface DomFinding {
   kind: string
   text: string
+  /**
+   * 這一筆是「問題」。同一份回傳陣列的最後一項會是 kind = '__tally',
+   * text 放著每條規則的**評估次數**(JSON)。
+   *
+   * 為什麼需要它:`thin-slider` 曾經存在三輪、註解寫得很完整、看起來在工作,
+   * 但它**一次都沒有觸發過** —— 因為它量的東西根本量不到。沒有計數,
+   * 「從不觸發的規則」與「很有用的規則」在報告裡長得一模一樣(都是 0 筆問題)。
+   *
+   * 為什麼塞在陣列裡而不是另開一個回傳值:`page.evaluate(fn)` 只能序列化
+   * 回傳值,而改變回傳型別會讓所有既有呼叫端(包括 e2e spec 與稽核腳本)
+   * 一起壞掉。附加最後一項是唯一不破壞既有契約的做法。
+   */
 }
 
 export interface AppInfo {

@@ -57,6 +57,33 @@ export function fileHash(path) {
   }
 }
 
+/**
+ * 拆開 domAudit 的回傳:問題項目 + 最後那筆 __tally。
+ *
+ * 為什麼要一個共用函式:三支稽核腳本(audit-deep / states / ui)都以完全相同的
+ * 一行消費 domAudit 的結果,而 __tally 必須被**排除在問題之外** —— 它不是缺陷。
+ * 三處各寫一遍的話,漏一處就是「某一支稽核把 tally 當成一筆問題報出去」,
+ * 而那會讓問題數憑空 +1,進而污染 release-gate 的基線。
+ *
+ * 回傳 { problems, tally }:problems 是真的問題,tally 是每條規則的評估次數。
+ */
+export function splitDomFindings(dom) {
+  const problems = []
+  let tally = null
+  for (const d of dom ?? []) {
+    if (d && d.kind === '__tally') {
+      try {
+        tally = JSON.parse(d.text)
+      } catch {
+        tally = null
+      }
+      continue
+    }
+    problems.push(d)
+  }
+  return { problems, tally }
+}
+
 export function createReport(tool) {
   const problems = []
   const audited = []
@@ -67,6 +94,8 @@ export function createReport(tool) {
    * 只斷言「沒有低於下限」時,一個完全不生效的 setMinimumSize 也會通過。
    */
   const notes = {}
+  /** 每條規則被評估的次數(見 tallyRule) */
+  const ruleTally = Object.create(null)
   const STARTED_AT = new Date().toISOString()
 
   return {
@@ -80,6 +109,30 @@ export function createReport(tool) {
     /** 記一個量到的值(進 meta.notes,不影響問題數) */
     note(key, value) {
       notes[key] = value
+    },
+    /**
+     * 累加「規則評估次數」。
+     *
+     * 為什麼需要:一個從未觸發過的規則與一個很有用的規則,在「問題數」裡
+     * 長得一模一樣(都是 0)。`thin-slider` 就這樣存在了三輪 —— 它有名字、
+     * 有註解、有門檻,但它量的東西量不到,所以永遠不會響。
+     *
+     * 這裡累加的是**有機會被評估**的次數,不是命中次數。兩者要分清楚:
+     *   - 評估次數為 0 → 這條規則的觸發路徑根本沒被走到(這個頁面沒有 range)
+     *   - 評估次數大、命中 0 → 條件真的都滿足,或者規則本身是壞的
+     * 兩者都值得知道,但意義不同,所以報告分開顯示。
+     */
+    tallyRule(kind, n = 1) {
+      // 傳物件 = 一次餵整包(domAudit 的 __tally 就是一個 kind→count 物件);
+      // 傳字串 = 單筆 +n。用兩個簽名而不是拆成兩個函式,因為呼叫端只有一種
+      // 使用情境(把一份 tally 併進來),多一個 API 就多一個能被忘記呼叫的地方。
+      if (kind && typeof kind === 'object') {
+        for (const [k, v] of Object.entries(kind)) {
+          ruleTally[k] = (ruleTally[k] || 0) + (Number(v) || 0)
+        }
+        return
+      }
+      ruleTally[kind] = (ruleTally[kind] || 0) + n
     },
     /** 標記「這個狀態被完整量測過」。與 add 分開,才分得出乾淨與沒跑到。 */
     measured(label) {
@@ -119,6 +172,7 @@ export function createReport(tool) {
           skippedStates: skipped,
           problemCount: problems.length,
           byKind,
+          ruleTally,
           notes
         },
         problems
@@ -129,6 +183,21 @@ export function createReport(tool) {
       console.log(`=== ${tool} 結果 ===`)
       console.log(`量測狀態 ${audited.length} 個,問題 ${problems.length} 筆`)
       console.log('分類: ' + (Object.entries(byKind).map(([k, v]) => `${k}×${v}`).join(', ') || '(無)'))
+      // 規則覆蓋率:每條規則被評估了幾次。
+      //
+      // 為什麼要印出來:「問題 0 筆」有兩種完全不同的意思 —— 「量了很多、沒問題」
+      // 與「量不到東西」。只看問題數分不出來,而 `thin-slider` 就是靠這一點
+      // 藏了三輪。評估次數為 0 的規則是**資訊**(這個頁面沒有那種元素),
+      // 但它值得被看見,否則沒有人會知道那條規則從來沒被檢查過。
+      const tallyEntries = Object.entries(ruleTally).sort((a, b) => a[1] - b[1])
+      if (tallyEntries.length) {
+        console.log('')
+        console.log('規則評估次數(0 = 觸發路徑沒被走到,不代表規則有問題):')
+        for (const [k, v] of tallyEntries) {
+          const flag = v === 0 ? '  ⚠️ 從未評估' : ''
+          console.log(`   ${k}: ${v}${flag}`)
+        }
+      }
       if (skipped.length) {
         console.log('')
         console.log(`⚠️ 有 ${skipped.length} 個狀態沒有真的到達 —— 這份報告的涵蓋率不完整:`)

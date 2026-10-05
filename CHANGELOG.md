@@ -7,6 +7,342 @@
 
 ## [Unreleased]
 
+### 把「限制」清單上的每一項變成可驗證的狀態(順手接上了一個被丟掉三年的功能)
+
+這一輪的起因是一句「研究後處理限制」——把先前盤點出來、但只有一句「待決定」
+的項目逐一查證。結果是:**三項找到了真實缺陷,一項是我自己先前的誤判**。
+
+- **`lastUsedAt` 從來沒有被讀過 —— 三年都在收集然後丟掉**
+  - 這個欄位被寫進四個地方(`pages/Scripts.tsx` 三處、`pages/Dashboard.tsx` 一處),
+    從資料模型存在的那天起就是**寫入 4 次、讀取 0 次**。也就是說這個產品一直在
+    記錄「哪一份稿子剛剛被用過」,然後丟掉。
+  - 這不是無害的浪費。使用者開一個演講 App 的典型動作是**回到上次講的那一份**;
+    而清單只能按 `updatedAt`(最後編輯)排,於是「上週改過、上個月講過的稿」
+    會排在「上個月改過、剛剛講過的稿」前面 —— 而後者才是他要的。
+  - 新增 `lib/scriptOrder.ts` 的 `sortScripts()` 與 `formatLastUsed()`(純函式,
+    依本專案既有慣例抽到 lib 才好測),講稿頁加上「最近編輯 / 最近使用」切換,
+    選擇記在 localStorage(與 `ai-tp.preflight.dismissed`、`rec-countdown-off` 同類:
+    這種一次性偏好不值得進 settings.json)。
+  - **預設維持 `edited` 且順序與原本 `orderBy('updatedAt').reverse()` 完全一致** ——
+    加功能不該順便改掉使用者看慣的預設排列,這一條有測試釘住。
+  - **相對時間只在切到「最近使用」時、而且只在真的用過時顯示**:對一個大多數時候
+    是預期狀態的事情說「從未使用」,只會白佔掉 247px 的欄位寬度。
+  - 驗證:19 條單元測試 + **真實 Electron 端對端驗證**(造四份 `updatedAt` 與
+    `lastUsedAt` 故意相反的稿,讀畫面上的實際順序、切換、重新整理)。
+    負向驗證:改回 `(b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0)` 之後 2 條轉紅。
+- **一個從來沒有被驗證過的假設,順手被抓到:排序切換器只有 24.5px 高**
+  - `domAudit` 的 `MIN_TAP_PX` 是 28。純函式的排序測試完全看不出這件事 ——
+    排序規則與版面無關。是在真實 Electron 裡量 `boundingBox()` 才發現的。
+  - 改成 `h-7`(28px,與 PreflightCard / ToastHost 同值)。這是「測試綠不等於
+    畫面對」最便宜的一次實例:量測成本是一行 `boundingBox()`。
+  - `audit:ui` 事後複驗:6 狀態 0 問題,`small-tap-target` 的評估次數 128(涵蓋新按鈕)。
+- **`docs/UPGRADE_BLOCKED.md` 已經爛掉,而且沒有任何東西會發現**
+  - 它仍寫「electron 被 `EBUSY` 阻塞在 `^44.4.5`」,但 `package.json` 早已是
+    `^44.5.1`(這一輪之前就升完了)。「e2e 57 支」也已經是 58 passed / 1 skipped。
+  - 為什麼會這樣:這是一份純 Markdown,改了程式碼不會讓它紅。這與
+    `readmeCounts.test.ts` 處理的是**同一個病根** —— 這個專案有非常成熟的
+    「先修後開門檻」慣例(release-gate 的 BASELINE、eslint-baseline.json、
+    e2e/manifest.mjs 的登記制),但那些守的都是**程式碼**的指標。
+    **文件從來不在任何一道閘門裡**,所以它是唯一會靜默漂移的那一類。
+  - 新增 `__tests__/upgrade-blocked.test.mjs` 8 條:每一列的「目前」必須等於
+    package.json 的實際宣告、目標必須比目前新、套件名要合法。
+    刻意**不**驗「阻塞者是誰」——那是人的判斷,沒有辦法從磁碟驗證,
+    而假裝能驗只會讓人不去看。
+  - 修完文件:electron 移到「已完成的升級」,並記下 `EBUSY` 的真因不是 npm
+    或防毒軟體,而是**自己的上一輪沒關掉 Electron**。`EBUSY` 這個字在
+    「套件升級失敗」裡看起來像依賴問題,實際上是環境問題。
+  - 負向驗證:把 electron 那一列塞回去 + e2e 數字改回 57 → 4 條精確轉紅。
+- **中文被寫壞過,而整個專案沒有任何一道閘門會發現**
+  - 全專案掃描抓到一個真實的損壞:`__tests__/outboundFetchGuard.test.ts:106`
+    的「**最底層**的可觀察事實」曾經變成「最〈三個壞字元〉層」。
+  - 它的危險性在於症狀不明顯:TypeScript 照編譯(它在註解裡)、ESLint 照過、
+    測試照綠。而這個專案的註解承載的正是**為什麼這樣做**的決策理由,
+    把它們靜默腐化掉的代價是「下一個人看不懂為什麼這樣寫」—— 那種退化沒有指標。
+  - 新增 `scripts/lib/encoding-guard.mjs` 與 14 條測試。兩個關鍵設計:
+    1. **允許清單而不是禁止清單**:二進位(wasm、`.task`)用 UTF-8 解碼會產生
+       上萬個 U+FFFD,而那是正常的。列副檔名黑名單會漏掉沒人預想到的格式,
+       於是閘門會在第一次遇到新型二進位時爆紅 —— **那種紅會訓練大家忽略它**。
+       反過來,允許清單的預設是「不讀」,漏掉的格式只會被忽略(安全)。
+    2. **掃描器自己也要被測**:「全 repo 沒有損壞」這個斷言,一個
+       `return []` 的實作也會讓它通過。所以第一組測試餵給它已知的損壞。
+       另外斷言它**確實掃過 300+ 個檔案** —— 一個回傳 0 筆問題、但只掃到
+       3 個檔案的閘門,和一個掃到 300 個的閘門,在報告裡長得一模一樣。
+  - **負向驗證的第一份證據來自它自己**:寫完這個檔之後,閘門立刻報出
+    **我剛寫的測試檔自己**有 3 個壞字元。寫入工具在這個工作流裡會咬掉中文,
+    而這正是「需要這道閘門」最直接的證據。
+  - 另外記一筆實測教訓:`process.exit()` 會截掉還在緩衝的 stdout,於是驗證腳本
+    只印出最後一行 `VERIFY_EXIT=0`。**「沒有輸出」與「輸出被吞掉」長得一模一樣。**
+- **`isAIConfigured` 是零呼叫端的死碼,而它自稱有呼叫端**
+  - `git log -S` 確認它自 `d94d5cc` 引入以來從未被 import 過。
+  - 更值得記的是它旁邊那段註解:「它的呼叫端(preflight、isAIConfigured)」。
+    `preflight` 在 renderer、**跨 process 不可能 import main 的模組** ——
+    那兩個都不是。一個自稱有呼叫端的死碼比沒有這段註解更糟:它讓下一個人
+    以為這條路徑是有人走的。連同函式一起刪掉。
+- **⚠️ 更正我先前的錯誤結論:`audit:ui` 不是「從未被驗證過」**
+  - 上一輪把它列為「沒有報告、從未驗證」的阻塞項。**那是我看錯路徑**:
+    輸出是 `docs/audit/report.json`(不是 `docs/audit/ui/report.json`)。
+  - 事實上它有跑過,而且 `ruleTally` 裡有 `thin-slider: 6` —— 證明那是在
+    `__tally` 接線之後執行的。這一筆與「量測端量錯」是同一族教訓的變體:
+    **「找不到檔案」不等於「沒跑過」**,而「未驗證」聽起來比「驗證過但我看錯路徑」
+    更嚴重,所以更容易被寫進報告。
+  - 這一輪仍然在 Electron 44.5.1 上重跑了 `audit:ui`(6 狀態 0 問題)與
+    `audit:states`(73 狀態 0 問題,skippedStates 空),所以結論不變、證據更新。
+- **驗證**:`typecheck` / `lint` / `lint:baseline` / `build` 全 exit 0;
+  單元測試 **899** 條全過(**79** 個檔案,新增 3 個檔案);
+  `audit:ui` 6 狀態 0 問題;`audit:states` 73 狀態 0 問題。
+  `npm audit` 0 vulnerabilities。
+  新功能另外在真實 Electron 裡端對端量過(見上面「排序切換器只有 24.5px」)。
+
+### 修掉兩個「按一下就把金鑰送出去」與「選錯檔案就 OOM」的缺陷
+
+一輪從使用者與工程師兩個視角做的全域盤點。**沒有新的使用者可見功能**——
+處理的是兩個可重現的真實 bug、一個稽核盲區、文件漂移,以及依賴升級的
+可行性查證。全程維持 typecheck / lint / 812 單元測試 / build / audit 全綠。
+
+- **Panic 救援會帶著 API Key 打到雲端 metadata 位址(安全,最嚴重)**
+  - [providerRegistry.ts](src/main/ai/providerRegistry.ts) 的 `resolveEndpoint`
+    對 `openai-compatible` 分支只做 `/^https?:\/\//` 前綴檢查,**完全沒有**
+    套用 [outboundEndpoint.ts](src/main/ai/outboundEndpoint.ts) 那份 denylist。
+    而 `chatCompletion` 正是經過這裡 —— 也就是 **Alt+P 救援**與 `AiChatCompletion`。
+  - 實測(修復前):`http://169.254.169.254`、`http://[::ffff:169.254.169.254]`、
+    `http://user:pass@…`、`http://0.0.0.0:8000` **全部通過**。也就是使用者把
+    網址填錯之後按一下救援鍵,應用程式就會帶著
+    `Authorization: Bearer <他的金鑰>` 打到 AWS/GCP/Azure 的 metadata 端點。
+  - ipc.ts 的 `OpenAiChat` / `CloudTranscribe` 早就有擋 —— 唯獨這條漏接,而
+    漏掉的恰好是**按一下就會發生、而且會把金鑰送出去**的那條。這也是
+    outboundEndpoint.ts 檔頭那句「安全政策集中在一個地方才叫政策」被自己違反的地方。
+  - 修法:`resolveEndpoint` 改呼叫 `normalizeCloudEndpointUrl`(單一出處)。
+  - **同時修掉錯誤訊息**:原本 `chatCompletion` 在解析失敗時一律回「AI 未設定
+    ——請到設定頁選擇 provider 並填入金鑰」。網址被擋時那是一句**誤導**——
+    使用者會跑去檢查金鑰,填完仍然不動,而沒有任何一句話提到網址。新增
+    `explainUnresolvedProvider` 區分兩種原因。
+  - 驗證:純函式測試 5 條(metadata / IPv4-mapped / unspecified / 內嵌憑證 /
+    query)+ `outboundFetchGuard.test.ts` 新增 5 條**「一個 fetch 都不該發生」**
+    的呼叫層測試(證明擋在網路層之前,而不只是判定為 null),另加 1 條區網自架
+    照常通的反向測試(黑名單不能太寬,否則會擋掉 vLLM / Tailscale / Docker)。
+    負向驗證:拿掉修正後 5 條紅在正確的斷言上。
+- **備份檔的 64MB 上限形同虛設(資料損失風險)**
+  - [ipc.ts](src/main/ipc.ts) 的 `ImportJsonFile` 順序是
+    `stat` → `readFile` → 才檢查 `info.size`。註解說「避免把 renderer 拖死」,
+    但程式碼做的是**先把整份讀進記憶體才丟掉** —— 使用者選到一個 2GB 的檔案,
+    main 進程會先把它整份塞進 heap。在錄音中 OOM 的話,整場會議一起沒了。
+  - 這個缺陷能活到現在的原因是**它沒有接縫可測**:`ipcMain.handle` 註冊的是閉包,
+    單元測試觸不到(同檔註解早就記錄過這件事),而沒有人會為了測一個分支去造一個
+    64MB 的檔案。抽出 [importJsonFile.ts](src/main/importJsonFile.ts),把順序倒過來,
+    並讓 `fs` 可注入 —— 缺陷要能修,前提是先能測。
+  - 驗證:9 條測試,其中 6 條**同時斷言 `readFile` 沒有被呼叫**(只斷言回傳值是不夠的:
+    缺陷的外在表現在修復前後完全一樣)。負向驗證:把順序改回去,3 條轉紅。
+- **稽核抓不到「label 太小」——補上這個結構性盲區**
+  - `isSmallTarget` 對 label 內的輸入框一律略過,理由完全正確:13×13 的 checkbox
+    包在 label 裡時,觸控目標是整個 label。但那個判斷的代價是**label 自己變小時
+    沒有任何人報**。第四輪 P2-1 的兩個音訊來源勾選(實測 113×20 / 155×20)就是
+    這樣活下來的:當時**所有稽核都綠**。
+  - 新增規則 `small-label-target` 與 `isSmallLabelTarget`,量那個被當成真實命中區的
+    label 本身。刻意**不**取代原本的略過,否則同一個控制項會被報兩次。
+  - 實測驗證:修復前的寫法量到 **20px**(與 UX_FINDINGS 的實測值一致)、現行
+    `py-1.5` 量到 **32px** —— 規則只在真的太小時才會報。
+  - **同時補上除錯面板的接線**:一開始只加了規則,但
+    [LayoutDebugLayer.tsx](src/renderer/src/components/LayoutDebugLayer.tsx) 只掃
+    `SMALL_TARGET_SELECTOR`(不含 label),而它的檔頭宣稱「規則與離線稽核完全同一份」。
+    那會變成「離線稽核會報、除錯面板不會」—— 一個沒被接上線的正確規則,與沒有規則
+    在效果上相同。加了 3 條接線測試鎖住這個不變量,負向驗證:拿掉標記 → 轉紅。
+  - 附帶結論:**P2-1 與 P2-2 其實早已修好**(滑桿在 global.css 已是 28px),
+    這一輪沒有為了它們做任何多餘的產品改動。
+- **文件漂移:README 的測試數字爛了 39 個測試,而且沒有任何辦法發現**
+  - README 寫「569 單元測試(52 個檔案)」,實際是 812 / 74。落後的原因是這個數字
+    **沒有辦法驗證** —— 手打的純文字,改了程式碼不會讓它紅。這個 repo 有非常成熟的
+    「先修後開門檻」慣例(release-gate 的 BASELINE、eslint-baseline.json),
+    但那些守的是程式碼的指標;**文件從來不在任何一道閘門裡**。
+  - 新增 [readmeCounts.test.ts](src/renderer/src/lib/__tests__/readmeCounts.test.ts):
+    檔案數精確比對(README 錯了就紅),測試數則只驗「量級」—— 試過靜態數 `it(`,
+    數到 817 而 vitest 實際執行 812,差在條件式測試,所以精確比對測試數只會是壞的。
+  - 負向驗證:把數字改回 569/52,檔案數比對當場轉紅。
+- **依賴升級:能升的升了,升不了的寫清楚為什麼**
+  - 已升級:`lucide-react` 1.48→1.52、`vitest` 5.0.2→5.0.3、**electron 44.4.5→44.5.1**。
+  - electron 這一項先前兩次 `EBUSY`,最後查明**不是 npm 或防毒軟體**:
+    是被中止的稽核留在背景的 Electron 實例鎖住了 `node_modules/electron/dist`。
+    實例清空後一次就成功。所以「套件升級失敗」有時候是上一輪驗證沒收拾乾淨,
+    不是依賴問題 —— 見下面「稽核腳本現在一定會關掉 Electron」。
+  - `npm audit` 從 1 個 high 降到 **0**:`http-cache-semantics`(electron-builder 的
+    傳遞依賴,`GHSA-ch52-4w7c-c8xp`)用 `overrides` 拉到 4.2.1。純 dev 依賴、
+    只在打包時使用,但修掉它不需要任何風險。
+  - **升不了的三個,原因是上游生態還沒跟上(不是設定問題)**:
+    | 套件 | 想升到 | 阻塞者 |
+    |---|---|---|
+    | eslint 10 | 10.12.0 | `eslint-plugin-react@7.37.5`(最新)的 peer 上限仍是 `^9.7` |
+    | vite 8 | 8.3.2 | `electron-vite@5.0.0`(最新)的 peer 上限仍是 `^7.0.0` |
+    | TypeScript 7 | 7.0.2 | `typescript-eslint@8.71.0` 的 peer 是 `typescript: <6.1.0` |
+  - **而「安裝成功」不等於「App 能跑」—— 這一項也是實測出來的。**
+    `npm install electron@44.5.1` 回 **exit 0**、`npm ls` 也正確顯示 44.5.1,
+    但 `node_modules/electron/dist/` 與 `path.txt` **整個不見了** ——
+    postinstall 的下載沒跑,於是專案處於「依賴看起來對、實際開不起來」的狀態。
+    補跑 `node node_modules/electron/install.js` 後 `electron --version` 才是 `v44.5.1`。
+    這一格正是本專案反覆記下的那件事:**exit code 不是證據,親自啟動才是。**
+  - 升級後的實跑驗證(不是只看版本號):`npm run build` exit 0;
+    `npm run audit:states` **73 狀態 / 0 問題**(升級後跑兩次,含一次故意中止);
+    `npm run test:e2e` **58 passed / 1 skipped / 0 failed**(7.0 分鐘)。
+  - 刻意**沒有**用 `--force` 硬推前三項。那會讓 npm 接受一個「可能壞掉」的解析,
+    而這個專案的整套驗證閘門(e2e + 6 支 UI 稽核)都需要真 Electron 才能跑,
+    用一個可能壞掉的解析去賭一次完整回歸是不負責任的。等上游支援再升,
+    代價只是一次套件升級。
+  - TypeScript 7(最新 7.0.2)維持不升:這個 typecheck 本來就只要幾秒,
+    效能收益有限,而 breaking change 風險最高。
+- **稽核腳本現在一定會關掉 Electron(失敗也會)**
+  - `audit-states.mjs` 原本把 `app.close()` 放在最後一行,中間任何一個階段拋錯
+    就直接跳到 `.catch(process.exit(1))` —— **Electron 留在背景**。
+  - 後果不是「多一個沒關的視窗」:存活的 Electron 會鎖住
+    `node_modules/electron/dist`,於是下一次 `npm install` 直接 `EBUSY`
+    (本專案已實際吃到兩次)。主流程因此包進 `try`,`app.close()` 放 `finally`。
+  - **失敗路徑是實測的,不是推論的**:在主流程裡面插了一行
+    `throw new Error('故意中止…')`,跑一次稽核確認它真的 ABORT(且 electron.exe
+    數量維持在別的執行緒的實例數、沒有增加),再拿掉探針。
+    「`finally` 會執行」不需要相信我 —— 它被量過了。
+- **`scripts/attic/` 維持不動** —— 實測推翻了我原本的判斷
+  - 原本認為它們是純負債(會被 lint/typecheck 掃到)。實測:`eslint scripts/attic`
+    是 **0 error / 0 warning**,而 `tsconfig.node.json` 的 `include` 完全不涵蓋
+    `scripts/`。沒有成本,而且 [attic/README.md](scripts/attic/README.md) 已經把
+    「這些是已完成的一次性調查產物」記錄成既有慣例。沒有動別人有意保留的東西。
+
+### 量測端自己量錯了:`hotkey-conflict-stale` 的根因在稽核腳本(不是產品)
+
+上一節修掉 StrictMode 的缺陷之後,那筆 `hotkey-conflict-stale` **仍然存在**。
+症狀吻合不等於根因相同 —— 這次量到底才發現兩件事:
+
+- **store 的 `forced: null` 是「解除覆寫」,不是「清空」**
+  - `currentHotkeyConflicts()` 回傳的是 `forced ?? conflicts`。所以
+    `__auditForce('app.hotkeyConflicts', [])` 才是清空畫面,`null` 是回到**真實**名單。
+  - 稽核腳本用 `null` 想清掉畫面。在乾淨機器上真實名單本來就是空的,
+    **兩者看起來一模一樣** —— 所以這個錯在本地永遠綠。
+  - 在真的有熱鍵被別的程式佔走的機器上(這台就是:`Alt+K` 等),
+    解除覆寫會讓警示如實長回來,於是量測端把自己的錯記成了產品的「過期警示缺陷」。
+  - 這與 `scripts/lib/effect-inventory.mjs` 裡 `preflight.models` 註解記過的
+    是同一個坑:**覆寫的清理語意必須明確,不能靠「解除之後看起來沒事」來驗。**
+- **修法:抽出可測的兩步序列**(清理的語意不該內嵌在稽核腳本裡)
+  - 新增 `scripts/lib/hotkey-override.mjs` 的 `clearHotkeyOverride(force, measure)`:
+    `[]` 清空 → 量測 → `null` 解除。第三步不能省:留著空覆寫的話,後續每一個
+    狀態都會在一個「假裝沒有衝突」的世界裡被量,那也是一種看不出來的假綠燈。
+    解除失敗會被報成 `unreached` 而不是安靜地繼續。
+  - 配套測試 6 條,全部**驅動產品自己的 store**(不用 stub):先把真實衝突設成
+    `['Alt+K']` —— 那才是會現形的那台機器 —— 再驗清空後畫面真的是空的。
+    「stub 必須是規則實際讀的那個 API」:若測試自己刻一份「null 代表清空」,
+    它會照著錯誤的假設轉綠,量到一個不存在的世界。
+  - 負向驗證:把清空改回 `null` 之後,2 條測試精確轉紅,訊息是
+    「清空之後畫面上還看得到警示 —— 傳 null 只是解除覆寫,不是清空」。
+- 教訓:**「症狀相同」是找錯根因最常見的捷徑。** StrictMode 那個缺陷是真的,
+  但它不是這筆問題的原因;先修它只是讓腳本有資格量到真正的錯誤。
+- 驗證:`npm run audit:states` 實跑 **73 狀態 / 問題 0 筆**(`meta.skippedStates` 也是空的 ——
+  所以「0 問題」是真的量過了,不是沒量到);`meta.auditedStates` 最後一筆是
+  `structure/hotkey-conflict(側欄/總覽頁都告知,衝突鈕導航 #/dashboard → #/settings)`,
+  證明那一格真的被量到。單元測試 **855** 條全過(**76** 個檔案),
+  `typecheck` / `lint` / `lint:baseline` / `build` 全 exit 0,
+  `test:e2e` 58 passed / 1 skipped。
+- 順帶把這個類型補進 [docs/AUDIT_BLINDSPOTS.md](docs/AUDIT_BLINDSPOTS.md)(盲區 3)
+  與那份盤點的重複清單第 5 題:**「強制狀態」的控制項,清除語意要用明確的空值,
+  不是 `null`** —— `null` 在這個專案已經有兩種意思。
+
+### 讓「從不觸發的規則」自己浮出來,並修掉一個 StrictMode 造成的稽核橋失效
+
+這一輪的起因是上一輪結尾提出的命題:`thin-slider` 藏了三輪,因為「問題0 筆」
+與「規則很沒用」在報告裡長得一模一樣。兩件事因此誕生:一個**看見死規則**的
+機制,以及一個它立刻抓到的**真實缺陷**。
+
+- **規則評估次數計數器(`__tally`)**
+  - `domAudit()` 的回傳陣列多一筆 `kind: '__tally'`,內容是每條規則的**評估
+    次數**。審計腳本(`audit-deep` / `states` / `ui`)透過共用的
+    `splitDomFindings()` 把它從問題裡抽離,並累加進 `meta.ruleTally`。
+  - 為什麼塞在陣列最後一項而不是改變回傳型別:`page.evaluate` 只能序列化
+    回傳值,而改型別會讓所有既有呼叫端(e2e spec + 稽核腳本)一起壞掉。
+  - **計數為 0 的兩種意義要分開**:評估次數 0 = 觸發路徑沒被走到(這個頁面沒有
+    range);評估次數大但命中 0 = 條件都滿足、或規則本身是壞的。兩者都值得知道。
+  - 配套測試 12 條,其中最關鍵的一條是「`__tally` 絕不會被算成問題」——
+    算進去的話問題數會憑空 +1,而問題數是 release-gate 的基線。
+- **修掉 StrictMode 造成的稽核橋靜默失效**(追查時先撞見的真實缺陷)
+  - `audit:states` 長期的報了一筆 `hotkey-conflict-stale`:「衝突清單清空後畫面上
+    還留著警示」。追查過程中先撞見 `installHotkeyConflictBridge` 用了一個
+    `bridgeInstalled` 布林當守門,**而且從來沒有被設回 false**。那確實是一個真實缺陷。
+  - `main.tsx` 確實包在 `<React.StrictMode>` 裡,開發模式的 effect 必然走:
+    掛載 → 註冊 → 清理(unregister 被呼叫)→ **再掛載(看到旗標為 true,直接
+    return 什麼都不註冊)**。於是第二次掛載之後
+    `__auditForce('app.hotkeyConflicts', …)` 完全失效 —— 呼叫回 ok,畫面紋風不動。
+  - 修法與 `lib/nav.ts` 的導航註冊同一個模式(該檔註解也記了同一個坑):
+    記住自己註冊的解除函式,重複呼叫時把前一份先解除。
+  - **負向驗證時我第一次寫錯了**:先是把守門改成 `if (unregisterBridge) return`
+    (以為那就是舊語義),結果測試**沒有紅** —— 因為那個版本裡 `off1()` 會把
+    旗標設成 null。還原成**真正的舊程式碼**(布林永不清)之後,2 條測試精確轉紅。
+    這一格值得記錄:**「改回去測試會紅」的前提是改回去的必須是真正的舊程式碼。**
+- **那筆問題的真正根因在稽核腳本,不在產品**(見下一節)—— 症狀吻合不等於根因相同
+- 一條實測教訓:稽核報告裡 `meta.startedAt` 是 **UTC** ISO 字串,而 `ls` 顯示
+  的是本地時間,兩者差一小時。我一度誤判成「報告不誠實」,實際上稽核跑了
+  186 秒、與截圖 mtime 完全吻合。**沒有 bug,是我把兩種時區的時間戳放在一起比。**
+- `domAudit` 的「空文件回傳空陣列」測試改寫:行為變了(多一筆 tally)之後,
+  正確的守法是斷言**問題數為 0 + tally 是合法 JSON**,而不是把期望值改成
+  「空陣列 + tally」。順帶記下:這條測試紅掉的第一反應很容易是「把 tally 拿掉」,
+  而那正好會殺掉剛加的機制 —— 改測試前先問「行為變了還是測試過時了」。
+- 驗證:typecheck / lint / lint:baseline / build 全 exit 0,單元測試 **855** 條
+  全過(76 個檔案)。`audit:deep` 46 狀態 0 問題 —— 上一輪標記為未驗證的
+  「thin-slider 不會誤報六個滑桿」,這一輪在真實 App 上確認了。
+
+
+### 把稽核規則的「排除條件」當成缺陷來源來查(找到兩條,其中一條從未觸發過)
+
+上一輪修掉 P2-1 時浮現一個問題:**那個缺陷存活的原因是所有稽核都綠**。
+於是這一輪把 `domAudit` 的每條規則都反問一次「它的排除條件會讓什麼漏過」,
+並把結果寫成可重複的盤點 [docs/AUDIT_BLINDSPOTS.md](docs/AUDIT_BLINDSPOTS.md)。
+
+兩者的成因相同:**排除條件本身是對的,但它假設了一個不總成立的條件**,
+而那個假設從來沒有被檢查過。
+
+- **`thin-slider` 是一條從未觸發過的規則(最嚴重的一種失效)**
+  - 規則宣稱「range 軌道 < 8px 就報」,實作卻是 `isRange ? r.height < 8` ——
+    量的是**元素**的 boundingRect,而那是**命中帶**,不是軌道。
+  - 兩件事讓它永遠沉默:range 的元素高度在第四輪 P2-2 被從 22px 改成 28px,
+    從那之後 `28 < 8` 永不成立;而軌道是**偽元素**,`getBoundingClientRect()`
+    根本量不到。
+  - **證據不是推論**:在真實 Chromium 上量過 —— 軌道 2px 的 range,元素高度
+    仍是 28px,舊規則判定「不報」;而且 `docs/audit` 底下每一份 report.json
+    **都沒有出現過 thin-slider**。
+  - 一條看起來在工作、但永遠不會響的規則,**比沒有規則更危險**:沒有規則是
+    誠實的,壞規則會讓人以為覆蓋到了。
+  - 修法不只是改量軌道,門檻也必須**重新校準**:照原文的 8px 會讓六個滑桿
+    全部誤報(真實軌道是 4px,而那是被 P2-2 刻意保留的正確視覺)。降到 3px ——
+    **先量過才定門檻**,而不是沿用文件裡的數字。
+  - **⚠️ 第一版修正同樣是壞的,而這件事值得單獨記錄**:
+    直覺的寫法 `getComputedStyle(el, '::-webkit-slider-runnable-track').height`
+    在真實 Chromium 上**不管軌道設成 2/4/6px 一律回傳 "28px"**(元素高度),
+    而且**不報錯、不警告**。也就是說我原本只是「把一條不會觸發的規則換成
+    另一條不會觸發的規則」。
+  - 唯一救回來的原因是:**寫完後又跑了一次真實瀏覽器複驗**,而不是看到測試
+    變綠就收工。改用 **CSSOM**(`document.styleSheets` → `cssRules` → 讀
+    `::-webkit-slider-runnable-track` 規則的 `style.height`)後,同一組實測
+    正確回傳 2/4/6;已用它實作並在瀏覽器上端對端驗過(2px → 報、4px → 不報)。
+  - **測試層的教訓**:第一版測試 stub 了 `getComputedStyle`,讓它在收到偽元素
+    選擇器時回傳軌道高度 —— **測試全綠,但驗證的是幻覺**。改 stub
+    `document.styleSheets`(規則實際讀的那個 API)才有意義。
+    **負向驗證只能證明「拿掉修正會紅」,不能證明「量到的是對的東西」。**
+- **規則 5 把「在 label 裡」當成「有名稱」**
+  - 原本 `&& !inLabel` 一律略過 label 內的控制項,理由是「label 提供無障礙
+    名稱」。那只在 label **有文字或 title** 時成立。
+  - 實測過的反例:`<label><input type="checkbox"></label>` —— 空 label、
+    無 aria-label,螢幕閱讀器拿到的是**空名稱**,而規則因為「它在 label 裡」
+    而略過。與上一輪的 `small-label-target` 是同一族問題。
+  - 修法:改成「只有 label **真的提供得到名字**時才略過」,有文字或 title 的
+    照樣略過(不誤報)。
+- **同步修正除錯面板的接線**:新增 `isThinTrack()` 必須也在
+  [LayoutDebugLayer.tsx](src/renderer/src/components/LayoutDebugLayer.tsx)
+  標記,否則離線稽核會報、除錯面板不會 —— 那個檔的檔頭宣稱「規則完全同一份」。
+- **一個值得記錄的教訓**:第一版的測試只斷言「規則現在對了」,負向驗證時
+  發現**拿掉修正不會紅** —— 因為沒有任何一條斷言依賴那個排除條件的行為。
+  重寫成「該報的要報、該略過的要略過」之後,拿掉修正才會精確地紅在那一條上。
+  **規則有測試不等於規則被驗證了。**
+- **被上游阻塞的三個升級寫成可追蹤的清單**:
+  [docs/UPGRADE_BLOCKED.md](docs/UPGRADE_BLOCKED.md) 記錄了 eslint 10 與
+  vite 8 分別被 `eslint-plugin-react` / `electron-vite`(兩者都是最新版)的
+  peer 上限阻擋,並寫明「何時可以升」與查證指令。上一輪只寫在 CHANGELOG 裡,
+  而那裡沒有辦法追蹤變化。
+- 驗證:43 條 domAudit 測試(新增 17),全專案 829 條全過;兩個修復都做過
+  負向驗證,各自紅在對的斷言上,其餘不動。`isThinTrack` 另在真實瀏覽器上
+  端對端驗證過(軌道 2px 報、4px/6px 不報)。
+
 ### 補上新功能的稽核缺口,並修掉它量出來的那個缺陷
 
 這一輪是「研究 + 清技術債 + 深度 debug」:先盤點樹上的債(含兩條並行工作線撞在

@@ -85,3 +85,80 @@ describe('熱鍵衝突的單一出處', () => {
     }
   })
 })
+
+/**
+ * StrictMode 的掛載 → 清理 → 再掛載。
+ *
+ * 這個 bug 是 `audit:states` 報出來的 `hotkey-conflict-stale` 的根因:
+ * 稽核呼叫 `__auditForce('app.hotkeyConflicts', null)` 想把畫面上的警示清掉,
+ * 但那時控制項早已不在 registry 裡 —— 呼叫回 ok,畫面卻紋風不動。
+ *
+ * 舊實作用一個 `bridgeInstalled` 布林當守門,卻從不設回 false。於是:
+ *   第 1 次掛載 → 註冊
+ *   清理       → unregister(registry 清空)
+ *   第 2 次掛載 → 看到 bridgeInstalled === true,**直接 return,什麼都沒註冊**
+ * 而 `main.tsx` 確實包在 `<React.StrictMode>` 裡,開發模式必然走这条路徑。
+ */
+describe('稽核橋在 StrictMode 的重複掛載後仍然可用', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    ;(globalThis as Record<string, unknown>).window = {
+      api: { appInfo: vi.fn(async () => ({ hotkeyConflicts: [] })) }
+    }
+  })
+
+  it('掛載 → 清理 → 再掛載:控制項仍在清單裡(舊實作在這裡壞掉)', async () => {
+    const hotkeys = await import('../hotkeys')
+    const bridge = await import('../auditBridge')
+
+    // 第一次掛載
+    const off1 = hotkeys.installHotkeyConflictBridge()
+    expect(bridge.listAuditControls()).toContain('app.hotkeyConflicts')
+
+    // 清理(StrictMode 會呼叫)
+    off1()
+    expect(bridge.listAuditControls()).not.toContain('app.hotkeyConflicts')
+
+    // 第二次掛載 —— 這一格就是缺陷所在
+    const off2 = hotkeys.installHotkeyConflictBridge()
+    expect(
+      bridge.listAuditControls(),
+      '第二次掛載後控制項必須重新註冊,否則稽核的強制呼叫會靜默失效'
+    ).toContain('app.hotkeyConflicts')
+
+    off2()
+  })
+
+  it('稽核的清空呼叫真的作用到 store(不只是回 ok)', async () => {
+    const hotkeys = await import('../hotkeys')
+    const bridge = await import('../auditBridge')
+
+    const off1 = hotkeys.installHotkeyConflictBridge()
+    off1()
+    const off2 = hotkeys.installHotkeyConflictBridge()
+
+    const r = (await bridge.forceAuditState('app.hotkeyConflicts', ['Ctrl+Alt+T'])) as { ok: boolean }
+    expect(r.ok).toBe(true)
+    expect(hotkeys.currentHotkeyConflicts()).toEqual(['Ctrl+Alt+T'])
+
+    // 這一格是 audit-states 報的那筆問題的直接對應
+    const r2 = (await bridge.forceAuditState('app.hotkeyConflicts', null)) as { ok: boolean }
+    expect(r2.ok).toBe(true)
+    expect(
+      hotkeys.currentHotkeyConflicts(),
+      '清空之後畫面上的警示必須真的消失 —— 留著就是讓人去查一個已經修好的問題'
+    ).toEqual([])
+
+    off2()
+  })
+
+  it('反覆掛載不會累積多份控制項', async () => {
+    const hotkeys = await import('../hotkeys')
+    const bridge = await import('../auditBridge')
+    const offs: Array<() => void> = []
+    for (let i = 0; i < 5; i++) offs.push(hotkeys.installHotkeyConflictBridge())
+    const count = bridge.listAuditControls().filter((n) => n === 'app.hotkeyConflicts').length
+    expect(count).toBe(1)
+    offs[offs.length - 1]()
+  })
+})

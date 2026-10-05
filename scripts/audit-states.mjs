@@ -25,7 +25,8 @@ import { _electron as electron } from 'playwright-core'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { domAudit, settleAnimations } from '../src/renderer/src/lib/domAudit.ts'
-import { createReport, guardSerializable } from './lib/audit-report.mjs'
+import { createReport, guardSerializable, splitDomFindings} from './lib/audit-report.mjs'
+import { clearHotkeyOverride } from './lib/hotkey-override.mjs'
 
 process.env.AI_TP_E2E = '1'
 process.env.AI_TP_AUDIT = '1'
@@ -285,7 +286,9 @@ async function shoot(win, label, file) {
   // 與 audit-deep 同一個理由:先讓動畫收斂再取樣,否則量到的是過渡態。
   await win.evaluate(settleAnimations).catch(() => {})
   const dom = await win.evaluate(domAudit).catch((e) => [{ kind: 'audit-failed', text: e.message }])
-  for (const d of dom) report.add(d.kind, label, d.text)
+  const split = splitDomFindings(dom)
+  for (const d of split.problems) report.add(d.kind, label, d.text)
+  if (split.tally) report.tallyRule(split.tally)
   const ov = await win
     .evaluate(() => ({
       sw: document.documentElement.scrollWidth,
@@ -886,6 +889,9 @@ async function phaseStructure(main) {
  *   3. 衝突鈕按下之後要真的到得了設定頁(有告知但到不了,等於沒告知)
  * 順便驗**收回**:覆寫清空後警示必須跟著消失 —— 留在畫面上的過期警告會讓人
  * 去查一個已經修好的問題,比沒有警告更糟(這是 hotkeys.ts 頭上寫的理由)。
+ * 「清空」的正確傳值是**空陣列**而不是 `null`(`null` 是「解除覆寫」),
+ * 見 scripts/lib/hotkey-override.mjs —— 那個差別在乾淨機器上看不出來,
+ * 卻讓這裡長期報出一筆假的 `hotkey-conflict-stale`。
  */
 async function phaseHotkeys(main) {
   const label = 'structure/hotkey-conflict'
@@ -965,25 +971,45 @@ async function phaseHotkeys(main) {
     }
   }
 
-  // 收回:過期警示比沒有警示更糟
-  const cleared = await main.evaluate(async () => {
-    const r = await window.__auditForce?.('app.hotkeyConflicts', null)
-    return r?.ok === true
-  })
-  if (!cleared) {
-    report.unreached(label, 'app.hotkeyConflicts(null) 沒有生效 —— 過期警示這一格沒量到')
+  // 收回:過期警示比沒有警示更糟。
+  //
+  // ⚠️ 這裡必須傳**空陣列**,不能傳 null(細節見 lib/hotkey-override.mjs):
+  // store 的讀法是 `forced ?? conflicts`,所以 null 是「解除覆寫、回到真實名單」,
+  // 不是「清空」。在乾淨機器上兩者看起來一樣,於是這個錯誤長久地藏著;
+  // 在真的有 Alt+K 被別的程式佔走的機器上,它讓警示長回來,於是報告長期帶著
+  // 一筆 `hotkey-conflict-stale` —— 看起來像產品的過期警示缺陷,實際上量測端
+  // 量的東西本來就沒被清掉。量測端自己的錯,長得和產品缺陷一模一樣。
+  const clear = await clearHotkeyOverride(
+    (arg) => main.evaluate((a) => window.__auditForce?.('app.hotkeyConflicts', a), arg),
+    async () => {
+      await sleep(700)
+      return main.evaluate(() => ({
+        notice: !!document.querySelector('[data-hotkey-conflict]'),
+        button: !!document.querySelector('[data-effect-id="hotkey-conflict"]')
+      }))
+    }
+  )
+  if (!clear.cleared) {
+    report.unreached(
+      label,
+      `app.hotkeyConflicts([]) 沒有生效(${clear.error ?? 'ok=false'})—— 過期警示這一格沒量到`
+    )
     return
   }
-  await sleep(700)
-  const stale = await main.evaluate(() => ({
-    notice: !!document.querySelector('[data-hotkey-conflict]'),
-    button: !!document.querySelector('[data-effect-id="hotkey-conflict"]')
-  }))
-  if (stale.notice || stale.button) {
+  // 覆寫沒解除掉的話,後續狀態全都在「假裝沒有衝突」的世界裡被量 —— 那不會變紅,
+  // 只會讓所有後續結論都不可信,所以必須報出來而不是安靜地繼續。
+  if (!clear.released) {
+    report.unreached(
+      label,
+      `app.hotkeyConflicts(null) 解除覆寫失敗(${clear.error ?? 'ok=false'})—— 後續狀態全部帶著假設在量`
+    )
+  }
+  const stale = clear.observed
+  if (stale?.notice || stale?.button) {
     report.add(
       'hotkey-conflict-stale',
       label,
-      `衝突清單清空後畫面上還留著警示(notice=${stale.notice}, button=${stale.button})—— 過期的警告會讓人去查一個已經修好的問題`
+      `衝突清單清空後畫面上還留著警示(notice=${stale?.notice}, button=${stale?.button})—— 過期的警告會讓人去查一個已經修好的問題`
     )
   }
 }
@@ -995,61 +1021,73 @@ async function main_() {
   console.log(`domAudit 序列化檢查通過(${srcLen} 字元)`)
 
   const app = await electron.launch({ args: ['.'], timeout: 60_000 })
-  let main = await app.firstWindow()
-  await main.waitForLoadState('domcontentloaded')
-  for (let i = 0; i < 15; i++) {
-    if (await main.evaluate(() => !!document.querySelector('aside')).catch(() => false)) break
-    await sleep(500)
-    const c = app.windows().find((w) => w !== main)
-    if (c && (await c.evaluate(() => !!document.querySelector('aside')).catch(() => false))) main = c
+  // 為什麼整個主流程包在 try 裡:`app.close()` 放在最後一行時,只要中間任何一個
+  // 階段拋錯,就會直接跳到下方的 `.catch(process.exit(1))` —— Electron 留在背景。
+  //
+  // 這個後果不是「多一個沒關的視窗」而已:**存活的 Electron 會鎖住
+  // node_modules/electron/dist**,於是接下來的 `npm install` 直接 EBUSY。
+  // 本專案已經吃過一次:electron 升級連續兩次 EBUSY,原因就是上一次被中斷的
+  // 稽核留下來的執行個體(而不是 npm 或防毒軟體)。
+  //
+  // 稽核腳本是在別人機器上跑的自動化 —— 「失敗時也要收拾乾淨」是它的基本義務。
+  try {
+    let main = await app.firstWindow()
+    await main.waitForLoadState('domcontentloaded')
+    for (let i = 0; i < 15; i++) {
+      if (await main.evaluate(() => !!document.querySelector('aside')).catch(() => false)) break
+      await sleep(500)
+      const c = app.windows().find((w) => w !== main)
+      if (c && (await c.evaluate(() => !!document.querySelector('aside')).catch(() => false))) main = c
+    }
+    await main.setViewportSize(VIEWPORTS[0]).catch(() => {})
+    await sleep(1200)
+
+    const bridge = await main.evaluate(() => typeof window.__auditForce === 'function').catch(() => false)
+    if (!bridge) report.unreached('boot', 'window.__auditForce 不存在(AI_TP_AUDIT 沒生效)—— 所有狀態都會失敗')
+
+    console.log('播種測試資料…')
+    const counts = await seed(main).catch((e) => ({ error: String(e) }))
+    console.log('  ', JSON.stringify(counts))
+
+    const PAGES = [
+      ['dashboard', '總覽'],
+      ['scripts', '提詞講稿'],
+      ['record', '錄音轉錄'],
+      ['practice', '面試練習'],
+      ['settings', '設定'],
+      ['calibration', '個人化校準']
+    ]
+
+    for (const vp of VIEWPORTS) {
+      await main.setViewportSize(vp).catch(() => {})
+      await sleep(900)
+      const tag = vp.tag
+      console.log(`\n── ${vp.width}×${vp.height} ──`)
+      console.log('A1 確認對話框…')
+      await phaseDialogs(main, tag)
+      console.log('A2 Toast…')
+      await phaseToasts(main, tag)
+      console.log('A3 鍵盤巡覽…')
+      await phaseKeyboard(main, tag, PAGES)
+      console.log('A4 有資料的頁面…')
+      await phaseData(main, tag)
+      console.log('A5 會改變版面的頁面內狀態…')
+      await phaseBranchStates(main, tag)
+    }
+
+    // A6 只跑一次:這兩個不變量與視窗尺寸無關(它們是結構,不是版面),
+    // 兩個尺寸各跑一次只會讓報告多一倍同樣的結論。
+    console.log('\nA6 結構不變量(首用卡片唯一性 / 設定頁目錄)…')
+    await phaseStructure(main)
+    console.log('A7 熱鍵註冊失敗的告知範圍…')
+    await phaseHotkeys(main)
+
+    const problems = report.finish(join(OUT, 'report.json'))
+    console.log(`\n輸出: ${OUT}/`)
+    return problems
+  } finally {
+    await app.close().catch(() => {})
   }
-  await main.setViewportSize(VIEWPORTS[0]).catch(() => {})
-  await sleep(1200)
-
-  const bridge = await main.evaluate(() => typeof window.__auditForce === 'function').catch(() => false)
-  if (!bridge) report.unreached('boot', 'window.__auditForce 不存在(AI_TP_AUDIT 沒生效)—— 所有狀態都會失敗')
-
-  console.log('播種測試資料…')
-  const counts = await seed(main).catch((e) => ({ error: String(e) }))
-  console.log('  ', JSON.stringify(counts))
-
-  const PAGES = [
-    ['dashboard', '總覽'],
-    ['scripts', '提詞講稿'],
-    ['record', '錄音轉錄'],
-    ['practice', '面試練習'],
-    ['settings', '設定'],
-    ['calibration', '個人化校準']
-  ]
-
-  for (const vp of VIEWPORTS) {
-    await main.setViewportSize(vp).catch(() => {})
-    await sleep(900)
-    const tag = vp.tag
-    console.log(`\n── ${vp.width}×${vp.height} ──`)
-    console.log('A1 確認對話框…')
-    await phaseDialogs(main, tag)
-    console.log('A2 Toast…')
-    await phaseToasts(main, tag)
-    console.log('A3 鍵盤巡覽…')
-    await phaseKeyboard(main, tag, PAGES)
-    console.log('A4 有資料的頁面…')
-    await phaseData(main, tag)
-    console.log('A5 會改變版面的頁面內狀態…')
-    await phaseBranchStates(main, tag)
-  }
-
-  // A6 只跑一次:這兩個不變量與視窗尺寸無關(它們是結構,不是版面),
-  // 兩個尺寸各跑一次只會讓報告多一倍同樣的結論。
-  console.log('\nA6 結構不變量(首用卡片唯一性 / 設定頁目錄)…')
-  await phaseStructure(main)
-  console.log('A7 熱鍵註冊失敗的告知範圍…')
-  await phaseHotkeys(main)
-
-  const problems = report.finish(join(OUT, 'report.json'))
-  console.log(`\n輸出: ${OUT}/`)
-  await app.close()
-  return problems
 }
 
 main_()

@@ -21,7 +21,13 @@ import type { JSX } from 'react'
 import { useEffect, useRef } from 'react'
 import { useDebug } from '../lib/debug'
 import { useEscape } from '../lib/useEscape'
-import { SMALL_TARGET_SELECTOR, clipperOf, isSmallTarget } from '../lib/domAudit'
+import {
+  SMALL_TARGET_SELECTOR,
+  clipperOf,
+  isSmallTarget,
+  isSmallLabelTarget,
+  isThinTrack
+} from '../lib/domAudit'
 
 /**
  * 標記掃描的元素數上限。列出數千列時(會議逐字稿)逐元素量測會拖慢畫面,
@@ -36,10 +42,22 @@ function clearTags(): void {
   }
 }
 
-/** 命中區過小的控制項。規則(isSmallTarget)與離線稽核完全同一份。 */
+/**
+ * 命中區過小的控制項。規則(isSmallTarget / isSmallLabelTarget / isThinTrack)
+ * 與離線稽核完全同一份。
+ *
+ * 為什麼要掃三個集合:SMALL_TARGET_SELECTOR 不含 label,而 isSmallLabelTarget
+ * 量的是 label、isThinTrack 量的是 range 的軌道。少標一個集合等於除錯面板與
+ * 離線稽核對「同一個問題」給出不同答案 —— 那正是本檔檔頭說要避免的漂移。
+ * 三者都標同一個屬性(data-dbg-small),因為對使用者而言它們是同一件事:
+ * 這個控制項不好用。
+ */
 function tagSmallTargets(): void {
   for (const el of document.querySelectorAll(SMALL_TARGET_SELECTOR)) {
-    if (isSmallTarget(el)) el.setAttribute('data-dbg-small', '1')
+    if (isSmallTarget(el) || isThinTrack(el)) el.setAttribute('data-dbg-small', '1')
+  }
+  for (const el of document.querySelectorAll('label')) {
+    if (isSmallLabelTarget(el)) el.setAttribute('data-dbg-small', '1')
   }
 }
 

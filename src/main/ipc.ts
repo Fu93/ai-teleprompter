@@ -1,5 +1,5 @@
 import { app, desktopCapturer, dialog, globalShortcut, ipcMain, powerSaveBlocker, screen, session, shell, webContents } from 'electron'
-import { writeFile, readFile, stat } from 'fs/promises'
+import { writeFile, stat } from 'fs/promises'
 import {
   AppInfo,
   IPC,
@@ -18,6 +18,7 @@ import { describeOutboundDenial, normalizeCloudEndpointUrl } from './ai/outbound
 import { chatCompletion, testConnection, getUserKeys, setUserKeys } from './ai/aiProvider'
 import { releaseRequest, trackRequest } from './ai/aiAbort'
 import { listAllScenes } from './packs'
+import { importJsonFile } from './importJsonFile'
 import { broadcastSettings, state } from './state'
 import {
   applyOverlayMinSize,
@@ -741,23 +742,10 @@ export function registerIpc(): void {
       ...(args?.defaultName ? { defaultPath: args.defaultName } : {})
     })
     if (canceled || filePaths.length === 0) return { ok: false, error: 'canceled' }
-    const filePath = filePaths[0]
-    // 大小上限:這是備份檔,正常是幾百 KB。給一個 64MB 的天花板,
-    // 避免使用者誤選一個巨大的 JSON 而把 renderer 的字串處理拖死。
-    // 超出就回人話錯誤,不截斷 —— 截斷出來的 JSON 解析失敗,錯誤訊息更難懂。
-    const max = args?.maxBytes ?? 64 * 1024 * 1024
-    let info: Awaited<ReturnType<typeof stat>>
-    let text: string
-    try {
-      info = await stat(filePath)
-      text = await readFile(filePath, 'utf-8')
-    } catch (err) {
-      throw new Error(`讀取備份檔失敗(${err instanceof Error ? err.message : String(err)})`)
-    }
-    if (info.size > max) {
-      return { ok: false, error: `檔案太大（${Math.round(info.size / 1024 / 1024)}MB）,這不像是備份檔。` }
-    }
-    return { ok: true, filePath, text }
+    // 讀取與大小上限都在 importJsonFile 裡(可單元測試)。
+    // 原本這段寫在 handler 裡,而 handler 是 ipcMain.handle 的閉包 —— 測不到,
+    // 導致「先讀進來才檢查大小」這個順序錯誤一直沒有人看出來。見該模組檔頭。
+    return importJsonFile(filePaths[0], args?.maxBytes)
   })
 
   // ---- Phase C:統一 AI / 金鑰 / panic / 場景 ----
