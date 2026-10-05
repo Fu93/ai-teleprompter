@@ -22,6 +22,7 @@ import { DataTrustPanel } from '../components/DataTrustPanel'
 import { formatDiagnosticsReport } from '@shared/observability'
 import { reportError } from '../lib/reportError'
 import { PreflightCard } from '../components/PreflightCard'
+import { DENSITY_MODE_LABEL, suggestDisplayMode } from '../lib/densityAdvice'
 
 const SCENE_LABELS_ZH: Record<string, string> = {
   interview: '面試',
@@ -463,6 +464,12 @@ export default function SettingsPage({
   if (!settings) return <div className="p-8 text-sm text-ink-400">載入中…</div>
 
   const o = settings.overlay
+
+  /**
+   * 提詞密度建議(roadmap P3 的重寫版):唯讀,只在有校準而且語速落在
+   * 快/慢兩側時出現。不自動切換模式 —— 理由見 lib/densityAdvice.ts 檔頭。
+   */
+  const densityAdvice = suggestDisplayMode(settings.personal.profile, o.displayMode)
   const patchO = (patch: Partial<AppSettings['overlay']>): Promise<void> =>
     update({ overlay: patch })
 
@@ -597,6 +604,12 @@ export default function SettingsPage({
               ? `逐句/逐詞以你的個人語速 ${settings.personal.profile.charsPerMin} 字/分為基準推進（倍率 1×＝你自己的語速）;重點要點自動切出 Markdown 大綱或段落,手動(← →)翻頁。`
               : '逐句/逐詞以 120 WPM 為基準推進（完成個人化校準後改以你的語速為基準）;重點要點自動切出 Markdown 大綱或段落,手動(← →)翻頁。'}
           </div>
+          {/* 密度建議:出現在「做決定的地方」——使用者正在看這四顆模式鈕。 */}
+          {densityAdvice && (
+            <div className="mt-1.5 text-[11px] text-ink-400" data-density-advice="1">
+              建議:{DENSITY_MODE_LABEL[densityAdvice.mode]}模式 — {densityAdvice.reason}
+            </div>
+          )}
         </div>
         <div>
           <Slider

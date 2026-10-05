@@ -33,10 +33,11 @@ import { useTeleprompterEngine } from './useTeleprompterEngine'
 import { usePanic } from './usePanic'
 import { useTurnYield } from './useTurnYield'
 import { useCoaching } from './useCoaching'
+import { usePace } from './usePace'
 import { useFollowMode } from './useFollowMode'
 import { useLiveEvents } from './useLiveEvents'
 import { LENS_SIZE, useMorph } from './useMorph'
-import { pillFitOf, pillKeywordCharsOf, pillSizeOf } from '@shared/overlayShapes'
+import { paceReadoutFits, pillFitOf, pillKeywordCharsOf, pillSizeOf } from '@shared/overlayShapes'
 import { useGlassRefraction } from './useGlassRefraction'
 import { OverlayDebugRoot } from './DebugHud'
 import { registerAuditControl } from '../lib/auditBridge'
@@ -77,6 +78,15 @@ export default function OverlayApp(): JSX.Element {
    * 但展開/播放/Panic 三顆永遠留著。
    */
   const [winW, setWinW] = useState(() => window.innerWidth)
+  /**
+   * 視窗高度:只有一個用途 —— 判斷底部讀數 chip 放不放得下(P4)。
+   *
+   * 為什麼需要它:讀數是**持續型**的絕對定位元件(每 2 秒更新,不會自己退場),
+   * 而展開形態的最小高度(EXPANDED_MIN.h = 40px)比它需要的 77px 還小 —— 拖到
+   * 最小又在講話時,它會永久蓋住工具列。門檻與三個來源數字見
+   * shared/overlayShapes.ts 的 PACE_READOUT_MIN_H。
+   */
+  const [winH, setWinH] = useState(() => window.innerHeight)
   /**
    * 稽核專用:強制藥丸列的可選內容(見下方 registerAuditControl 的註解)。
    * null = 正常運作,一切走真實狀態。打包版永遠是 null —— initAuditBridge 只在
@@ -234,6 +244,11 @@ export default function OverlayApp(): JSX.Element {
   // 「main 送來的訊號 → 顯示 → 8 秒後淡出」的純流程,把它摻進一個只在
   // audit 模式存在的開關會讓它的每一次狀態變化都有兩個來源。
   const coachingHint = auditCoaching ?? realCoachingHint
+
+  // ---- 瞬時節奏讀數(P4):10 秒窗的語速,掛在同一個「即時教練」開關下 ----
+  // 刻意不做稽核覆寫:它不是事件,而是持續讀數 —— audit 要驗它,推真的逐字稿
+  // 進 main 就好(e2e/overlay-pace.spec.ts 就是這樣走真 IPC 的)。
+  const pace = usePace(o?.coaching ?? true)
 
   const controlsRef = useRef(controls)
   controlsRef.current = controls
@@ -428,7 +443,10 @@ export default function OverlayApp(): JSX.Element {
 
   // ---- 視窗寬度追蹤(排版用,不落盤)----
   useEffect(() => {
-    const onResize = (): void => setWinW(window.innerWidth)
+    const onResize = (): void => {
+      setWinW(window.innerWidth)
+      setWinH(window.innerHeight)
+    }
     window.addEventListener('resize', onResize)
     onResize()
     return () => window.removeEventListener('resize', onResize)
@@ -1146,6 +1164,7 @@ export default function OverlayApp(): JSX.Element {
       {debugLayer}
       {/* 工具列(可拖曳視窗)*/}
       <div
+        data-overlay-toolbar="1"
         className="flex h-9 shrink-0 items-center gap-1 border-b border-white/10 px-2.5"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
@@ -1534,7 +1553,7 @@ export default function OverlayApp(): JSX.Element {
           救援卡顯示中時不畫:兩者在 260px 的視窗裡會疊到同一段高度(卡片是 z-30
           且不透明),被蓋住的提示文字就變成一個真的會被稽核抓到的遮擋缺陷。
           救援永遠比提醒重要,而提示條本來就會重播。 */}
-      {panicPhase === 'idle' && (turnYieldHint || coachingHint) && (
+      {panicPhase === 'idle' && (turnYieldHint || coachingHint || pace) && (
         <div
           // 跟讀狀態條佔著 bottom 1.5–30px:提示 pill 從 bottom-4 起跳會與它疊印,
           // 兩者都是暫態,同時出現時兩行都讀不了 → 條存在時提示上移避讓
@@ -1543,6 +1562,36 @@ export default function OverlayApp(): JSX.Element {
             followBarVisible ? 'bottom-12' : 'bottom-4'
           )}
         >
+          {/* 瞬時節奏讀數(P4):只出現在展開態。
+              藥丸(320px 扣三顆按鈕)與貼鏡(420×170,高度預算被量過三次)
+              都沒有空間給一個**持續**讀數 —— 那兩個形態的職責是「看著稿」,
+              不是「看著自己」;教練提示在那裡是暫態事件,與讀數不同。
+              放在堆疊的**第一項**:讀數隨著開口/停頓出現又消失,而位移總要有人
+              吸收 —— 提示鈕是可點擊的(點它把這一種靜默到本場結束),讀數不是。
+              稽核實測(`overlay-pace-shifts-hint`):放最後一項時,讀數出現會把
+              提示鈕往上推 32px,使用者正在瞄準的那一顆就跑掉了。
+              高度不夠時不畫(paceReadoutFits):展開態最小高度 40px 比它需要的
+              77px 還小,持續讀數會**永久**蓋住 36px 的工具列 —— 那幾顆按鈕是
+              提詞機的出口,寧可沒有讀數也不能蓋掉它。 */}
+          {pace && paceReadoutFits(winH) && (
+            <div
+              data-pace="1"
+              data-pace-verdict={pace.verdict}
+              className={cn(
+                'flex items-center justify-center gap-1.5 rounded-full bg-black/45 px-3 py-1 text-[11px] font-medium shadow-lg',
+                pace.verdict === 'on_track' && 'text-emerald-300',
+                pace.verdict === 'ahead' && 'text-amber-300',
+                pace.verdict === 'behind' && 'text-rose-300'
+              )}
+              title={`近 10 秒瞬時語速（趨勢讀數）:${pace.cpm} 字/分;基準 ${pace.baseline} 字/分${pace.verdict === 'on_track' ? ' — 節奏穩定' : pace.verdict === 'ahead' ? ' — 偏快,可留一點停頓' : ' — 偏慢,可以再推進'}`}
+            >
+              <Gauge size={11} className="shrink-0" />
+              {pace.cpm} 字/分
+              <span className="text-white/72">
+                {pace.verdict === 'on_track' ? '穩定' : pace.verdict === 'ahead' ? '偏快' : '偏慢'}
+              </span>
+            </div>
+          )}
           {turnYieldHint && (
             <div className="flex items-center justify-center gap-2 rounded-full bg-sky-500/25 px-4 py-2 text-xs font-medium text-sky-200 shadow-lg">
               <MessageCircleQuestion size={14} className="shrink-0" />

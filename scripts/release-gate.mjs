@@ -47,7 +47,13 @@ const BASELINE = {
   // 40 → 42(2026-10-02):貼鏡形態原本只量了 panic 一種暫態。turn-yield 與 coaching
   // 這兩條路徑都發生在 420×170 這個會被裁掉的視窗裡(turn-yield 會讓底部預讀行收起、
   // coaching 是這一版才補上的),沒有狀態就是沒量過。此輪決定:接受 42。
-  'audit:deep': { file: 'docs/audit/deep/report.json', minStates: 42 },
+  // 42 → 43(2026-10-05):瞬時節奏讀數(P4)是**持續型** UI —— 每 2 秒心跳、
+  // 使用者會照著它調整語速,而原本 45 個狀態裡沒有一個會說話,讀數在新 UI
+  // 清單裡是隱形的。新增的 overlay/expanded@pace 走真 IPC 推逐字稿;
+  // chip 必須整個在視窗內,而且與工具列的矩形不得重疊 —— 拖到展開態最小高度
+  // (280x40)時,持續讀數會永久蓋住工具列(實測重疊 24px,已修:規則在
+  // shared/overlayShapes.ts 的 paceReadoutFits)。
+  'audit:deep': { file: 'docs/audit/deep/report.json', minStates: 43 },
   'audit:states': { file: 'docs/audit/states/report.json', minStates: 48 },
   'audit:edge': { file: 'docs/audit/edge/report.json', minStates: 9, kind: 'combos' },
   'audit:journey': { file: 'docs/audit/journey/report.json', minStates: 8 },

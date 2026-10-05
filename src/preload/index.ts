@@ -7,6 +7,7 @@ import type {
   RescuePayload,
   TurnYieldPayload,
   CoachingPayload,
+  CoachingPacePayload,
   UpdateDownloadedInfo
 } from '../shared/types'
 import type {
@@ -62,6 +63,7 @@ const api: Api = {
   onPanicError: (cb: (message: string) => void) => on<string>(IPC.PanicError, cb),
   onTurnYield: (cb: (payload: TurnYieldPayload) => void) => on(IPC.TurnYieldSignal, cb),
   onCoaching: (cb: (payload: CoachingPayload) => void) => on(IPC.CoachingSignal, cb),
+  onCoachingPace: (cb: (payload: CoachingPacePayload) => void) => on(IPC.CoachingPace, cb),
   contextReset: () => ipcRenderer.invoke(IPC.ContextReset),
   coachingStats: () => ipcRenderer.invoke(IPC.CoachingStatsGet),
   onOverlayPlayPause: (cb: () => void) => on<void>(IPC.OverlayPlayPause, cb),

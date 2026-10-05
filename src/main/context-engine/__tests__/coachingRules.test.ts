@@ -54,14 +54,18 @@ describe('onMeSegment 語速過快(fast)', () => {
     expect(fired).not.toBeNull()
     expect(fired!.kind).toBe('fast')
   })
-  it('正常語速不誤報', () => {
+  it('正常語速不誤報(逐次檢查)', () => {
     const s = createCoachingState()
-    let last: unknown = null
-    // 每段 8 units、間隔 4s(> gap 2.5s,不計連續,只算首段 1.5s)→ cpm 低
+    const fired: Array<ReturnType<typeof onMeSegment>> = []
+    // 每段 10 units、間隔 4s(> gap 2.5s,不計連續,只算首段 1.5s credit)
+    //
+    // 逐次檢查是刻意的:舊寫法只斷言**最後一次**的回傳值,而最後一次
+    // 剛好被前一次觸發遺下的 120s 冷卻壓成 null —— 於是一個真實的假陽性
+    // (第 2 段就報「語速偏快」)在綠色測試底下活了下來。
     for (let i = 1; i <= 5; i++) {
-      last = onMeSegment(s, '我們一步一步來慢慢講', T0 + i * 4_000, opts())
+      fired.push(onMeSegment(s, '我們一步一步來慢慢講', T0 + i * 4_000, opts()))
     }
-    expect(last).toBeNull()
+    expect(fired.filter(Boolean)).toEqual([])
   })
   it('冷卻期內不重複觸發', () => {
     const s = createCoachingState()

@@ -37,6 +37,10 @@ export const BLOCKING_SPECS = [
   'error-boundary.spec.ts',
   'confirm-close.spec.ts',
   'settings-persistence.spec.ts',
+  // 提詞密度建議(P3b)是唯讀的一行字,它的失敗模式是「從來沒有出現過」——
+  // 純函式測試蓋得到門檻,但「有沒有接在設定頁上、該消失時有沒有消失」只有
+  // 走真畫面才看得到(docs/UX_FINDINGS.md 的 audit:effects 段落同一課)。
+  'settings-density-advice.spec.ts',
   'backup.spec.ts',
   'scripts-import.spec.ts',
   // 講稿不能因為使用者忘了按「儲存」而消失。特別是 Ctrl+S:它沒有接的時候
@@ -71,6 +75,10 @@ export const BLOCKING_SPECS = [
   'pill-notice.spec.ts',
   'pill-progress.spec.ts',
   'pill-scale.spec.ts',
+  // 瞬時節奏讀數(P4)是這專案第二個「持續型」訊號(第一個是跟讀):它的單元
+  // 測試蓋得到估計器與判定,但「main 在段落到達時送、浮層畫出來、窗內語音
+  // 不足時收起」是接線 —— 讀數錯誤的成本是使用者照著假數字調整自己的語速。
+  'overlay-pace.spec.ts',
   'playtest3.spec.ts',
   'visual.spec.ts'
 ]

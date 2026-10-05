@@ -1107,6 +1107,192 @@ async function main() {
     await overlay.locator('.glass-pill button[title="關閉"]').first().click().catch(() => {})
     await sleep(800)
 
+    /**
+     * 瞬時節奏讀數(P4)的**持續型**狀態。
+     *
+     * 為什麼需要這一格:讀數 chip 只在「真的有人在說話」時出現,而上面 45 個
+     * 狀態裡沒有任何一個會說話 —— 也就是說這個新 UI 在發布閘門裡是隱形的,
+     * 而它是一個每 2 秒更新、使用者會照著調整語速的東西。
+     *
+     * 為什麼不用稽核橋強制(不像 coachingHint):讀數是一個**算出來的數字**,
+     * 用橋塞一個假值進去等於不驗估計器,只驗「div 畫不畫得出來」。所以這裡
+     * 推真的逐字稿走真 IPC(與 e2e/overlay-pace.spec.ts 同一條路徑),驗的是
+     * 「它出現在畫面上時,domAudit 的規則怎麼說」。
+     *
+     * 段落間隔與字數是算過的,不是挑的:
+     *   每段 9 個 CJK 單位、間隔 1500ms(≤ CONTINUATION_GAP_MS)→ 第 2 段
+     *   開始窗內就有 18 單位 / 3000ms 發聲 = **360 字/分**。360 在 300 基準的
+     *   ±10% 帶外(所以畫面真的有顏色可量),但低於 fast 規則的 1.3×(390)
+     *   —— 讀數不會順手把教練提示叫出來,這一格的截圖裡只有讀數本身。
+     */
+    {
+      const state = 'overlay/expanded@pace'
+      // 讀數掛在「即時教練」開關下(與提示條同一個);先確定它是開的。
+      await main.evaluate(() => window.api.setSettings({ overlay: { coaching: true } })).catch(() => {})
+      // 先清掉前一格可能留下的語音上下文:窗是 10 秒,「別的狀態離得夠遠」
+      // 不該是這一格能不能過的隱性前提。
+      await main.evaluate(() => window.api.contextReset()).catch(() => {})
+      await sleep(500)
+      // 提示鈕先出場,而且要在讀數出現**之前**量它的位置(見下面的穩定性斷言)。
+      // 用稽核橋而不是真的教練訊號:這一格驗的是**版面**,不是教練規則 ——
+      // 橋的提示是持續的(不像真訊號 8 秒淡出),兩次量測之間不會自己消失。
+      await force(overlay, state, 'overlay.coachingHint', { kind: 'filler', message: '稽核:讀數與提示的相對位置' })
+      await sleep(700)
+      const pillRect = async () =>
+        overlay
+          .evaluate(() => {
+            const el = document.querySelector('[data-effect-id="coaching-mute"]')
+            if (!el) return null
+            const r = el.getBoundingClientRect()
+            return { top: Math.round(r.top), left: Math.round(r.left), w: Math.round(r.width), h: Math.round(r.height) }
+          })
+          .catch(() => null)
+      const pillBefore = await pillRect()
+      if (!pillBefore) report.unreached(state, '稽核橋沒有讓提示鈕出現 —— 「讀數出現時提示鈕會不會移動」量不到')
+      await overlay.screenshot({ path: join(OUT, 'overlay-expanded-pace-before.png') }).catch(() => {})
+      const before = fileHash(join(OUT, 'overlay-expanded-pace-before.png'))
+
+      const SEG = '這是一段測試逐字稿' // 9 個 CJK 單位(見上面那組算過的數字)
+      let pushed = true
+      for (let i = 0; i < 3; i++) {
+        pushed = await main
+          .evaluate((t) => window.api.pushTranscript({ text: t, speaker: 'me' }), SEG)
+          .catch(() => false)
+        if (!pushed) break
+        await sleep(1500)
+      }
+
+      const chip = overlay.locator('[data-pace="1"]')
+      const chipCount = await chip.count().catch(() => 0)
+      if (!pushed) {
+        report.unreached(state, 'pushTranscript 被拒絕 —— 讀數的來源管道不通')
+      } else if (chipCount === 0) {
+        report.unreached(state, '推了 3 段真逐字稿(間隔 1.5s)之後浮層仍沒有讀數 chip')
+      } else {
+        /**
+         * 讀數出現時,**可點擊的提示鈕不得移動**。
+         *
+         * 為什麼這是一條斷言而不是一句設計理念:提示鈕點下去會把那一種提示
+         * 靜默到本場結束 —— 它是使用者正在瞄準的目標,而讀數每 2 秒心跳、
+         * 隨開口與停頓出現/消失。兩者疊在同一個底部堆疊裡時,誰吸收位移
+         * 是有代價的:讀數會動沒關係(它不可互動),提示鈕動了就是點不到。
+         */
+        if (pillBefore) {
+          const pillAfter = await pillRect()
+          if (!pillAfter) {
+            report.unreached(state, '讀數出現後提示鈕不見了(持續型提示不該淡出)—— 位移量不到')
+          } else {
+            const dx = Math.abs(pillAfter.left - pillBefore.left)
+            const dy = Math.abs(pillAfter.top - pillBefore.top)
+            if (dx > 1 || dy > 1) {
+              report.add(
+                'overlay-pace-shifts-hint',
+                state,
+                `讀數出現時提示鈕移動了 ${dx}x${dy}px(${pillBefore.top},${pillBefore.left} → ${pillAfter.top},${pillAfter.left})—— 使用者正在瞄準的點擊目標跑掉了`
+              )
+            } else {
+              report.note('overlay.pace.hintStability', `提示鈕不動(${pillAfter.top},${pillAfter.left} ${pillAfter.w}x${pillAfter.h})`)
+            }
+          }
+        }
+        // 讀數與提示條不同:它不會自己退場(靠 2 秒心跳活著),所以「整個在
+        // 視窗內」是它能不能被讀到的**唯一**保證 —— 貼出去不是漂亮的問題,
+        // 是使用者永遠看不到自己偏快。
+        const box = await chip.first().boundingBox().catch(() => null)
+        const vp = await overlay.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight })).catch(() => null)
+        if (!box || !vp) {
+          report.unreached(state, '讀數 chip 在 DOM 裡但量不到幾何(或視窗尺寸)')
+        } else if (box.x < 0 || box.y < 0 || box.x + box.width > vp.w || box.y + box.height > vp.h) {
+          report.add(
+            'overlay-pace-outside-window',
+            state,
+            `讀數 chip ${Math.round(box.width)}x${Math.round(box.height)} @ ${Math.round(box.x)},${Math.round(box.y)} 超出 ${vp.w}x${vp.h} 的視窗`
+          )
+        } else {
+          const verdict = await chip.first().getAttribute('data-pace-verdict').catch(() => null)
+          report.note(
+            'overlay.pace.geometry',
+            `chip ${Math.round(box.width)}x${Math.round(box.height)} @ ${Math.round(box.x)},${Math.round(box.y)} · verdict=${verdict} · 視窗 ${vp.w}x${vp.h}`
+          )
+        }
+        const { hash } = await auditShot(overlay, state, 'overlay-expanded-pace')
+        if (report.expectStateChange(state, before, hash)) report.measured(state)
+
+        /**
+         * 高度不足時的不變量:**讀數與工具列不得重疊**。
+         *
+         * 為什麼量矩形而不是比門檻:拿 PACE_READOUT_MIN_H 來比,等於問 App
+         * 「你自己覺得對嗎」—— 門檻調小就會一起通過。這裡量的是兩塊矩形本身,
+         * 重疊就是重疊(工具列是提詞機的出口,不能被一個不會退場的讀數蓋住)。
+         *
+         * 拖到 EXPANDED_MIN(280x40)是使用者真的做得到的事:40 就是下限。
+         * 這一條同時驗兩個方向:40px 時讀數必須收起、而且還原高度之後必須
+         * 回來(否則「收起」就變成「壞掉」—— 讀數從此不再出現,而畫面上
+         * 沒有任何東西會說它去哪了)。
+         */
+        const toolbarGeo = async () =>
+          overlay
+            .evaluate(() => {
+              const chip2 = document.querySelector('[data-pace="1"]')
+              const bar = document.querySelector('[data-overlay-toolbar="1"]')
+              if (!bar) return { bar: false, chip: !!chip2, overlapPx: 0, winH: window.innerHeight }
+              const b = bar.getBoundingClientRect()
+              if (!chip2) return { bar: true, chip: false, overlapPx: 0, winH: window.innerHeight, barBottom: Math.round(b.bottom) }
+              const c = chip2.getBoundingClientRect()
+              return {
+                bar: true,
+                chip: true,
+                overlapPx: Math.round(Math.min(c.bottom, b.bottom) - Math.max(c.top, b.top)),
+                winH: window.innerHeight,
+                barBottom: Math.round(b.bottom),
+                chipTop: Math.round(c.top)
+              }
+            })
+            .catch(() => null)
+        const checkToolbarClear = async (phase) => {
+          const g = await toolbarGeo()
+          if (!g || !g.bar) {
+            report.unreached(state, `找不到工具列([data-overlay-toolbar])—— 讀數與工具列的重疊量不到(${phase})`)
+            return null
+          }
+          if (g.chip && g.overlapPx > 0) {
+            report.add(
+              'overlay-pace-covers-toolbar',
+              state,
+              `${phase}:讀數 chip 與工具列重疊 ${g.overlapPx}px(chipTop=${g.chipTop} barBottom=${g.barBottom} 視窗高 ${g.winH})`
+            )
+          } else {
+            report.note(
+              `overlay.pace.toolbarClear.${phase}`,
+              `視窗高 ${g.winH}px → chip ${g.chip ? '在畫面上' : '已收起'},與工具列重疊 0px`
+            )
+          }
+          return g
+        }
+        await checkToolbarClear('720x260')
+        // 拖到最小高度:下限本身(40px)比讀數需要的還小,chip 必須消失。
+        await main.evaluate(([w, h]) => window.api.overlaySetSize(w, h), [EXPANDED_MIN.w, EXPANDED_MIN.h]).catch(() => {})
+        await sleep(800)
+        const atMin = await checkToolbarClear('min')
+        // 還原:後面的狀態要站在原本的展開尺寸上,而且讀數必須回來。
+        await main.evaluate(([w, h]) => window.api.overlaySetSize(w, h), [720, 260]).catch(() => {})
+        await sleep(800)
+        const restored = await checkToolbarClear('restored')
+        if (atMin && restored && !atMin.chip && atMin.winH < 77 && !restored.chip) {
+          report.add(
+            'overlay-pace-lost',
+            state,
+            `高度不夠時讀數收起是對的,但還原到 ${restored.winH}px 之後它沒有回來(窗內樣本還在)—— 使用者從此看不到讀數`
+          )
+        }
+      }
+      // 收尾:讀數、強制的提示與語音上下文都不得留給下一格(下一格是貼鏡暫態;
+      // 這裡開始說話之後,若不清掉,8 秒冷場會落在別人的截圖上)。
+      await force(overlay, state, 'overlay.coachingHint', null)
+      await main.evaluate(() => window.api.contextReset()).catch(() => {})
+      await sleep(700)
+    }
+
     // 貼鏡(420x170)裡的暫態覆蓋層。
     //
     // 救援卡是卡片比視窗高的實際受害者;這一版把信心/來源搬進標題列就是為了它。

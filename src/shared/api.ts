@@ -4,6 +4,7 @@ import type {
   RescuePayload,
   TurnYieldPayload,
   CoachingPayload,
+  CoachingPacePayload,
   CoachingKind,
   DebugSignalKind,
   DebugOverlayAction,
@@ -152,6 +153,8 @@ export interface Api {
   onTurnYield(cb: (payload: TurnYieldPayload) => void): Unsubscribe
   /** 即時教練訊號(main → overlay) */
   onCoaching(cb: (payload: CoachingPayload) => void): Unsubscribe
+  /** 瞬時節奏讀數(main → overlay;10s 窗,持續更新) */
+  onCoachingPace(cb: (payload: CoachingPacePayload) => void): Unsubscribe
   /** 會話邊界:清空 main 端語音上下文與即時回饋狀態(新場次開始時呼叫) */
   contextReset(): Promise<void>
   /** 目前 coaching 各訊號觸發次數(會後報告用) */

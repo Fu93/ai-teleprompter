@@ -129,6 +129,21 @@ export function subscribeDebugSignals(): () => void {
   const offs: Array<() => void> = [
     window.api.onTurnYield((p) => debugLog('turn-yield', p.kind, { question: p.question })),
     window.api.onCoaching((p) => debugLog('coaching', p.message, { kind: p.kind })),
+    // 瞬時節奏是**讀數**:每 ~2 秒一次心跳。整條寫進事件流會把其他訊號洗掉,
+    // 所以只記「判定或數字變了」的那幾筆(含回到窗內語音不足)。
+    ((): (() => void) => {
+      let seen = 'init'
+      return window.api.onCoachingPace((p) => {
+        const key = p.cpm === null ? 'none' : `${p.cpm}:${p.verdict}`
+        if (key === seen) return
+        seen = key
+        debugLog(
+          'pace',
+          p.cpm === null ? '瞬時語速:窗內語音不足' : `${p.cpm} 字/分(${p.verdict})`,
+          { baseline: p.baseline }
+        )
+      })
+    })(),
     window.api.onPanicRescue((p) =>
       debugLog('panic', `${p.source} / 信心 ${p.confidence.toFixed(2)}`, {
         sentence: p.sentence,

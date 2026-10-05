@@ -109,6 +109,14 @@ export interface AppSettings {
   scenario: ScenarioSettings
   personal: {
     profile: PersonalProfile | null
+    /**
+     * 救援時間預算的自適應樣本(見 main/context-engine/rescueAdaptation.ts)。
+     *
+     * 為什麼放在 personal 而不是 PersonalProfile:profile 是**校準**的產物,
+     * 沒校準的人也會按救援熱鍵 —— 樣本不該跟著「有沒有量過語速」一起缺席。
+     * 只記成功的延遲;換供應商就重新累積(分佈不同)。舊設定檔沒有這個欄位。
+     */
+    rescue?: { providerId: string; samples: number[] }
   }
 }
 
@@ -287,6 +295,8 @@ export const IPC = {
   TurnYieldSignal: 'context:turn-yield',
   /** 即時教練訊號(main → overlay) */
   CoachingSignal: 'context:coaching',
+  /** 瞬時節奏讀數(main → overlay;P4。持續更新,沒有冷卻) */
+  CoachingPace: 'context:coaching-pace',
   /** 會話邊界:清空 liveContext / turnYield / coaching 狀態 */
   ContextReset: 'context:reset',
   /** 取用目前 coaching 觸發計數(供會後報告) */
@@ -377,6 +387,23 @@ export interface CoachingPayload {
   /** 給使用者的提示文案(main 端已含量化數字) */
   message: string
   /** 觸發時間戳(ms epoch),供 renderer 防抖 */
+  at: number
+}
+
+/**
+ * 瞬時節奏讀數(main → overlay)。
+ *
+ * 與 CoachingPayload 的差別:那個是**事件**(會出聲、有冷卻、8 秒淡出);
+ * 這個是**讀數**(10 秒窗、±10% 三色、不出聲、持續更新)。兩者共用同一個
+ * 估計器(見 main/context-engine/speakingPace.ts)。
+ */
+export interface CoachingPacePayload {
+  /** 中位數濾波後的瞬時語速(字/分);null = 窗內語音不足,UI 應收起 */
+  cpm: number | null
+  /** 三色判定;cpm 為 null 時同為 null */
+  verdict: 'ahead' | 'on_track' | 'behind' | null
+  /** 顯示用基準(個人校準值,未校準為 DEFAULT_CPM) */
+  baseline: number
   at: number
 }
 

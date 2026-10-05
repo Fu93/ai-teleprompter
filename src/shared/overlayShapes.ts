@@ -199,6 +199,37 @@ export const PILL_MIN = PILL_MIN_BASE
 /** 貼鏡的最小尺寸就是它的設計尺寸:170 已經是「扣掉工具列與底部提示後的正文下限」。 */
 export const LENS_MIN = { w: LENS_SIZE.w, h: LENS_SIZE.h } as const
 
+/** 展開態工具列高度(OverlayApp 頂列的 `h-9`;牆上的一個數字,只在這條預算裡出現一次) */
+export const OVERLAY_TOOLBAR_H = 36
+/** 底部回饋堆疊離視窗底邊的距離(OverlayApp 的 `bottom-4`) */
+export const OVERLAY_STACK_BOTTOM = 16
+/**
+ * 瞬時節奏讀數 chip 的實測高度。
+ *
+ * 來源不是估算:audit-deep 的 `overlay.pace.geometry` 在 720x260 的展開態量到
+ * `115x25`(`py-1` + `text-[11px]` + 11px 圖示)。改動 chip 的內距或字級時,
+ * 這個數字要跟著重量一次 —— 而稽核會在門檻附近直接報出來。
+ */
+export const PACE_READOUT_H = 25
+/**
+ * 放得下底部讀數的最小展開態高度(36 + 16 + 25 = 77px)。
+ *
+ * 為什麼需要它:讀數 chip 是絕對定位在視窗底部的**持續型**元件 —— 它不像
+ * turn-yield / coaching 提示會自己退場("暫態貼到東西上"可以接受,因為它
+ * 幾秒後就不見了)。而展開形態的最小高度是 EXPANDED_MIN.h = 40px,比 77 還小:
+ * 使用者把浮層拖到最小、又剛好在講話時,chip 會**永久**蓋住工具列的前幾顆
+ * 按鈕(它 pointer-events-none,點得到,但看不到自己在點什麼)。
+ *
+ * 所以門檻的方向是「沒有空間就不畫」—— 與藥丸/貼鏡不放讀數是同一個決定:
+ * 讀數是「看著自己」的資訊,工具列是「操作提詞機」的入口,後者不能被蓋掉。
+ */
+export const PACE_READOUT_MIN_H = OVERLAY_TOOLBAR_H + OVERLAY_STACK_BOTTOM + PACE_READOUT_H
+
+/** 這個視窗高度放得下底部讀數嗎?不夠就不畫(見 PACE_READOUT_MIN_H 的理由)。 */
+export function paceReadoutFits(winH: number): boolean {
+  return Number.isFinite(winH) && winH >= PACE_READOUT_MIN_H
+}
+
 export type OverlayShape = 'expanded' | 'pill' | 'lens'
 
 /** 由設定的兩個旗標決定形態。判斷順序必須與 OverlayApp 的渲染順序一致（compact 優先）。 */

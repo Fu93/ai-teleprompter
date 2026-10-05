@@ -71,9 +71,20 @@ export default tseslint.config(
     linterOptions: { reportUnusedDisableDirectives: 'error' }
   },
 
-  // ===== Node 側:main / preload / 建置腳本 =====
+  // ===== Node 側:main / preload / 建置腳本 / shared =====
+  //
+  // src/shared 是**這一輪才進來的**(2026-10-05 清技術債):在此之前它不在任何
+  // 一個 blocks 的 files 裡,於是整個目錄從來沒有被 lint 過 —— 而它的內容是
+  // IPC 契約(api.ts / types.ts)、尺寸預算(overlayShapes.ts)與遮蔽規則
+  // (observability.ts):改壞了不會有任何靜態檢查說話。
+  //
+  // 為什麼放在這一塊而不是新增一個:這裡的規則與執行環境無關
+  // (no-undef 由 tsc 負責 —— 見檔頭第 3 層),而 shared 同時被 main 與
+  // renderer 匯入,為它開第三份規則只會多一份會漂移的設定。實測代價是
+  // **0 problems**(不是推測:掛上去之後 eslint src/shared 一片乾淨,
+  // lint:baseline 不變)。
   {
-    files: ['src/main/**/*.ts', 'src/preload/**/*.ts', 'electron.vite.config.ts'],
+    files: ['src/main/**/*.ts', 'src/preload/**/*.ts', 'src/shared/**/*.ts', 'electron.vite.config.ts'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       globals: NODE_GLOBALS,

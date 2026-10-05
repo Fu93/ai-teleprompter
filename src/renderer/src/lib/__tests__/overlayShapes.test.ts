@@ -3,6 +3,9 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import {
   clampPillScale,
+  EXPANDED_MIN,
+  PACE_READOUT_MIN_H,
+  paceReadoutFits,
   overlayShapeDesignSize,
   overlayShapeMin,
   pillFitOf,
@@ -283,5 +286,40 @@ describe('rim 遮罩的 cap 寬度', () => {
     expect(m, '找不到 .glass-pill 規則').toBeTruthy()
     expect(m![1]).toMatch(/background:\s*rgba\(8,\s*10,\s*16,\s*0\.78\)/)
     expect(m![1]).not.toContain('linear-gradient')
+  })
+})
+
+
+/* ── 底部讀數 chip 的高度預算(P4)──
+   這條規則的產物是「不畫」—— 所以兩邊的失敗都是靜默的:門檻太小,持續讀數
+   會永久蓋住工具列(使用者看得到讀數、看不到按鈕);門檻太大,在 720x260
+   (實際使用的展開尺寸)就沒有讀數了。兩個極端都要有斷言才叫驗過。
+
+   三個來源數字都是量出來的:工具列 36px(h-9)、堆疊離底 16px(bottom-4)、
+   chip 25px(audit-deep 的 overlay.pace.geometry 實測 115x25 @ 720x260)。 */
+describe('paceReadoutFits', () => {
+  it('門檻是 36 + 16 + 25 = 77px,而且兩側各自成立', () => {
+    expect(PACE_READOUT_MIN_H).toBe(77)
+    expect(paceReadoutFits(77)).toBe(true)
+    expect(paceReadoutFits(76)).toBe(false)
+  })
+
+  it('實測的兩個尺寸落在對的一側(720x260 顯示、280x40 收起)', () => {
+    expect(paceReadoutFits(260)).toBe(true)
+    expect(paceReadoutFits(40)).toBe(false)
+  })
+
+  /**
+   * 這條斷言是「這條規則為什麼存在」的釘子:展開態的下限本身放不下 chip。
+   * 哪天有人把 EXPANDED_MIN.h 抬到 77 以上,這一條會紅 —— 那時該回頭問的
+   * 不是「測試怎麼了」,而是「這條規則還需要嗎」。
+   */
+  it('展開態下限(EXPANDED_MIN.h)自己一個人就放不下', () => {
+    expect(paceReadoutFits(EXPANDED_MIN.h)).toBe(false)
+  })
+
+  it('非有限值不畫(NaN / Infinity 都不是「應該畫」的證據)', () => {
+    expect(paceReadoutFits(Number.NaN)).toBe(false)
+    expect(paceReadoutFits(Number.POSITIVE_INFINITY)).toBe(false)
   })
 })

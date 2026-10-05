@@ -10,9 +10,14 @@
  * - monologue  獨白過長:我方連續講 > 75s 且量足(該讓對方說話了)
  *
  * 時間域:arrival 時間戳(ms epoch,= 分段器送出時刻 ≈ 該段結尾)。
- * 我方「發言時長」以相鄰兩段送達間隔扣除靜音/處理餘量估算——保守設計,
- * 停頓多時 CPM 會被低估(不誤報)。
+ * 我方「發言時長」以相鄰兩段送達間隔扣除靜音/處理餘量估算——保守設計。
+ * 估計器本體與瞬時節奏讀數共用(見 speakingPace.ts 的 estimateCpm 與
+ * 它檔頭寫的已知限制)。
  */
+import { CONTINUATION_GAP_MS, DEFAULT_CPM, estimateCpm } from './speakingPace'
+
+/** 未校準時的語速基準(單一出處在 speakingPace;為了既有 import 點保留 re-export) */
+export { DEFAULT_CPM }
 
 /** 語音單位:CJK 字元各 1 + 拉丁詞各 1(與 session-intelligence 同口徑) */
 export function speechUnits(text: string): number {
@@ -99,13 +104,8 @@ export const DEFAULT_COOLDOWNS: Record<CoachingKind, number> = {
   monologue: 300_000
 }
 
-/** 未校準時的語速基準(略高於一般對話,避免誤報) */
-export const DEFAULT_CPM = 300
-
 const CPM_WINDOW_MS = 60_000
 const FILLER_WINDOW_MS = 30_000
-/** 兩段送達間隔中,視為「連續發言」的最大間隔(超過即視為停頓) */
-const CONTINUATION_GAP_MS = 2_500
 /** 搶話:對方段送達後多久內我方開口算搶 */
 const INTERRUPT_WINDOW_MS = 2_000
 
@@ -171,29 +171,19 @@ export function onMeSegment(
     }
   }
 
-  // ---- fast:近 60s 語速(以「送達間隔扣停頓」保守估算連續時長;同 filler 用嚴格小於)----
-  const recent = state.me.filter((m) => now - m.t < CPM_WINDOW_MS)
-  const totalUnits = recent.reduce((a, b) => a + b.units, 0)
-  if (recent.length >= 2 && totalUnits >= 10) {
-    // 連續時長:Σ 相鄰段間隔(夾在 CONTINUATION_GAP_MS 內)+ 最後段前的保守餘量
-    let activeMs = 0
-    for (let i = 1; i < recent.length; i++) {
-      const gap = recent[i].t - recent[i - 1].t
-      if (gap <= CONTINUATION_GAP_MS) activeMs += gap
-    }
-    // 每段本身還有長度:以「送達間隔不可得的首段」給最小 1.5s 計入
-    activeMs += 1_500
-    const minutes = activeMs / 60_000
-    if (minutes > 0.02) {
-      const cpm = totalUnits / minutes
-      const baseline = opts.baselineCpm > 0 ? opts.baselineCpm : DEFAULT_CPM
-      if (cpm > baseline * 1.3 && cooled(state, 'fast', now, cooldowns.fast)) {
-        markFired(state, 'fast', now)
-        return {
-          kind: 'fast',
-          message: `語速偏快(${Math.round(cpm)} 字/分)— 深呼吸,慢下來`,
-          detail: { cpm: Math.round(cpm), baseline }
-        }
+  // ---- fast:近 60s 語速(估計器與瞬時讀數共用,見 speakingPace.ts)----
+  // 舊版把「兩段、間隔 4s」算成 20 單位 ÷ 1.5s = 800 字/分,對一個實際
+  // 約 150 字/分的慢速講者報「語速偏快」。低下限(3s 發聲時間、6 單位)
+  // 是那個假陽性的修正處,而它同時是瞬時讀數的入場條件。
+  const cpm = estimateCpm(state.me, now, CPM_WINDOW_MS)
+  if (cpm !== null) {
+    const baseline = opts.baselineCpm > 0 ? opts.baselineCpm : DEFAULT_CPM
+    if (cpm > baseline * 1.3 && cooled(state, 'fast', now, cooldowns.fast)) {
+      markFired(state, 'fast', now)
+      return {
+        kind: 'fast',
+        message: `語速偏快(${Math.round(cpm)} 字/分)— 深呼吸,慢下來`,
+        detail: { cpm: Math.round(cpm), baseline }
       }
     }
   }

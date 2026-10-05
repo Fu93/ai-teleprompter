@@ -1,4 +1,12 @@
-import { IPC, type RescuePayload } from '@shared/types'
+import { IPC, type CoachingPacePayload, type RescuePayload } from '@shared/types'
+import {
+  DEFAULT_CPM,
+  PACE_WINDOW_MS,
+  createPaceStabilizer,
+  estimateCpm,
+  paceEmitDecision,
+  paceKey
+} from './context-engine/speakingPace'
 import { chatCompletion, resolveProvider } from './ai/aiProvider'
 import { resolveScene, ConversationTracker, buildPanicSystemPrompt, pickFallbackTemplate } from './context-engine/scenes'
 import { listAllScenes } from './packs'
@@ -15,17 +23,41 @@ import {
   type CoachingKind,
   type CoachingSignal as EngineSignal
 } from './context-engine/coachingRules'
+import { adaptiveRescueTimeout, recordRescueSample } from './context-engine/rescueAdaptation'
+import { saveSettingsThrottled } from './settings'
 import { state } from './state'
 import { setOverlayVisible } from './windows'
 import { recordEvent } from './events'
 
 // panic 的 provider 差異化 timeout(v3:Groq 900ms / Ollama 2500ms / 其他 1500ms)
-function panicTimeoutMs(): number {
-  const resolved = resolveProvider(state.settings)
+// 在此之上再過一層自適應:實測延遲一直高於基準就放寬(只放寬、有上限),
+// 見 context-engine/rescueAdaptation.ts 檔頭對「為什麼不是調觸發門檻」的說明。
+function baseRescueTimeoutMs(resolved: ReturnType<typeof resolveProvider>): number {
   if (!resolved) return 1500
   if (resolved.cfg.id === 'groq') return 900
   if (resolved.cfg.isLocal) return 2500
   return 1500
+}
+
+/**
+ * 目前供應商的救援延遲樣本(必要時建立)。
+ *
+ * 換供應商 = 重新累積:Groq 的 900ms 基準與本地 Ollama 的 2500ms 不是同一個
+ * 分佈,混在一起會讓兩邊都不準。
+ */
+function rescueLatencySamples(providerId: string): number[] {
+  const personal = state.settings.personal
+  if (!personal.rescue || personal.rescue.providerId !== providerId) {
+    personal.rescue = { providerId, samples: [] }
+  }
+  return personal.rescue.samples
+}
+
+function panicTimeoutMs(): number {
+  const resolved = resolveProvider(state.settings)
+  const base = baseRescueTimeoutMs(resolved)
+  if (!resolved) return base
+  return adaptiveRescueTimeout(base, rescueLatencySamples(resolved.cfg.id))
 }
 
 let panicInFlight = false
@@ -46,6 +78,21 @@ let coachingTimer: ReturnType<typeof setInterval> | null = null
 /** 會議期間各 coaching 訊號觸發次數(會後報告用;contextReset 歸零) */
 const coachingCounts: Partial<Record<CoachingKind, number>> = {}
 
+// ---- 瞬時節奏讀數(P4)----
+// 與 CoachingSignal 不同:那個是**事件**(出聲、有冷卻、8 秒淡出),這個是
+// **讀數**(10 秒窗、±10% 三色、不出聲)。
+//
+// 為什麼需要心跳:renderer 有 8 秒的過期清掃(遺失的訊息不該讓 chip 永遠
+// 停在畫面上),所以一個穩定的讀數也必須每 2 秒重送一次 —— 只在變化時送
+// 的話,使用者節奏穩住的那一刻 chip 就會自己消失。
+//
+// 為什麼窗內語音不足時要送一次 null:那是「收起 chip」的唯一訊號,
+// 不送的話要等 8 秒清掃,畫面上會留著一個早已不成立的數字。
+const PACE_HEARTBEAT_MS = 2_000
+let paceStabilizer = createPaceStabilizer()
+let lastPaceKey: string | null = null
+let lastPaceSentAt = 0
+
 function coachingOptions(): { baselineCpm: number } {
   return { baselineCpm: state.settings.personal.profile?.charsPerMin ?? 0 }
 }
@@ -55,13 +102,48 @@ function syncCoachingTimer(): void {
   const want = state.settings.overlay.coaching
   if (want && coachingTimer === null) {
     coachingTimer = setInterval(() => {
-      const signal = checkDeadAir(coachingState, Date.now(), coachingOptions())
+      const now = Date.now()
+      const signal = checkDeadAir(coachingState, now, coachingOptions())
       if (signal) deliverCoaching(signal)
+      // 讀數的「窗內語音不足 → 收起」由這條心跳送達:沒有它,停止說話後
+      // chip 只能靠 renderer 的 8 秒清掃消失。
+      emitPace(now)
     }, 2_000)
   } else if (!want && coachingTimer !== null) {
     clearInterval(coachingTimer)
     coachingTimer = null
   }
+}
+
+/** 瞬時節奏讀數:算、節流、送。 */
+function emitPace(now: number): void {
+  if (!state.settings.overlay.coaching) return
+  const rawBaseline = coachingOptions().baselineCpm
+  const baseline = rawBaseline > 0 ? rawBaseline : DEFAULT_CPM
+  const { cpm, verdict } = paceStabilizer.push(
+    estimateCpm(coachingState.me, now, PACE_WINDOW_MS),
+    baseline
+  )
+  // 「要不要送」是純函數(見 speakingPace.ts 的 paceEmitDecision):
+  // 鍵變了送、收起的訊號只送一次、穩定時靠心跳撐著。
+  const key = paceKey(cpm, verdict)
+  if (
+    !paceEmitDecision({
+      key,
+      prevKey: lastPaceKey,
+      cpmIsNull: cpm === null,
+      now,
+      lastSentAt: lastPaceSentAt,
+      heartbeatMs: PACE_HEARTBEAT_MS
+    })
+  ) {
+    return
+  }
+  lastPaceKey = key
+  lastPaceSentAt = now
+  if (!state.overlayWindow || state.overlayWindow.isDestroyed()) return
+  const payload: CoachingPacePayload = { cpm, verdict, baseline, at: now }
+  state.overlayWindow.webContents.send(IPC.CoachingPace, payload)
 }
 
 function deliverCoaching(signal: EngineSignal): void {
@@ -96,6 +178,8 @@ function onMeSegmentForCoaching(text: string): void {
   if (interrupt) deliverCoaching(interrupt)
   const signal = onMeSegment(coachingState, text, now, coachingOptions())
   if (signal) deliverCoaching(signal)
+  // 讀數跟著每一段落更新;節流與心跳在 emitPace 內。
+  emitPace(now)
 }
 
 function onThemSegmentForCoaching(text: string): void {
@@ -160,6 +244,18 @@ function resetSessionContext(): void {
   for (const k of Object.keys(coachingCounts) as CoachingKind[]) {
     delete coachingCounts[k]
   }
+  // 上一場的讀數不得跨場殘留:新場次的第一句話不該接著舊場的節奏。
+  paceStabilizer = createPaceStabilizer()
+  lastPaceKey = null
+  lastPaceSentAt = 0
+  if (state.settings.overlay.coaching && state.overlayWindow && !state.overlayWindow.isDestroyed()) {
+    state.overlayWindow.webContents.send(IPC.CoachingPace, {
+      cpm: null,
+      verdict: null,
+      baseline: DEFAULT_CPM,
+      at: Date.now()
+    } satisfies CoachingPacePayload)
+  }
 }
 
 /** 對方新段落 → 問句/長段評估;防抖與冷卻記帳都在純函式 gate 內。 */
@@ -198,6 +294,7 @@ async function handlePanic(): Promise<void> {
       if (script) context = script.slice(-600)
     }
 
+    const rescueStartedAt = Date.now()
     const result = await chatCompletion(
       state.settings,
       [
@@ -206,6 +303,19 @@ async function handlePanic(): Promise<void> {
       ],
       { maxTokens: 120, temperature: 0.7, timeoutMs: panicTimeoutMs() }
     )
+
+    // 只有真的收到回應才記樣本。超時的那一次量到的是**預算本身**,
+    // 不是 provider 的延遲 —— 記進去會讓預算自己把自己撐大。
+    if (result.ok) {
+      const providerId = resolveProvider(state.settings)?.cfg.id
+      if (providerId) {
+        recordRescueSample(
+          rescueLatencySamples(providerId),
+          result.meta?.latencyMs ?? Date.now() - rescueStartedAt
+        )
+        saveSettingsThrottled(state.settings)
+      }
+    }
 
     const parsed = result.ok && result.text ? parseRescueResponse(result.text) : null
     if (!parsed) {

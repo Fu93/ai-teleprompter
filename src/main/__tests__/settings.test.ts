@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import { deepMerge, mergeLoadedSettings } from '../settings'
+import { adaptiveRescueTimeout } from '../context-engine/rescueAdaptation'
 
 /**
  * 這一組測試的存在理由:載入設定時曾經有一個 stripVolatileOverlay(),
@@ -57,5 +58,35 @@ describe('deepMerge', () => {
 
   it('非物件值直接取代', () => {
     expect(deepMerge({ a: 1 }, { a: 5 })).toEqual({ a: 5 })
+  })
+})
+
+/**
+ * P3 的救援時間預算是**跨場次學習**的:樣本存在 settings.personal 裡,而它只有在
+ * 「落盤 → 下次啟動載回來」成立時才有意義 —— 只在記憶體裡累積的樣本,等於每次
+ * 重開 App 都從零開始:功能看起來有,實際上永遠不生效(與 compact/lensMode 同一課)。
+ */
+describe('救援延遲樣本(settings.personal.rescue)', () => {
+  it('樣本與供應商跨啟動保留', () => {
+    const saved = JSON.stringify({ personal: { rescue: { providerId: 'groq', samples: [900, 1100, 1400] } } })
+    const loaded = mergeLoadedSettings(saved)
+    expect(loaded.personal.rescue).toEqual({ providerId: 'groq', samples: [900, 1100, 1400] })
+  })
+
+  it('陣列是取代而不是合併,空樣本也不會被預設值填回來', () => {
+    const loaded = mergeLoadedSettings(
+      JSON.stringify({ personal: { rescue: { providerId: 'ollama', samples: [] } } })
+    )
+    expect(loaded.personal.rescue?.samples).toEqual([])
+  })
+
+  it('載回來的樣本真的會放寬下一場的救援預算(落盤 → 行為,端到端)', () => {
+    const loaded = mergeLoadedSettings(
+      JSON.stringify({ personal: { rescue: { providerId: 'groq', samples: [900, 950, 1000, 2000] } } })
+    )
+    const samples = loaded.personal.rescue?.samples ?? []
+    // Groq 的基準是 900ms;p75×1.5 會把它放寬(只放寬、有 4 秒上限)
+    expect(adaptiveRescueTimeout(900, samples)).toBeGreaterThan(900)
+    expect(adaptiveRescueTimeout(900, samples)).toBeLessThanOrEqual(4000)
   })
 })
