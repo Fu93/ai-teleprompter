@@ -24,3 +24,7 @@ tmp-ui-audit/
 # 與上一項同性質:一次性的觀察記錄,證據與結論都已寫進 docs/UX_FINDINGS.md,
 # 原始檔不進版控(每次重新產生,而且體積會隨截圖數量失控)。
 tmp-ux/
+
+# MediaPipe 的 loader + wasm 由 scripts/sync-mediapipe-wasm.mjs 從 node_modules 複製
+# (postinstall / predev / prebuild / predist)。與 npm 套件逐位元相同,不進版控。
+src/renderer/public/mediapipe/wasm/

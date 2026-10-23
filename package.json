@@ -6,7 +6,10 @@
   "author": "Fu93",
   "private": true,
   "scripts": {
+    "postinstall": "node --no-warnings scripts/sync-mediapipe-wasm.mjs",
+    "predev": "node --no-warnings scripts/sync-mediapipe-wasm.mjs",
     "dev": "electron-vite dev",
+    "prebuild": "node --no-warnings scripts/sync-mediapipe-wasm.mjs",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
@@ -31,6 +34,7 @@
     "audit:effects": "node --no-warnings scripts/audit-effects.mjs",
     "audit:selftest": "node --no-warnings scripts/audit-selftest.mjs",
     "make-audio-fixture": "node --no-warnings scripts/make-audio-fixture.mjs",
+    "predist": "node --no-warnings scripts/sync-mediapipe-wasm.mjs",
     "dist": "electron-vite build && electron-builder",
     "audit:journey": "node --no-warnings scripts/audit-journey.mjs",
     "release:checks": "node --no-warnings scripts/release-checks.mjs"
